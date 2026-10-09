@@ -1,0 +1,170 @@
+{
+  "app_name": "Britsmaid",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A highly readable, structured, and professional operational tool that frames property content and dense financial data with quiet authority.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#111827",
+    "surfaceSecondary": "#F3F4F6",
+    "onSurfaceSecondary": "#374151",
+    "surfaceTertiary": "#E5E7EB",
+    "onSurfaceTertiary": "#4B5563",
+    "surfaceInverse": "#1F2937",
+    "onSurfaceInverse": "#F9FAFB",
+    "brand": "#1B3A6B",
+    "brandPrimary": "#1B3A6B",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#375B96",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#E8EDF4",
+    "onBrandTertiary": "#1B3A6B",
+    "success": "#10B981",
+    "onSuccess": "#FFFFFF",
+    "warning": "#F59E0B",
+    "onWarning": "#FFFFFF",
+    "error": "#EF4444",
+    "onError": "#FFFFFF",
+    "info": "#3B82F6",
+    "onInfo": "#FFFFFF",
+    "border": "#E5E7EB",
+    "borderStrong": "#D1D5DB",
+    "divider": "#F3F4F6",
+    "muted": "#6B7280"
+  },
+  "typography": {
+    "displayFontFamily": "Space Grotesk",
+    "textFontFamily": "Geist",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use generous vertical breathing room for dashboards. Cards never flush to screen edge; use md or lg margin. Forms use single column.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": 1,
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Bottom tab bar when content scrolls behind it",
+      "Sticky headers over scrolling content",
+      "Floating Action Buttons (FAB)",
+      "Bottom-sheet handles"
+    ],
+    "dont's": [
+      "Every list row",
+      "Form inputs",
+      "Body content",
+      "Dense data tables"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Dashboard",
+      "purpose": "High-level overview of active properties, today's arrivals/departures, and quick actions for invoices and reports.",
+      "states": {
+        "loading": "Centered spinner with 'Syncing properties...'",
+        "empty": "Illustration of a house with 'No active properties assigned.'",
+        "error": "Error loading dashboard data + Retry button"
+      },
+      "layout": "Role-based view. For Admins: Use a multi-column grid (2-col) for high-level metrics (Total Revenue, Active Bookings) styled with Mono font. Below, a single column list of 'Today's Actionable Items' (cleanings to verify, check-ins). Stick a primary CTA FAB 'Generate Invoice' using glassmorphism at the bottom."
+    },
+    {
+      "name": "Properties",
+      "purpose": "Manage all villas, owner details, revenue split ratios, and electricity rules.",
+      "states": {
+        "loading": "Skeleton rows of property cards",
+        "empty": "Icon of a building + 'No properties added yet.' + 'Add Property' CTA",
+        "error": "Failed to load properties + Retry button"
+      },
+      "layout": "Single column list. Each property card uses an edge-to-edge width minus padding. Include a cover image (with gradient scrim) for each villa. Display key stats (Rev Share %, Owner Name) directly below the image. Tap to view property details and interactive reports."
+    },
+    {
+      "name": "Calendar",
+      "purpose": "Multi-month view to check availability, OTA sync status, and cleaning state of each villa.",
+      "states": {
+        "loading": "Skeleton calendar grid",
+        "empty": "Calendar grid with no events",
+        "error": "Failed to sync iCal data + Retry button"
+      },
+      "layout": "Multi-month scrollable calendar picker at the top. Highlight dates with pill indicators (or dots) for booking status. Below the calendar, display a TimeSlot/Booking List for the selected date, showing OTA source (iCal) and cleaning status (Pending/Done) with status-colored tags."
+    },
+    {
+      "name": "CleaningTasks",
+      "purpose": "Linear workflow for cleaning staff to document before and after states per room.",
+      "states": {
+        "loading": "Spinner 'Loading task details...'",
+        "empty": "Checkmark icon + 'All cleanings completed for today!'",
+        "error": "Could not load task details + Retry button"
+      },
+      "layout": "Smart Task List grouped by property. When a task is tapped, show a Room-by-Room digital checklist. For each room, provide a side-by-side or split-screen 'Before' and 'After' photo capture area. Use full-bleed camera views for capture. 'Submit Report' button pinned to the bottom of the scroll view."
+    },
+    {
+      "name": "ClientReport",
+      "purpose": "Detailed view for owners showing revenue splits, generated invoices, and latest property photos interactively.",
+      "states": {
+        "loading": "Spinner 'Generating report...'",
+        "empty": "Chart icon + 'No data available for this period'",
+        "error": "Failed to fetch report + Retry button"
+      },
+      "layout": "Segmented control at the top to toggle timeframes. Use large Space Grotesk typography for financial splits (Revenue, Electricity deductions). Display an interactive chart section. Include a Masonry or 2-col grid for latest property status photos (Before/Afters). Sticky share button at the bottom for PDF export."
+    }
+  ],
+  "images": {
+    "property_cover_1": {
+      "url": "https://images.unsplash.com/photo-1706808849780-7a04fbac83ef?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwzfHxsdXh1cnklMjBtb2Rlcm4lMjB2aWxsYSUyMHByb3BlcnR5JTIwbWFuYWdlbWVudHxlbnwwfHx8fDE3OTE1ODI3OTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern luxury villa exterior"
+    },
+    "property_cover_2": {
+      "url": "https://images.unsplash.com/photo-1580587771525-78b9dba3b914?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxsdXh1cnklMjBtb2Rlcm4lMjB2aWxsYSUyMHByb3BlcnR5JTIwbWFuYWdlbWVudHxlbnwwfHx8fDE3OTE1ODI3OTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "White modern villa with pool"
+    },
+    "clean_room": {
+      "url": "https://images.unsplash.com/photo-1560185893-a55cbc8c57e8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzV8MHwxfHNlYXJjaHwxfHxjbGVhbiUyMGJlZHJvb20lMjByZWFkeSUyMGZvciUyMGd1ZXN0c3xlbnwwfHx8fDE3OTE1ODI3OTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Cleaned bedroom ready for guests"
+    },
+    "dirty_room": {
+      "url": "https://images.unsplash.com/photo-1637579024150-3cc5306a8b54?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHwxfHxjbGVhbmluZyUyMGJlZm9yZSUyMGRpcnR5JTIwcm9vbXxlbnwwfHx8fDE3OTE1ODI3OTR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Dirty unmade room before cleaning"
+    }
+  },
+  "instructions_to_main_agent": [
+    "The user explicitly requested Navy Blue (#1B3A6B-ish) as the primary brand color based on the Britsmaid logo, which overrides the standard ban on navy blue.",
+    "Use 'Space Grotesk' or a similar Mono font for rendering financial numbers, revenue shares, and calendar dates to improve readability, paired with 'Geist' for standard UI text.",
+    "Implement role-based routing (Admin vs Cleaning Staff) via JWT login state. The dashboard and navigation should adapt based on the user's role.",
+    "The app must ONLY have a Light theme as requested. Do not implement dark mode.",
+    "For the cleaning workflow, ensure the camera/photo capture UI uses a split-screen or side-by-side 'Before & After' preview for immediate comparison before submission.",
+    "When overlaying text on property cover images, ALWAYS use a top-to-bottom linear gradient scrim (transparent to >=70% surfaceInverse) to guarantee contrast.",
+    "For interactive owner reports, use clear segmented controls for timeframes and large mono-typography for revenue metrics. Enable PDF generation using standard Expo print/share APIs."
+  ]
+}

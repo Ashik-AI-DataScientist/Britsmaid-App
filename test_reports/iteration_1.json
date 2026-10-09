@@ -1,0 +1,31 @@
+{
+  "summary": "First test run of Britsmaid property-management Expo app. Backend: 23/23 pytest tests PASSED covering auth (admin/cleaner), role enforcement (cleaner 403 on /dashboard & /invoices), properties CRUD, iCal sync (no feeds -> 400, bad URL -> ok:false), bookings create/overlap 409/auto-cleaning session, calendar, upload+media flow, file auth (401 w/o token, 200 with ?token=), settlement math (owner+bm share == net; split_half halves electricity), OTA report, invoices (BM-YYYY-NNNN numbering, totals 10000->discount 500->+18% GST = 11210, status toggle, empty items 400), owner report + public HTML (unauth, 'Owner Statement' present), user create/deactivate, dashboard. Frontend: login works for both roles, all 4 admin tabs (tab-index/tab-calendar/tab-properties/tab-finance) load correctly. Calendar shows filter chips, month nav, day select. Property detail renders with Statement/Report CTAs. Finance owner-statement shows interactive split card, trend bars, OTA rows (settlement-hero, split-card, trend-card, bookings-breakdown-card, 3 split-segments, 6 trend-bars all present). New invoice flow works end-to-end (BM-2026-XXXX created, total updates live, invoice-view-total & invoice-toggle-paid present on detail). Owner report creation works (creates share token, interactive owner link visible, Share link / Preview buttons). Cleaner login lands on cleaning task list (4 pending cards), session detail shows 6 room cards each with before/after capture tiles, cleaning-complete-button present. No red screens or runtime errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "booking/new DateField", "issue": "booking-checkin / booking-checkout Pressable not fillable by playwright page.fill (opens a bottom sheet instead). Manual date entry via sheet works; automated setting of dates is cumbersome. Consider exposing hidden input or date-sheet testIDs (e.g. 'date-sheet-day-{YYYY-MM-DD}').", "testID": "booking-checkin", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "styles (web)", "issue": "'shadow*' style props are deprecated on react-native-web — switch to 'boxShadow'. Non-blocking console warning observed on every screen."}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_britsmaid_api.py", "/app/backend/tests/conftest.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional) Replace deprecated 'shadow*' RN style props with 'boxShadow' to silence web console warnings (ui.tsx, Segmented, etc).",
+    "(Optional) Add testIDs inside DateField sheet (e.g. date-sheet-day-YYYY-MM-DD) to make booking date entry automatable; currently the Pressable opens a sheet which playwright can't fill directly."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 972 lines — above the 700-line threshold; consider splitting routers (properties/bookings/cleaning/reports/invoices) into separate modules.",
+    "property_status helper runs 2 DB queries per property in /api/properties list — fine at seed scale, but could become O(N) hot spot; consider aggregation when properties grow.",
+    "settlement endpoint computes 6 months of settlements synchronously (one-by-one); fine for 2 villas, watch perf as properties/bookings grow."
+  ],
+  "updated_files": ["/app/backend/tests/conftest.py", "/app/backend/tests/test_britsmaid_api.py"],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "~95% (all critical flows + testIDs verified; only DateField auto-fill limitation)"},
+  "seed_data_creation": "Backend seeds 2 demo villas + 7 bookings + 1 expense at startup; tests create/cleanup their own TEST_* data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All backend endpoints and critical UI flows verified. Admin cred: admin@britsmaid.com/Britsmaid@2026. Cleaner cred: cleaner@britsmaid.com/Cleaner@2026. Use EXPO_PUBLIC_BACKEND_URL. The DateField component on /booking/new opens a bottom-sheet picker — not directly fillable. Camera capture and native PDF share aren't testable in web preview (expected).",
+  "rca_of_issue": "N/A — no bugs found. Minor cosmetic deprecation warning for 'shadow*' RN style props on web is expected and non-blocking."
+}
