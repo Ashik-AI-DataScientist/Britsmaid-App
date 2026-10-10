@@ -5,12 +5,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { SettlementView } from "@/src/components/SettlementView";
+import { PayoutStatusCard, downloadReceipt } from "@/src/components/Payout";
 import { settlementHtml, sharePdf } from "@/src/pdf";
 import { Badge, Button, Card, Empty, ErrorState, Header, Icon, IconButton, Loading, Segmented, Txt, useToast } from "@/src/ui";
-import { fmtDate, fmtShort, monthLabel, otaColor, shiftMonth, thisMonth, todayISO } from "@/src/format";
+import { fmtDate, fmtShort, inr, monthLabel, otaColor, shiftMonth, thisMonth, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
-type Tab = "earnings" | "stays" | "updates";
+type Tab = "earnings" | "payouts" | "stays" | "updates";
 
 export default function OwnerVilla() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -26,6 +27,7 @@ export default function OwnerVilla() {
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`), enabled: tab === "stays" });
   const reports = useQuery({ queryKey: ["owner-reports", id], queryFn: () => api.get<any[]>(`/owner-reports?property_id=${id}`), enabled: tab === "updates" });
   const cleans = useQuery({ queryKey: ["cleaning", "completed", id], queryFn: () => api.get<any[]>(`/cleaning?status=completed&property_id=${id}`), enabled: tab === "updates" });
+  const payouts = useQuery({ queryKey: ["payouts", id], queryFn: () => api.get<any[]>(`/payouts?property_id=${id}`), enabled: tab === "payouts" });
 
   if (prop.isError) return <View style={{ flex: 1 }}><Header back title="Villa" /><ErrorState message="Villa not available" onRetry={prop.refetch} /></View>;
   const upcoming = (bookings.data ?? []).filter((b) => b.check_out >= todayISO() && b.status !== "cancelled");
@@ -51,7 +53,7 @@ export default function OwnerVilla() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title={prop.data?.name ?? "Villa"} subtitle={prop.data?.location} />
       <View style={{ padding: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, gap: spacing.sm }}>
-        <Segmented testID="owner-villa-tabs" value={tab} onChange={setTab} options={[{ value: "earnings", label: "Earnings" }, { value: "stays", label: "Stays" }, { value: "updates", label: "Updates" }]} />
+        <Segmented testID="owner-villa-tabs" value={tab} onChange={setTab} options={[{ value: "earnings", label: "Earnings" }, { value: "payouts", label: "Payouts" }, { value: "stays", label: "Stays" }, { value: "updates", label: "Updates" }]} />
         {tab === "earnings" ? (
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
             <IconButton testID="owner-prev-month" name="chevron-back" onPress={() => setMonth(shiftMonth(month, -1))} />
@@ -64,6 +66,8 @@ export default function OwnerVilla() {
         s.isLoading ? <Loading label="Generating report..." /> : s.isError ? <ErrorState message="Failed to fetch report" onRetry={s.refetch} /> : (
           <>
             <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 96 }} refreshControl={<RefreshControl refreshing={s.isRefetching} onRefresh={s.refetch} tintColor={colors.brandPrimary} />}>
+              <PayoutStatusCard key={`${s.data.month}-${s.data.payout?.id ?? "none"}`} s={s.data} />
+              <View style={{ height: spacing.md }} />
               <SettlementView s={s.data} onMonthPress={setMonth} />
             </ScrollView>
             <View style={{ position: "absolute", left: spacing.lg, right: spacing.lg, bottom: insets.bottom + 16 }}>
@@ -71,6 +75,23 @@ export default function OwnerVilla() {
             </View>
           </>
         )
+      ) : tab === "payouts" ? (
+        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={payouts.isRefetching} onRefresh={payouts.refetch} tintColor={colors.brandPrimary} />}>
+          {payouts.isLoading ? <Loading /> : (payouts.data ?? []).length === 0 ? <Empty icon="cash-outline" title="No payouts recorded yet" subtitle="Payment confirmations from Britsmaid will appear here with receipts." /> : null}
+          {(payouts.data ?? []).map((p) => (
+            <Card key={p.id} testID={`owner-payout-${p.id}`} style={{ gap: spacing.sm }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+                <Icon name="checkmark-circle" size={22} color={colors.success} />
+                <View style={{ flex: 1 }}>
+                  <Txt v="subtitle" style={{ fontSize: 15 }}>{monthLabel(p.month)}</Txt>
+                  <Txt v="caption">Paid {fmtDate(p.paid_on)} · {p.method}{p.reference ? ` · ${p.reference}` : ""}</Txt>
+                </View>
+                <Txt v="mono">{inr(p.amount)}</Txt>
+              </View>
+              <Button testID={`owner-payout-receipt-${p.id}`} small variant="secondary" icon="download-outline" title={`Receipt ${p.receipt_number}`} onPress={() => downloadReceipt(p).catch((e) => toast(e.message, "error"))} />
+            </Card>
+          ))}
+        </ScrollView>
       ) : tab === "stays" ? (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={bookings.isRefetching} onRefresh={bookings.refetch} tintColor={colors.brandPrimary} />}>
           {bookings.isLoading ? <Loading /> : null}

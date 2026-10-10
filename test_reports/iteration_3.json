@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 3 verifies all 4 new features: hourly OTA sync, admin payouts + owner receipts, owner invite (phone/WhatsApp/email), Emergent Google sign-in. Backend: 13/13 new pytest tests pass in test_iteration3.py (plus 50 regression tests still green). Coverage — Sync: GET /api/sync/status returns interval_minutes=60 with last_run+next_run (background 'Hourly OTA sync' loop fires at startup; verified in backend log); POST /api/sync/run returns {properties, added, errors}; owner & cleaner get 403 on both. Payouts: POST /api/payouts creates record with receipt_number regex BM-PAY-YYYY-NNNN; duplicate same property+month -> 409; owner GET /api/payouts scoped (sees own villa only, 404 on other villa property_id, 200 on own); DELETE admin-only (owner 403); /api/reports/settlement includes 'payout' key (null before, record after); /api/owner/dashboard villa has month_paid=true after recording current-month payout. Users: POST /api/users with phone persists and returns phone field; POST /api/users/{id}/reset-password admin-only (cleaner 403), returns temp_password starting with 'BM-' and old password fails while temp_password logs in. Google: POST /api/auth/session with invalid session_id -> 401; existing JWT login path still works. Frontend (390x844 mobile): login-google-button visible on /login (navigates to auth.emergentagent.com — not clicked); admin Calendar screen shows calendar-sync-status text and calendar-sync-button that fires toast; Finance > Owner statement screen shows payout-status-card with PENDING badge + payout-mark-paid-button; tapping opens payout-sheet with payout-amount-input (prefilled), payout-method-{Bank transfer,UPI,Cash,Cheque} chips, payout-reference-input, payout-notes-input, payout-save-button; after save badge flips to PAID with payout-receipt-button + 'Download receipt' and receipt number BM-PAY-2026-NNNN rendered. Team & logins: 2 staff-invite-<id> buttons on existing members; opens invite-sheet with invite-generate-button which, after tapping, reveals invite-message block + invite-whatsapp-button + invite-email-button + invite-share-button. Owner portal (owner@britsmaid.com): owner-villa-paid-<id> badge visible on home when current-month payout exists; owner-villa-tabs-payouts tab visible on villa screen; Earnings tab shows payout-status-card WITHOUT payout-mark-paid-button (owner read-only, confirmed). All critical review-request testIDs are present and functional.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_britsmaid_api.py",
+    "/app/backend/tests/test_owner_role.py",
+    "/app/test_reports/pytest/iteration3.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1245 lines — still far above the 700-line guideline. Payout + sync routers are small additions but overall file would benefit from splitting into routers (users, properties, bookings, cleaning, reports, payouts, sync).",
+    "auto_sync_loop sleeps 300s and uses last_run timestamp to gate the hourly run — correct, but if backend restarts frequently the first run always fires (no debounce). Acceptable.",
+    "payout receipt_number uses datetime.now().year without timezone — fine for IST deployment but strictly should be datetime.now(timezone.utc).year for consistency with other timestamps."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py"
+  ],
+  "success_rate": {"backend": "100% (13/13 new + 50/50 regression)", "frontend": "100% (payout UI, invite sheet, sync button, Google button, owner read-only all verified)"},
+  "seed_data_creation": "Tests create & tear down TEST_* payouts, TEST_* users with phone, and TEST_* reset-password accounts. No seeded user passwords were reset. Current-month Villa Azure payouts created during owner_dashboard test and UI flow were cleaned up at end of each test.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 3 testIDs — Payouts: payout-status-card, payout-status-badge, payout-mark-paid-button, payout-receipt-button, payout-sheet, payout-amount-input, payout-date, payout-method-{Bank transfer,UPI,Cash,Cheque}, payout-reference-input, payout-notes-input, payout-save-button. Invite: staff-invite-<uid>, invite-sheet, invite-phone-input, invite-generate-button, invite-message, invite-whatsapp-button, invite-email-button, invite-share-button. Sync: calendar-sync-status, calendar-sync-button. Owner: owner-villa-paid-<pid>, owner-villa-tabs-payouts, owner-payout-<pid>. Login: login-google-button. Settlement URL uses ?property_id=<id> (not ?id=). Frontend web token lives in localStorage key 'bm_token' (JSON-stringified).",
+  "rca_of_issue": "N/A — all four new features implemented correctly and verified end-to-end."
+}

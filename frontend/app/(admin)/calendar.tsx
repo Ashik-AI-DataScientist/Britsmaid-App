@@ -23,6 +23,7 @@ export default function CalendarScreen() {
   const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
   const cal = useQuery({ queryKey: ["calendar", month, pid], queryFn: () => api.get(`/calendar?month=${month}${pid ? `&property_id=${pid}` : ""}`) });
   const pmap = useMemo(() => Object.fromEntries((props.data ?? []).map((p) => [p.id, p])), [props.data]);
+  const syncStatus = useQuery({ queryKey: ["sync-status"], queryFn: () => api.get("/sync/status"), refetchInterval: 60000 });
 
   const marks = useMemo(() => {
     const m: Record<string, DayMark> = {};
@@ -45,28 +46,28 @@ export default function CalendarScreen() {
   const freeVillas = (props.data ?? []).filter((p) => (!pid || p.id === pid) && !dayBookings.some((b: any) => b.property_id === p.id));
 
   const syncAll = async () => {
-    const withFeeds = (props.data ?? []).filter((p) => p.ical_feeds?.length);
-    if (!withFeeds.length) return toast("Add iCal links to a villa first", "info");
     setSyncing(true);
-    let added = 0;
-    for (const p of withFeeds) {
-      try {
-        const r = await api.post(`/properties/${p.id}/ical-sync`);
-        added += r.results.reduce((a: number, x: any) => a + (x.added ?? 0), 0);
-      } catch (e: any) {
-        toast(`${p.name}: ${e.message}`, "error");
-      }
+    try {
+      const r = await api.post("/sync/run");
+      toast(r.properties ? `OTA sync complete · ${r.added} new booking${r.added === 1 ? "" : "s"}${r.errors ? ` · ${r.errors} feed error(s)` : ""}` : "Add iCal links to a villa first", r.properties ? (r.errors ? "error" : "success") : "info");
+      cal.refetch();
+      syncStatus.refetch();
+    } catch (e: any) {
+      toast(e.message, "error");
+    } finally {
+      setSyncing(false);
     }
-    setSyncing(false);
-    toast(`OTA sync complete · ${added} new booking${added === 1 ? "" : "s"}`);
-    cal.refetch();
   };
+  const mins = syncStatus.data?.last_run ? Math.max(0, Math.round((Date.now() - new Date(syncStatus.data.last_run).getTime()) / 60000)) : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.lg, gap: spacing.sm }}>
-          <Txt v="title" style={{ flex: 1 }}>Calendar</Txt>
+          <View style={{ flex: 1 }}>
+            <Txt v="title">Calendar</Txt>
+            <Txt v="caption" testID="calendar-sync-status">Auto-sync with OTAs every hour{mins !== null ? ` · last ${mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}` : ""}</Txt>
+          </View>
           <IconButton testID="calendar-sync-button" name={syncing ? "hourglass-outline" : "sync"} tone="brand" onPress={syncAll} />
           <IconButton testID="calendar-add-booking-button" name="add" tone="brand" onPress={() => router.push(`/booking/new?date=${day}${pid ? `&property_id=${pid}` : ""}`)} />
         </View>

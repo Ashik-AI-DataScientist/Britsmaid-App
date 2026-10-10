@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { SettlementView } from "@/src/components/SettlementView";
+import { PayoutStatusCard } from "@/src/components/Payout";
 import { settlementHtml, sharePdf } from "@/src/pdf";
 import { Button, ErrorState, Header, IconButton, Loading, Txt, useToast } from "@/src/ui";
 import { monthLabel, shiftMonth, thisMonth } from "@/src/format";
@@ -43,6 +44,9 @@ export default function Settlement() {
       {q.isLoading ? <Loading label="Generating report..." /> : q.isError ? <ErrorState message="Failed to fetch report" onRetry={q.refetch} /> : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 96 }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>
           <SettlementView s={q.data} onMonthPress={setMonth} />
+          <View style={{ marginTop: spacing.md }}>
+            <PayoutStatusCard key={`${q.data.month}-${q.data.payout?.id ?? "none"}`} s={q.data} canMark onChange={q.refetch} />
+          </View>
         </ScrollView>
       )}
       {q.data ? (

@@ -62,6 +62,7 @@ export default function OwnerHome() {
                 </View>
                 <View style={{ paddingHorizontal: spacing.lg, paddingBottom: spacing.md }}>
                   <Txt v="caption">Split {v.owner_share_percent}/{100 - v.owner_share_percent} · Electricity {v.electricity_mode === "split_half" ? "shared 50/50" : "paid by you"} · Last cleaned {v.last_cleaned ? fmtDate(v.last_cleaned) : "—"}</Txt>
+                  <View style={{ marginTop: spacing.sm }}><Badge testID={`owner-villa-paid-${v.id}`} label={v.month_paid ? "This month's payout: Paid" : "This month's payout: Pending"} tone={v.month_paid ? "success" : "warning"} /></View>
                 </View>
               </Card>
             </Animated.View>

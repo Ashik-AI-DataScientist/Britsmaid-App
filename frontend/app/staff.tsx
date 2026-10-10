@@ -7,6 +7,7 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { Badge, Button, Card, Chip, ConfirmSheet, Header, Icon, IconButton, Input, Loading, Segmented, Sheet, Txt, useToast } from "@/src/ui";
 import { spacing, useTheme } from "@/src/theme";
+import { InviteSheet, Invitee } from "@/src/components/InviteSheet";
 
 type Role = "cleaner" | "admin" | "owner";
 
@@ -18,8 +19,9 @@ export default function Staff() {
   const q = useQuery({ queryKey: ["users"], queryFn: () => api.get<any[]>("/users") });
   const [open, setOpen] = useState(false);
   const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
-  const blank = { name: "", email: "", password: "", role: "cleaner" as Role, property_ids: [] as string[] };
+  const blank = { name: "", email: "", password: "", phone: "", role: "cleaner" as Role, property_ids: [] as string[] };
   const [f, setF] = useState(blank);
+  const [invite, setInvite] = useState<Invitee | null>(null);
   const [busy, setBusy] = useState(false);
   const [rm, setRm] = useState<any>(null);
   const [edit, setEdit] = useState<{ id: string; name: string; property_ids: string[] } | null>(null);
@@ -44,9 +46,10 @@ export default function Staff() {
     if (f.role === "owner" && !f.property_ids.length) return toast("Select the villa(s) this owner can see", "error");
     setBusy(true);
     try {
-      await api.post("/users", { ...f, property_ids: f.role === "owner" ? f.property_ids : [] });
+      const created = await api.post("/users", { ...f, property_ids: f.role === "owner" ? f.property_ids : [] });
       setOpen(false);
       setF(blank);
+      setInvite({ ...created, password: f.password });
       q.refetch();
       toast("Staff member added");
     } catch (e: any) {
@@ -70,6 +73,7 @@ export default function Staff() {
                 {u.role === "owner" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"} · tap to change</Txt> : null}
               </View>
               <Badge label={u.role === "admin" ? "Admin" : u.role === "owner" ? "Owner" : "Cleaner"} tone={u.role === "admin" ? "brand" : u.role === "owner" ? "info" : "neutral"} />
+              {u.id !== user?.id ? <IconButton testID={`staff-invite-${u.id}`} name="paper-plane-outline" size={18} tone="brand" onPress={() => setInvite({ ...u, password: null })} /> : null}
               {u.id !== user?.id ? <IconButton testID={`staff-remove-${u.id}`} name="trash-outline" size={18} onPress={() => setRm(u)} /> : null}
             </Card>
           ))}
@@ -86,6 +90,7 @@ export default function Staff() {
           ) : null}
           <Input testID="staff-name-input" label="Name" value={f.name} onChangeText={(t) => setF({ ...f, name: t })} />
           <Input testID="staff-email-input" label="Email" autoCapitalize="none" keyboardType="email-address" value={f.email} onChangeText={(t) => setF({ ...f, email: t })} />
+          <Input testID="staff-phone-input" label="WhatsApp number (for invite)" keyboardType="phone-pad" value={f.phone} onChangeText={(t) => setF({ ...f, phone: t })} />
           <Input testID="staff-password-input" label="Temporary password" secureTextEntry value={f.password} onChangeText={(t) => setF({ ...f, password: t })} />
           <Button testID="staff-save-button" title="Add member" onPress={add} loading={busy} />
         </View>
@@ -98,6 +103,7 @@ export default function Staff() {
           <Button testID="assign-save-button" title="Save villas" onPress={saveAssign} />
         </View>
       </Sheet>
+      <InviteSheet invitee={invite} onClose={() => setInvite(null)} />
       <ConfirmSheet visible={!!rm} title="Remove member?" message={`${rm?.name} will no longer be able to sign in.`} confirmLabel="Remove" onClose={() => setRm(null)} onConfirm={async () => { await api.del(`/users/${rm.id}`); setRm(null); q.refetch(); toast("Member removed"); }} />
     </View>
   );

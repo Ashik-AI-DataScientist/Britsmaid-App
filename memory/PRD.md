@@ -25,7 +25,13 @@ JWT email/password (Admin & Cleaning Staff roles) · iCal import per OTA · Emer
 - Villa owner role: admin creates owner logins in Team & logins and assigns villas; owner portal shows only their villas' earnings (interactive statement + PDF), stays, reports and cleaning records (read-only)
 - Server-side scoping: owners only see their own villas; cleaners can't see finances; owners can't see admin endpoints
 
+## Iteration 3 (2026-06)
+- Owner/staff invite: after creating a login (or via paper-plane icon → new temp password), share login details via WhatsApp, email or share sheet
+- Automatic hourly OTA iCal sync (background task, status shown in Calendar, manual "sync all")
+- Payout confirmations: admin marks month paid (amount, date, method, reference) → receipt BM-PAY-YYYY-NNNN; owners see Paid/Pending + Payouts tab with PDF receipts
+- Emergent-managed Google sign-in (only for emails pre-created by admin; role from existing account)
+
 ## Backlog
-- P1: Auto scheduled iCal sync; export bookings back to OTAs (iCal out feed)
+- P1: Export bookings back to OTAs (iCal out feed)
 - P1: WhatsApp/email send of invoices & reports
 - P2: Expense categories & receipts upload, multi-currency, staff checklists per room

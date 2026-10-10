@@ -42,6 +42,20 @@ ${s.other_deductions ? `<tr><td>Other deductions</td><td class="r">-${inr(s.othe
 ${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
 }
 
+export function payoutReceiptHtml(p: any) {
+  return shell(p.receipt_number, `<div class="top"><div><h1>PAYOUT RECEIPT</h1><div class="muted">${esc(p.receipt_number)}</div></div><img class="logo" src="${LOGO_URL}"/></div>
+<div class="grid"><div style="flex:1"><b>Paid to</b><br/>${esc(p.owner_name)}<br/>${esc(p.property_name)}</div>
+<div style="flex:1"><b>Paid on:</b> ${fmtDate(p.paid_on)}<br/><b>Method:</b> ${esc(p.method)}<br/>${p.reference ? `<b>Reference:</b> ${esc(p.reference)}<br/>` : ""}<b>Period:</b> ${monthLabel(p.month)}</div></div>
+<div class="box"><div class="muted">Amount paid</div><div class="big">${inr(p.amount)}</div></div>
+<table><tr><th>Statement summary · ${monthLabel(p.month)}</th><th class="r">Amount</th></tr>
+<tr><td>Gross booking revenue (${p.nights} nights)</td><td class="r">${inr(p.gross)}</td></tr><tr><td>OTA commissions</td><td class="r">-${inr(p.ota_commission)}</td></tr>
+<tr><td>Owner share (${p.owner_share_percent}%)</td><td class="r">${inr(p.owner_share)}</td></tr>
+${p.owner_electricity ? `<tr><td>Electricity (owner 50%)</td><td class="r">-${inr(p.owner_electricity)}</td></tr>` : ""}
+${p.other_deductions ? `<tr><td>Other deductions</td><td class="r">-${inr(p.other_deductions)}</td></tr>` : ""}
+<tr class="tot"><td>Calculated payout</td><td class="r">${inr(p.calculated_payout)}</td></tr><tr class="tot"><td>Amount paid</td><td class="r">${inr(p.amount)}</td></tr></table>
+${p.notes ? `<div class="box">${esc(p.notes)}</div>` : ""}`);
+}
+
 export async function sharePdf(html: string) {
   if (Platform.OS === "web") {
     await Print.printAsync({ html });

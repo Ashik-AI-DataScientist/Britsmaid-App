@@ -9,7 +9,8 @@ from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from bson import ObjectId
-import os, logging, uuid, secrets, html, json
+import os, logging, uuid, secrets, html, json, asyncio, string
+from pymongo.errors import DuplicateKeyError
 import bcrypt, jwt, requests
 
 ROOT_DIR = Path(__file__).parent
@@ -134,7 +135,16 @@ async def user_from_token(token: Optional[str]):
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+        # Google sign-in sessions (Emergent-managed) are validated by lookup
+        sess = await db.user_sessions.find_one({"session_token": token})
+        if not sess:
+            raise HTTPException(401, "Invalid token")
+        exp = sess["expires_at"]
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < datetime.now(timezone.utc):
+            raise HTTPException(401, "Session expired")
+        payload = {"sub": sess["user_id"]}
     uid = payload.get("sub")
     if not uid or not ObjectId.is_valid(uid):
         raise HTTPException(401, "Invalid token")
@@ -202,10 +212,12 @@ class StaffIn(BaseModel):
     password: str = Field(min_length=6)
     role: Literal["admin", "cleaner", "owner"] = "cleaner"
     property_ids: List[str] = []
+    phone: str = ""
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
     password: Optional[str] = Field(default=None, min_length=6)
 
@@ -229,6 +241,29 @@ async def login(body: LoginIn):
     return {"access_token": issue_token(user), "token_type": "bearer", "user": out(user)}
 
 
+class SessionIn(BaseModel):
+    session_id: str
+
+
+@api.post("/auth/session")
+async def google_session(body: SessionIn):
+    import httpx
+    async with httpx.AsyncClient(timeout=20) as hc:
+        r = await hc.get("https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data", headers={"X-Session-ID": body.session_id})
+    if r.status_code != 200:
+        raise HTTPException(401, "Google sign-in failed, please try again")
+    data = r.json()
+    email = (data.get("email") or "").strip().lower()
+    user = await db.users.find_one({"email": email, "active": True})
+    if not user:
+        raise HTTPException(403, f"No Britsmaid account for {email}. Ask your admin to add this email in Team & logins.")
+    token = data["session_token"]
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"picture": data.get("picture"), "google_linked": True}})
+    await db.user_sessions.update_one({"session_token": token}, {"$set": {"session_token": token, "user_id": str(user["_id"]),
+                                      "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": datetime.now(timezone.utc)}}, upsert=True)
+    return {"session_token": token, "user": out(await db.users.find_one({"_id": user["_id"]}))}
+
+
 @api.get("/auth/me")
 async def me(user=Depends(current_user)):
     return out(user)
@@ -247,7 +282,7 @@ async def create_user(body: StaffIn, _=Depends(admin_user)):
     if body.role == "owner" and not body.property_ids:
         raise HTTPException(400, "Assign at least one villa to the owner")
     pids = await validate_pids(body.property_ids) if body.role == "owner" else []
-    doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "active": True, "created_at": now_iso()}
+    doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "phone": body.phone.strip(), "active": True, "created_at": now_iso()}
     r = await db.users.insert_one(doc)
     return out(await db.users.find_one({"_id": r.inserted_id}))
 
@@ -260,6 +295,8 @@ async def update_user(uid: str, body: UserUpdate, _=Depends(admin_user)):
     changes: dict[str, Any] = {}
     if body.name:
         changes["name"] = body.name
+    if body.phone is not None:
+        changes["phone"] = body.phone.strip()
     if body.password:
         changes["password_hash"] = hash_pw(body.password)
     if body.property_ids is not None:
@@ -271,6 +308,17 @@ async def update_user(uid: str, body: UserUpdate, _=Depends(admin_user)):
     if changes:
         await db.users.update_one({"_id": u["_id"]}, {"$set": changes})
     return out(await db.users.find_one({"_id": u["_id"]}))
+
+
+@api.post("/users/{uid}/reset-password")
+async def reset_password(uid: str, _=Depends(admin_user)):
+    u = await db.users.find_one({"_id": oid(uid), "active": True})
+    if not u:
+        raise HTTPException(404, "User not found")
+    alphabet = string.ascii_letters + string.digits
+    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(8))
+    await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}})
+    return {"user": out(u), "temp_password": temp}
 
 
 @api.delete("/users/{uid}")
@@ -501,14 +549,9 @@ def parse_ical(text: str):
     return events
 
 
-@api.post("/properties/{pid}/ical-sync")
-async def ical_sync(pid: str, _=Depends(admin_user)):
-    p = await db.properties.find_one({"_id": oid(pid)})
-    if not p:
-        raise HTTPException(404, "Property not found")
+async def sync_property(p: dict) -> list:
+    pid = str(p["_id"])
     feeds = p.get("ical_feeds") or []
-    if not feeds:
-        raise HTTPException(400, "No iCal links added for this property")
     report = []
     for f in feeds:
         try:
@@ -529,14 +572,76 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
                 doc = {"property_id": pid, "guest_name": ev["summary"], "guest_phone": "", "guest_email": "", "guests": 1, "ota": f["ota"],
                        "check_in": ev["check_in"], "check_out": ev["check_out"], "amount": 0, "ota_commission": 0,
                        "status": "blocked" if blocked else "confirmed", "notes": ev["description"], "source": "ical", "ical_uid": ev["uid"], "created_at": now_iso()}
-                r = await db.bookings.insert_one(doc)
+                try:
+                    r = await db.bookings.insert_one(doc)
+                except DuplicateKeyError:
+                    continue
                 if not blocked:
                     await ensure_cleaning(pid, str(r.inserted_id), ev["check_out"])
                 added += 1
         f["last_synced"] = now_iso()
         report.append({"ota": f["ota"], "ok": True, "added": added, "updated": updated, "events": len(events)})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
-    return {"results": report}
+    return report
+
+
+@api.post("/properties/{pid}/ical-sync")
+async def ical_sync(pid: str, _=Depends(admin_user)):
+    p = await db.properties.find_one({"_id": oid(pid)})
+    if not p:
+        raise HTTPException(404, "Property not found")
+    if not p.get("ical_feeds"):
+        raise HTTPException(400, "No iCal links added for this property")
+    return {"results": await sync_property(p)}
+
+
+SYNC_INTERVAL_SECONDS = 3600
+
+
+async def sync_all(trigger: str):
+    props = await db.properties.find({"is_deleted": {"$ne": True}, "ical_feeds.0": {"$exists": True}}).to_list(500)
+    added = errors = 0
+    for p in props:
+        try:
+            for r in await sync_property(p):
+                added += r.get("added", 0)
+                errors += 0 if r["ok"] else 1
+        except Exception as e:
+            errors += 1
+            logger.error(f"Auto sync failed for {p.get('name')}: {e}")
+    status = {"last_run": now_iso(), "trigger": trigger, "properties": len(props), "added": added, "errors": errors}
+    await db.settings.update_one({"_id": "ical_sync"}, {"$set": status}, upsert=True)
+    return status
+
+
+async def auto_sync_loop():
+    while True:
+        try:
+            last = await db.settings.find_one({"_id": "ical_sync"})
+            due = True
+            if last and last.get("last_run"):
+                due = (datetime.now(timezone.utc) - datetime.fromisoformat(last["last_run"])).total_seconds() >= SYNC_INTERVAL_SECONDS
+            if due:
+                st = await sync_all("auto")
+                logger.info(f"Hourly OTA sync: {st}")
+        except Exception as e:
+            logger.error(f"Auto sync loop error: {e}")
+        await asyncio.sleep(300)
+
+
+@api.get("/sync/status")
+async def sync_status(_=Depends(admin_user)):
+    st = await db.settings.find_one({"_id": "ical_sync"}) or {}
+    st.pop("_id", None)
+    st["interval_minutes"] = SYNC_INTERVAL_SECONDS // 60
+    if st.get("last_run"):
+        st["next_run"] = (datetime.fromisoformat(st["last_run"]) + timedelta(seconds=SYNC_INTERVAL_SECONDS)).isoformat()
+    return st
+
+
+@api.post("/sync/run")
+async def sync_run(_=Depends(admin_user)):
+    return await sync_all("manual")
 
 # ---------------------------------------------------------------- Calendar
 @api.get("/calendar")
@@ -759,7 +864,49 @@ async def settlement(property_id: str, month: str, months: int = 1, user=Depends
         s = main if mm == month else await compute_settlement(p, mm)
         trend.append({"month": mm, "gross": s["gross"], "owner_payout": s["owner_payout"], "britsmaid_net": s["britsmaid_net"], "nights": s["nights"]})
     main["trend"] = trend
+    main["payout"] = out(await db.payouts.find_one({"property_id": property_id, "month": month}))
     return main
+
+
+class PayoutIn(BaseModel):
+    property_id: str
+    month: str
+    amount: float = Field(ge=0)
+    paid_on: str
+    method: Literal["Bank transfer", "UPI", "Cash", "Cheque"] = "Bank transfer"
+    reference: str = ""
+    notes: str = ""
+
+
+@api.post("/payouts")
+async def create_payout(body: PayoutIn, user=Depends(admin_user)):
+    p = await db.properties.find_one({"_id": oid(body.property_id)})
+    if not p:
+        raise HTTPException(404, "Property not found")
+    if await db.payouts.find_one({"property_id": body.property_id, "month": body.month}):
+        raise HTTPException(409, "Payout for this month is already recorded")
+    snap = await compute_settlement(p, body.month)
+    ctr = await db.counters.find_one_and_update({"_id": "payout"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
+    doc = body.model_dump()
+    doc.update({"receipt_number": f"BM-PAY-{datetime.now().year}-{ctr['seq']:04d}", "property_name": p["name"], "owner_name": p.get("owner_name", ""),
+                "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
+                "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
+                "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
+    r = await db.payouts.insert_one(doc)
+    return out(await db.payouts.find_one({"_id": r.inserted_id}))
+
+
+@api.get("/payouts")
+async def list_payouts(property_id: Optional[str] = None, user=Depends(finance_user)):
+    q: dict[str, Any] = {"property_id": property_id} if property_id else {}
+    scope(user, q)
+    return [out(x) for x in await db.payouts.find(q).sort("month", -1).to_list(500)]
+
+
+@api.delete("/payouts/{pid}")
+async def delete_payout(pid: str, _=Depends(admin_user)):
+    await db.payouts.delete_one({"_id": oid(pid)})
+    return {"ok": True}
 
 
 @api.get("/reports/ota")
@@ -1011,7 +1158,8 @@ async def owner_dashboard(user=Depends(finance_user)):
              "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
-             "reports": await db.owner_reports.count_documents({"property_id": pid})}
+             "reports": await db.owner_reports.count_documents({"property_id": pid}),
+             "month_paid": bool(await db.payouts.find_one({"property_id": pid, "month": month}))}
         o.update(await property_status(pid, today))
         villas.append(o)
     return {"month": month, "villas": villas, "total_payout": sum(v["month_payout"] for v in villas)}
@@ -1031,6 +1179,12 @@ async def startup():
     await db.users.create_index("email", unique=True)
     await db.bookings.create_index([("property_id", 1), ("check_in", 1)])
     await db.owner_reports.create_index("share_token")
+    await db.user_sessions.create_index("session_token", unique=True)
+    await db.user_sessions.create_index("user_id")
+    await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
+    await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
+    app.state.sync_task = asyncio.create_task(auto_sync_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
