@@ -48,6 +48,7 @@ export default function Dashboard() {
           <Txt v="caption">Hello, {user?.name?.split(" ")[0]}</Txt>
           <Txt v="title">Britsmaid</Txt>
         </View>
+        <IconButton testID="dashboard-guests-button" name="id-card-outline" onPress={() => router.push("/guests")} />
         <IconButton testID="dashboard-staff-button" name="people-outline" onPress={() => router.push("/staff")} />
         <IconButton testID="dashboard-logout-button" name="log-out-outline" onPress={logout} />
       </View>
@@ -121,3 +122,4 @@ export default function Dashboard() {
     </View>
   );
 }
+

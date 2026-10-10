@@ -46,8 +46,18 @@ export const api = {
   del: <T = any>(p: string) => request<T>(p, { method: "DELETE" }),
 };
 
+export async function authenticatedBlob(path: string): Promise<Blob> {
+  const res = await fetch(BASE + path, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    if (res.status === 401) onUnauthorized?.();
+    throw new Error("Could not open private document");
+  }
+  return res.blob();
+}
+
 export const fileUrl = (id: string) => `${BASE}/files/${id}?token=${encodeURIComponent(token ?? "")}`;
 export const publicReportUrl = (shareToken: string) => `${BASE}/public/reports/${shareToken}`;
 
 export const LOGO_URL =
   "https://customer-assets-lqy194kg.emergentagent.net/job_73724556-664b-45a9-8dc1-ea0e2573ffb5/artifacts/7ad33ebc61f9950d_Britsmaid%20Logo.jpg";
+

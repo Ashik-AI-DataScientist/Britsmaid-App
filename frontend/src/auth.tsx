@@ -14,7 +14,7 @@ const extractSid = (url?: string | null) => {
   return m ? decodeURIComponent(m[1]) : null;
 };
 
-export type User = { id: string; email: string; name: string; role: "admin" | "cleaner" | "owner"; property_ids?: string[]; phone?: string; picture?: string };
+export type User = { id: string; email: string; name: string; role: "admin" | "cleaner" | "supervisor" | "owner"; property_ids?: string[]; phone?: string; picture?: string };
 type AuthCtx = {
   user: User | null;
   loading: boolean;
@@ -132,3 +132,4 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
 }
 
 export const useAuth = () => useContext(Ctx);
+

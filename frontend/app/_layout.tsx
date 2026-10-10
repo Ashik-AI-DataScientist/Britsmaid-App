@@ -22,7 +22,13 @@ function AuthGate() {
   useEffect(() => {
     if (loading) return;
     const onLogin = segments[0] === "login";
-    if (!user && !onLogin) router.replace("/login");
+    const isGuest = segments[0] === "guest-check-in";
+    if (!user && !onLogin && !isGuest) router.replace("/login");
+    if (user && !onLogin && !isGuest) {
+      const area = segments[0] as string;
+      if ((user.role === "cleaner" || user.role === "supervisor") && area && area !== "cleaning") router.replace("/cleaning");
+      if (user.role === "owner" && ["(admin)", "staff", "guests", "booking", "invoice"].includes(area)) router.replace("/owner");
+    }
   }, [user, loading, segments, router]);
   if (loading) return <Loading label="Signing you in..." />;
   return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surfaceSecondary } }} />;
@@ -55,3 +61,4 @@ export default function RootLayout() {
     </ErrorBoundary>
   );
 }
+

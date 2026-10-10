@@ -9,7 +9,7 @@ import { Badge, Button, Card, Chip, ConfirmSheet, Header, Icon, IconButton, Inpu
 import { spacing, useTheme } from "@/src/theme";
 import { InviteSheet, Invitee } from "@/src/components/InviteSheet";
 
-type Role = "cleaner" | "admin" | "owner";
+type Role = "cleaner" | "supervisor" | "admin" | "owner";
 
 export default function Staff() {
   const insets = useSafeAreaInsets();
@@ -38,7 +38,7 @@ export default function Staff() {
         name: edit.name.trim(),
         phone: edit.phone,
         ...(edit.self ? {} : { role: edit.role }),
-        ...(edit.role === "owner" ? { property_ids: edit.property_ids } : {}),
+        ...(edit.role !== "admin" ? { property_ids: edit.property_ids } : {}),
         ...(edit.password ? { password: edit.password } : {}),
       });
       setEdit(null);
@@ -54,7 +54,7 @@ export default function Staff() {
     if (f.role === "owner" && !f.property_ids.length) return toast("Select the villa(s) this owner can see", "error");
     setBusy(true);
     try {
-      const created = await api.post("/users", { ...f, property_ids: f.role === "owner" ? f.property_ids : [] });
+      const created = await api.post("/users", { ...f, property_ids: f.role !== "admin" ? f.property_ids : [] });
       setOpen(false);
       setF(blank);
       setInvite({ ...created, password: f.password });
@@ -69,7 +69,7 @@ export default function Staff() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
-      <Header back title="Team & logins" subtitle="Admins, cleaners & villa owners" right={<IconButton testID="staff-add-button" name="person-add-outline" tone="brand" onPress={() => setOpen(true)} />} />
+      <Header back title="Team & logins" subtitle="Admins, supervisors, cleaners & owners" right={<IconButton testID="staff-add-button" name="person-add-outline" tone="brand" onPress={() => setOpen(true)} />} />
       {q.isLoading ? <Loading /> : (
         <KeyboardAwareScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }}>
           {(q.data ?? []).map((u) => (
@@ -78,10 +78,10 @@ export default function Staff() {
               <View style={{ flex: 1 }}>
                 <Txt v="subtitle" style={{ fontSize: 15 }}>{u.name}</Txt>
                 <Txt v="caption">{u.email}</Txt>
-                {u.role === "owner" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"}</Txt> : null}
+                {u.role !== "admin" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"}</Txt> : null}
                 <Txt v="caption" color={colors.brandPrimary}>Tap to edit access & password</Txt>
               </View>
-              <Badge label={u.role === "admin" ? "Admin" : u.role === "owner" ? "Owner" : "Cleaner"} tone={u.role === "admin" ? "brand" : u.role === "owner" ? "info" : "neutral"} />
+              <Badge label={u.role === "admin" ? "Admin" : u.role === "owner" ? "Owner" : u.role === "supervisor" ? "Supervisor" : "Cleaner"} tone={u.role === "admin" ? "brand" : u.role === "owner" ? "info" : "neutral"} />
               {u.id !== user?.id ? <IconButton testID={`staff-invite-${u.id}`} name="paper-plane-outline" size={18} tone="brand" onPress={() => setInvite({ ...u, password: null })} /> : null}
               {u.id !== user?.id ? <IconButton testID={`staff-remove-${u.id}`} name="trash-outline" size={18} onPress={() => setRm(u)} /> : null}
             </Card>
@@ -90,9 +90,9 @@ export default function Staff() {
       )}
       <Sheet visible={open} onClose={() => setOpen(false)} title="Add team member" testID="staff-sheet">
         <View style={{ gap: spacing.md }}>
-          <Segmented testID="staff-role" value={f.role} onChange={(r) => setF({ ...f, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
-          <Txt v="caption">{f.role === "admin" ? "Full access to everything." : f.role === "owner" ? "Sees only the dashboard, earnings, stays & reports of the villas you pick below." : "Sees cleaning tasks and uploads before/after photos."}</Txt>
-          {f.role === "owner" ? (
+          <Segmented testID="staff-role" value={f.role} onChange={(r) => setF({ ...f, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "supervisor", label: "Supervisor" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
+          <Txt v="caption">{f.role === "admin" ? "Full access to everything." : f.role === "owner" ? "Sees only the dashboard, earnings, stays & reports of the villas you pick below." : "Assigned villas only: cleaners document their tasks; supervisors review cleaning. Select villas below."}</Txt>
+          {f.role !== "admin" ? (
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
               {(props.data ?? []).map((p) => <Chip key={p.id} testID={`staff-villa-${p.id}`} label={p.name} selected={f.property_ids.includes(p.id)} onPress={() => setF({ ...f, property_ids: toggle(f.property_ids, p.id) })} />)}
             </View>
@@ -110,10 +110,10 @@ export default function Staff() {
             {!edit.self ? (
               <>
                 <Txt v="label">Access type</Txt>
-                <Segmented testID="edit-role" value={edit.role} onChange={(r) => setEdit({ ...edit, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
+                <Segmented testID="edit-role" value={edit.role} onChange={(r) => setEdit({ ...edit, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "supervisor", label: "Supervisor" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
               </>
             ) : <Txt v="caption">This is your account — role cannot be changed here.</Txt>}
-            {edit.role === "owner" ? (
+            {edit.role !== "admin" ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
                 {(props.data ?? []).map((p) => <Chip key={p.id} testID={`assign-villa-${p.id}`} label={p.name} selected={edit.property_ids.includes(p.id)} onPress={() => setEdit({ ...edit, property_ids: toggle(edit.property_ids, p.id) })} />)}
               </View>
@@ -130,3 +130,4 @@ export default function Staff() {
     </View>
   );
 }
+

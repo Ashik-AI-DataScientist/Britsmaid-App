@@ -15,7 +15,7 @@ export default function CleaningList() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const isCleaner = user?.role === "cleaner";
+  const isCleaner = user?.role === "cleaner" || user?.role === "supervisor";
   const [tab, setTab] = useState<"open" | "completed">("open");
   const q = useQuery({ queryKey: ["cleaning", tab, property_id], queryFn: () => api.get<any[]>(`/cleaning?status=${tab}${property_id ? `&property_id=${property_id}` : ""}`) });
 
@@ -52,7 +52,7 @@ export default function CleaningList() {
                     <Txt v="subtitle" style={{ fontSize: 15 }}>Checkout {fmtDate(c.date)}</Txt>
                     <Txt v="caption">{c.assigned_name ? `Assigned to ${c.assigned_name}` : "Unassigned"}</Txt>
                   </View>
-                  <Badge label={c.status === "completed" ? "Ready" : overdue ? "Overdue" : c.status === "in_progress" ? "In progress" : "Pending"} tone={c.status === "completed" ? "success" : overdue ? "error" : "warning"} />
+                  <Badge label={c.status === "completed" ? "Ready" : overdue ? "Overdue" : c.status === "awaiting_review" ? "Needs review" : c.status === "in_progress" ? "In progress" : "Pending"} tone={c.status === "completed" ? "success" : overdue ? "error" : "warning"} />
                 </View>
                 <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.surfaceSecondary, overflow: "hidden" }}>
                   <View style={{ width: `${pct * 100}%`, height: "100%", backgroundColor: c.status === "completed" ? colors.success : colors.brandPrimary }} />
@@ -66,3 +66,4 @@ export default function CleaningList() {
     </View>
   );
 }
+
