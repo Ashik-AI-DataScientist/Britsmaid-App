@@ -38,6 +38,9 @@ JWT email/password (Admin & Cleaning Staff roles) · iCal import per OTA · Emer
 - Team & logins: edit any member's access type, villas, name, phone and set a new password
 - Home button on every stack screen header
 
+## Iteration 5 (2026-06)
+- Fixed Expo Go 'Unmatched route on every tab': unstable-native-tabs is now lazy-required (src/NativeTabsLayout.tsx) only on iOS 26+; Android/older iOS/web use JS Tabs. Verified 80/80 backend + all routes.
+
 ## Backlog
 - P1: Export bookings back to OTAs (iCal out feed)
 - P1: WhatsApp/email send of invoices & reports

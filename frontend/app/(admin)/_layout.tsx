@@ -1,34 +1,23 @@
 import React from "react";
 import { Platform } from "react-native";
 import { Tabs } from "expo-router";
-import { NativeTabs } from "expo-router/unstable-native-tabs";
 import { usesNativeTabs } from "@/src/navigation";
 import { Icon } from "@/src/ui";
 import { fonts, useTheme } from "@/src/theme";
 
+// IMPORTANT: expo-router/unstable-native-tabs pulls experimental
+// react-native-screens code that breaks Expo Go on Android, so it must be
+// required lazily — only on iOS 26+ where NativeTabs is actually rendered.
+let NativeTabsLayout: React.ComponentType | null = null;
+if (usesNativeTabs) {
+  NativeTabsLayout = require("@/src/NativeTabsLayout").default;
+}
+
 export default function AdminTabs() {
   const { colors } = useTheme();
-  if (usesNativeTabs) {
-    return (
-      <NativeTabs tintColor={colors.brandPrimary}>
-        <NativeTabs.Trigger name="index">
-          <NativeTabs.Trigger.Icon sf="house.fill" />
-          <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
-        </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="calendar">
-          <NativeTabs.Trigger.Icon sf="calendar" />
-          <NativeTabs.Trigger.Label>Calendar</NativeTabs.Trigger.Label>
-        </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="properties">
-          <NativeTabs.Trigger.Icon sf="building.2.fill" />
-          <NativeTabs.Trigger.Label>Villas</NativeTabs.Trigger.Label>
-        </NativeTabs.Trigger>
-        <NativeTabs.Trigger name="finance">
-          <NativeTabs.Trigger.Icon sf="indianrupeesign.circle.fill" />
-          <NativeTabs.Trigger.Label>Finance</NativeTabs.Trigger.Label>
-        </NativeTabs.Trigger>
-      </NativeTabs>
-    );
+  if (usesNativeTabs && NativeTabsLayout) {
+    const Layout = NativeTabsLayout;
+    return <Layout />;
   }
   const tab = (name: string, title: string, icon: any, iconOn: any) => (
     <Tabs.Screen
@@ -36,8 +25,8 @@ export default function AdminTabs() {
       options={{
         title,
         tabBarButtonTestID: `tab-${name}`,
-        tabBarIcon: ({ color, focused }: { color: string; focused: boolean }) => <Icon name={focused ? iconOn : icon} size={22} color={color} />,
-      } as any}
+        tabBarIcon: ({ color, focused }: { color: any; focused: boolean }) => <Icon name={focused ? iconOn : icon} size={22} color={color} />,
+      }}
     />
   );
   return (
