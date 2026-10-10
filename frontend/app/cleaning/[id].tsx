@@ -29,7 +29,7 @@ export default function CleaningSession() {
   if (q.isLoading) return <Loading label="Loading task details..." />;
   if (q.isError) return <View style={{ flex: 1 }}><Header back title="Cleaning" /><ErrorState message="Could not load task details" onRetry={q.refetch} /></View>;
   const c = q.data;
-  const done = c.status === "completed";
+  const done = c.status === "completed" || user?.role === "owner";
   const refresh = (data: any) => {
     qc.setQueryData(["cleaning-session", id], data);
     qc.invalidateQueries({ queryKey: ["cleaning"] });

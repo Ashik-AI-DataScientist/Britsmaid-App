@@ -24,6 +24,19 @@ def cleaner_token():
     return _login("cleaner@britsmaid.com", "Cleaner@2026")
 
 
+
+@pytest.fixture(scope="session")
+def owner_token():
+    return _login("owner@britsmaid.com", "Owner@2026")
+
+
+@pytest.fixture
+def owner_s(owner_token):
+    s = requests.Session()
+    s.headers.update({"Authorization": f"Bearer {owner_token}", "Content-Type": "application/json"})
+    return s
+
+
 @pytest.fixture
 def admin_s(admin_token):
     s = requests.Session()

@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 2 verifies the new owner role + role scoping + Team screen. Backend: 50/50 pytest tests pass (23 original + 27 new in test_owner_role.py). New coverage — Owner scoping: GET /api/properties returns only assigned villas; /api/properties/{other} 404; /api/reports/settlement for other villa 404 and own villa 200; /api/bookings, /api/calendar, /api/cleaning, /api/owner-reports all scoped to allowed villas; /api/owner/dashboard works and lists only assigned villas with total_payout. Owner forbidden (403): /api/dashboard, /api/invoices, /api/reports/ota, POST /api/upload, POST /api/properties, POST /api/bookings, POST /api/cleaning/{id}/rooms/0/media, PUT /api/cleaning/{id} status=completed. Admin owner-user mgmt: POST /api/users role=owner with empty property_ids → 400; non-existent property OID → 400; invalid OID format → 422; full flow (create owner → login → sees only pid1 → PUT /users/{id} property_ids=[pid2] → now sees only pid2 → empty reassignment → 400). PUT /api/users on cleaner with property_ids → 400 (only owners have assignments). Cleaner: 403 on /reports/settlement, /owner-reports, /owner/dashboard, /expenses; still 200 on /cleaning. Frontend (mobile 390x844): owner@britsmaid.com → lands on /owner portal, owner-total-payout visible, exactly 1 owner-villa-<id> card (Villa Azure); villa screen shows owner-villa-tabs with earnings/stays/updates; Stays tab 4 owner-stay-<id> cards; Updates tab 2 owner-cleaning-<id> entries; opening a cleaning record shows NO cleaning-complete-button and NO capture-* add-media buttons (read-only confirmed). Admin → Team & logins (dashboard-staff-button) → staff-add-button opens staff-sheet; selecting 'Villa owner' role reveals 2 staff-villa-<id> chips + staff-save-button; tapping existing owner card opens assign-sheet with 2 assign-villa-<id> chips + assign-save-button. All critical testIDs from the review request are present and functional.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_britsmaid_api.py",
+    "/app/backend/tests/test_owner_role.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/owner_role.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py grown to ~1090 lines — still above 700-line guideline; owner role additions are clean but router split (users/properties/bookings/cleaning/reports/invoices) would improve maintainability.",
+    "validate_pids is called twice-per-call for owner updates: once in StaffIn/UserUpdate pathway — acceptable; no duplication issue.",
+    "owner/dashboard runs compute_settlement + 2 queries per villa; fine at current scale but monitor as owner's villa count grows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_owner_role.py"
+  ],
+  "success_rate": {"backend": "100% (50/50)", "frontend": "100% (owner portal + admin Team screen flows verified)"},
+  "seed_data_creation": "Owner user auto-seeded by backend startup (owner@britsmaid.com → Villa Azure). Tests create/cleanup TEST_* owner & cleaner users.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Owner role, admin owner-user mgmt, and cleaner scope restrictions all fully covered in /app/backend/tests/test_owner_role.py. Credentials: Admin admin@britsmaid.com/Britsmaid@2026, Cleaner cleaner@britsmaid.com/Cleaner@2026, Owner owner@britsmaid.com/Owner@2026 (Villa Azure only). Login input testIDs are login-email-input / login-password-input / login-submit-button (note the -input/-button suffix). Staff screen testIDs: staff-add-button, staff-sheet, staff-role, staff-villa-<pid>, staff-save-button, staff-<uid>, staff-remove-<uid>, assign-sheet, assign-villa-<pid>, assign-save-button. Owner portal testIDs: owner-total-payout, owner-villa-<pid>, owner-villa-tabs, owner-stay-<bid>, owner-cleaning-<cid>, owner-report-<rid>, owner-share-pdf, owner-logout-button.",
+  "rca_of_issue": "N/A — all requested backend scoping rules and frontend screens behave as specified; no bugs found."
+}

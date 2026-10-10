@@ -156,6 +156,41 @@ async def admin_user(user=Depends(current_user)):
     return user
 
 
+async def staff_user(user=Depends(current_user)):
+    """Admin or cleaner (internal team)."""
+    if user["role"] not in ("admin", "cleaner"):
+        raise HTTPException(403, "Team members only")
+    return user
+
+
+async def finance_user(user=Depends(current_user)):
+    """Admin or owner (owners are scoped to their villas)."""
+    if user["role"] not in ("admin", "owner"):
+        raise HTTPException(403, "Not allowed")
+    return user
+
+
+def owner_pids(user) -> Optional[List[str]]:
+    """None = unrestricted; list = villas this owner may see."""
+    return list(user.get("property_ids") or []) if user["role"] == "owner" else None
+
+
+def check_pid(user, pid: str):
+    allowed = owner_pids(user)
+    if allowed is not None and pid not in allowed:
+        raise HTTPException(404, "Not found")
+
+
+def scope(user, q: dict, field: str = "property_id"):
+    allowed = owner_pids(user)
+    if allowed is not None:
+        if q.get(field):
+            check_pid(user, q[field])
+        else:
+            q[field] = {"$in": allowed}
+    return q
+
+
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
@@ -165,7 +200,23 @@ class StaffIn(BaseModel):
     name: str
     email: EmailStr
     password: str = Field(min_length=6)
-    role: Literal["admin", "cleaner"] = "cleaner"
+    role: Literal["admin", "cleaner", "owner"] = "cleaner"
+    property_ids: List[str] = []
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    property_ids: Optional[List[str]] = None
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+async def validate_pids(pids: List[str]) -> List[str]:
+    pids = list(dict.fromkeys(pids))
+    if any(not ObjectId.is_valid(x) for x in pids):
+        raise HTTPException(422, "Invalid property id")
+    if await db.properties.count_documents({"_id": {"$in": [ObjectId(x) for x in pids]}}) != len(pids):
+        raise HTTPException(400, "One or more properties do not exist")
+    return pids
 
 
 @api.post("/auth/login")
@@ -193,9 +244,33 @@ async def create_user(body: StaffIn, _=Depends(admin_user)):
     email = body.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(409, "Email already registered")
-    doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "active": True, "created_at": now_iso()}
+    if body.role == "owner" and not body.property_ids:
+        raise HTTPException(400, "Assign at least one villa to the owner")
+    pids = await validate_pids(body.property_ids) if body.role == "owner" else []
+    doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "active": True, "created_at": now_iso()}
     r = await db.users.insert_one(doc)
     return out(await db.users.find_one({"_id": r.inserted_id}))
+
+
+@api.put("/users/{uid}")
+async def update_user(uid: str, body: UserUpdate, _=Depends(admin_user)):
+    u = await db.users.find_one({"_id": oid(uid), "active": True})
+    if not u:
+        raise HTTPException(404, "User not found")
+    changes: dict[str, Any] = {}
+    if body.name:
+        changes["name"] = body.name
+    if body.password:
+        changes["password_hash"] = hash_pw(body.password)
+    if body.property_ids is not None:
+        if u["role"] != "owner":
+            raise HTTPException(400, "Only owners have villa assignments")
+        if not body.property_ids:
+            raise HTTPException(400, "Assign at least one villa")
+        changes["property_ids"] = await validate_pids(body.property_ids)
+    if changes:
+        await db.users.update_one({"_id": u["_id"]}, {"$set": changes})
+    return out(await db.users.find_one({"_id": u["_id"]}))
 
 
 @api.delete("/users/{uid}")
@@ -207,7 +282,7 @@ async def deactivate_user(uid: str, admin=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Media
 @api.post("/upload")
-async def upload(file: UploadFile = File(...), user=Depends(current_user)):
+async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
     data = await file.read()
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
@@ -261,8 +336,11 @@ class PropertyIn(BaseModel):
 
 
 @api.get("/properties")
-async def list_properties(_=Depends(current_user)):
-    props = await db.properties.find({"is_deleted": {"$ne": True}}).sort("name", 1).to_list(500)
+async def list_properties(user=Depends(current_user)):
+    q: dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if owner_pids(user) is not None:
+        q["_id"] = {"$in": [ObjectId(x) for x in owner_pids(user)]}
+    props = await db.properties.find(q).sort("name", 1).to_list(500)
     today = date.today().isoformat()
     result = []
     for p in props:
@@ -288,7 +366,8 @@ async def create_property(body: PropertyIn, _=Depends(admin_user)):
 
 
 @api.get("/properties/{pid}")
-async def get_property(pid: str, _=Depends(current_user)):
+async def get_property(pid: str, user=Depends(current_user)):
+    check_pid(user, pid)
     p = await db.properties.find_one({"_id": oid(pid)})
     if not p:
         raise HTTPException(404, "Property not found")
@@ -300,7 +379,7 @@ async def get_property(pid: str, _=Depends(current_user)):
 @api.put("/properties/{pid}")
 async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
     await db.properties.update_one({"_id": oid(pid)}, {"$set": body.model_dump()})
-    return await get_property(pid)
+    return await get_property(pid, _)
 
 
 @api.delete("/properties/{pid}")
@@ -351,10 +430,11 @@ async def check_overlap(b: BookingIn, exclude: Optional[str] = None):
 
 
 @api.get("/bookings")
-async def list_bookings(property_id: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None, _=Depends(current_user)):
+async def list_bookings(property_id: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None, user=Depends(current_user)):
     q: dict[str, Any] = {}
     if property_id:
         q["property_id"] = property_id
+    scope(user, q)
     if start and end:
         q["check_in"] = {"$lt": end}
         q["check_out"] = {"$gt": start}
@@ -375,10 +455,11 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
 
 
 @api.get("/bookings/{bid}")
-async def get_booking(bid: str, _=Depends(current_user)):
+async def get_booking(bid: str, user=Depends(current_user)):
     b = await db.bookings.find_one({"_id": oid(bid)})
     if not b:
         raise HTTPException(404, "Booking not found")
+    check_pid(user, b["property_id"])
     return out(b)
 
 
@@ -389,7 +470,7 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
         await check_overlap(body, bid)
     await db.bookings.update_one({"_id": oid(bid)}, {"$set": body.model_dump()})
     await db.cleaning.update_one({"booking_id": bid, "status": "pending"}, {"$set": {"date": body.check_out}})
-    return await get_booking(bid)
+    return await get_booking(bid, _)
 
 
 @api.delete("/bookings/{bid}")
@@ -459,7 +540,7 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Calendar
 @api.get("/calendar")
-async def calendar(month: str, property_id: Optional[str] = None, _=Depends(current_user)):
+async def calendar(month: str, property_id: Optional[str] = None, user=Depends(current_user)):
     y, m = map(int, month.split("-"))
     start = date(y, m, 1)
     end = date(y + (m // 12), (m % 12) + 1, 1)
@@ -468,6 +549,8 @@ async def calendar(month: str, property_id: Optional[str] = None, _=Depends(curr
     if property_id:
         q["property_id"] = property_id
         cq["property_id"] = property_id
+    scope(user, q)
+    scope(user, cq)
     bookings = [out(b) for b in await db.bookings.find(q).to_list(3000)]
     cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0}).to_list(3000)]
     return {"bookings": bookings, "cleanings": cleanings}
@@ -513,6 +596,7 @@ async def list_cleaning(status: Optional[str] = None, property_id: Optional[str]
         q["status"] = status
     if property_id:
         q["property_id"] = property_id
+    scope(user, q)
     if user["role"] == "cleaner":
         q["$or"] = [{"assigned_to": str(user["_id"])}, {"assigned_to": None}]
     items = await db.cleaning.find(q).sort("date", 1 if status == "open" else -1).to_list(500)
@@ -531,15 +615,16 @@ async def create_cleaning(body: CleaningIn, _=Depends(admin_user)):
 
 
 @api.get("/cleaning/{cid}")
-async def get_cleaning(cid: str, _=Depends(current_user)):
+async def get_cleaning(cid: str, user=Depends(current_user)):
     c = await db.cleaning.find_one({"_id": oid(cid)})
     if not c:
         raise HTTPException(404, "Session not found")
+    check_pid(user, c["property_id"])
     return await enrich_cleaning(c)
 
 
 @api.post("/cleaning/{cid}/rooms/{idx}/media")
-async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(current_user)):
+async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(staff_user)):
     c = await db.cleaning.find_one({"_id": oid(cid)})
     if not c or idx < 0 or idx >= len(c.get("rooms", [])):
         raise HTTPException(404, "Room not found")
@@ -549,17 +634,17 @@ async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(cur
     if not c.get("assigned_to"):
         upd["$set"]["assigned_to"] = str(user["_id"])
     await db.cleaning.update_one({"_id": c["_id"]}, upd)
-    return await get_cleaning(cid)
+    return await get_cleaning(cid, user)
 
 
 @api.delete("/cleaning/{cid}/rooms/{idx}/media/{phase}/{media_id}")
-async def remove_room_media(cid: str, idx: int, phase: Literal["before", "after"], media_id: str, _=Depends(current_user)):
+async def remove_room_media(cid: str, idx: int, phase: Literal["before", "after"], media_id: str, user=Depends(staff_user)):
     await db.cleaning.update_one({"_id": oid(cid), "status": {"$ne": "completed"}}, {"$pull": {f"rooms.{idx}.{phase}": media_id}})
-    return await get_cleaning(cid)
+    return await get_cleaning(cid, user)
 
 
 @api.put("/cleaning/{cid}")
-async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(current_user)):
+async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(staff_user)):
     c = await db.cleaning.find_one({"_id": oid(cid)})
     if not c:
         raise HTTPException(404, "Session not found")
@@ -573,7 +658,7 @@ async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(current_u
         changes["completed_at"] = now_iso()
         changes["completed_by"] = str(user["_id"])
     await db.cleaning.update_one({"_id": c["_id"]}, {"$set": changes})
-    return await get_cleaning(cid)
+    return await get_cleaning(cid, user)
 
 # ---------------------------------------------------------------- Expenses (electricity)
 class ExpenseIn(BaseModel):
@@ -585,7 +670,8 @@ class ExpenseIn(BaseModel):
 
 
 @api.get("/expenses")
-async def list_expenses(property_id: str, _=Depends(current_user)):
+async def list_expenses(property_id: str, user=Depends(finance_user)):
+    check_pid(user, property_id)
     return [out(e) for e in await db.expenses.find({"property_id": property_id}).sort("month", -1).to_list(500)]
 
 
@@ -661,7 +747,8 @@ async def compute_settlement(p: dict, month: str):
 
 
 @api.get("/reports/settlement")
-async def settlement(property_id: str, month: str, months: int = 1, _=Depends(current_user)):
+async def settlement(property_id: str, month: str, months: int = 1, user=Depends(finance_user)):
+    check_pid(user, property_id)
     p = await db.properties.find_one({"_id": oid(property_id)})
     if not p:
         raise HTTPException(404, "Property not found")
@@ -676,7 +763,7 @@ async def settlement(property_id: str, month: str, months: int = 1, _=Depends(cu
 
 
 @api.get("/reports/ota")
-async def ota_report(month: str, property_id: Optional[str] = None, _=Depends(current_user)):
+async def ota_report(month: str, property_id: Optional[str] = None, _=Depends(admin_user)):
     start, end = month_range(month)
     q: dict[str, Any] = {"status": "confirmed", "check_in": {"$gte": start, "$lt": end}}
     if property_id:
@@ -726,16 +813,18 @@ async def create_owner_report(body: OwnerReportIn, user=Depends(admin_user)):
 
 
 @api.get("/owner-reports")
-async def list_owner_reports(property_id: Optional[str] = None, _=Depends(current_user)):
-    q = {"property_id": property_id} if property_id else {}
+async def list_owner_reports(property_id: Optional[str] = None, user=Depends(finance_user)):
+    q: dict[str, Any] = {"property_id": property_id} if property_id else {}
+    scope(user, q)
     return [out(r) for r in await db.owner_reports.find(q, {"settlement.bookings": 0}).sort("created_at", -1).to_list(500)]
 
 
 @api.get("/owner-reports/{rid}")
-async def get_owner_report(rid: str, _=Depends(current_user)):
+async def get_owner_report(rid: str, user=Depends(finance_user)):
     r = await db.owner_reports.find_one({"_id": oid(rid)})
     if not r:
         raise HTTPException(404, "Report not found")
+    check_pid(user, r["property_id"])
     return out(r)
 
 
@@ -905,6 +994,29 @@ async def dashboard(_=Depends(admin_user)):
     }
 
 
+@api.get("/owner/dashboard")
+async def owner_dashboard(user=Depends(finance_user)):
+    today = date.today().isoformat()
+    month = today[:7]
+    q: dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if owner_pids(user) is not None:
+        q["_id"] = {"$in": [ObjectId(x) for x in owner_pids(user)]}
+    villas = []
+    for p in await db.properties.find(q).sort("name", 1).to_list(100):
+        pid = str(p["_id"])
+        s = await compute_settlement(p, month)
+        upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
+        last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
+        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""),
+             "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
+             "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
+             "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
+             "reports": await db.owner_reports.count_documents({"property_id": pid})}
+        o.update(await property_status(pid, today))
+        villas.append(o)
+    return {"month": month, "villas": villas, "total_payout": sum(v["month_payout"] for v in villas)}
+
+
 @api.get("/meta")
 async def meta():
     return {"otas": OTAS}
@@ -928,6 +1040,11 @@ async def startup():
             await db.users.update_one({"_id": existing["_id"]}, {"$set": {"password_hash": hash_pw(pw), "active": True}})
     if await db.properties.count_documents({}) == 0:
         await seed_demo()
+    owner_email = os.environ["OWNER_EMAIL"].lower()
+    if not await db.users.find_one({"email": owner_email}):
+        first = await db.properties.find_one({"name": "Villa Azure"}) or await db.properties.find_one({})
+        await db.users.insert_one({"email": owner_email, "name": "Rahul Mehta (Owner)", "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
+                                   "property_ids": [str(first["_id"])] if first else [], "active": True, "created_at": now_iso()})
     try:
         init_storage()
         logger.info("Object storage ready")

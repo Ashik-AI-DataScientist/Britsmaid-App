@@ -3,7 +3,7 @@ import { storage } from "@/src/utils/storage";
 import { api, request, setToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { queryClient } from "@/src/query-client";
 
-export type User = { id: string; email: string; name: string; role: "admin" | "cleaner" };
+export type User = { id: string; email: string; name: string; role: "admin" | "cleaner" | "owner"; property_ids?: string[] };
 type AuthCtx = {
   user: User | null;
   loading: boolean;

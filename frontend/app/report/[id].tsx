@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
 import { api, publicReportUrl } from "@/src/api";
+import { useAuth } from "@/src/auth";
 import { SettlementView } from "@/src/components/SettlementView";
 import { MediaThumb } from "@/src/components/MediaThumb";
 import { settlementHtml, sharePdf } from "@/src/pdf";
@@ -22,6 +23,7 @@ export default function OwnerReportView() {
   const q = useQuery({ queryKey: ["owner-report", id], queryFn: () => api.get(`/owner-reports/${id}`) });
   const [busy, setBusy] = useState(false);
   const [del, setDel] = useState(false);
+  const isAdmin = useAuth().user?.role === "admin";
 
   if (q.isLoading) return <Loading label="Generating report..." />;
   if (q.isError) return <View style={{ flex: 1 }}><Header back title="Report" /><ErrorState message={(q.error as Error).message} onRetry={q.refetch} /></View>;
@@ -53,7 +55,7 @@ export default function OwnerReportView() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
-      <Header back title={r.title} subtitle={`Created ${fmtDate(r.created_at)}`} right={<IconButton testID="report-delete-button" name="trash-outline" onPress={() => setDel(true)} />} />
+      <Header back title={r.title} subtitle={`Created ${fmtDate(r.created_at)}`} right={isAdmin ? <IconButton testID="report-delete-button" name="trash-outline" onPress={() => setDel(true)} /> : undefined} />
       <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: insets.bottom + 96 }}>
         <Card style={{ gap: spacing.sm }} testID="report-condition-card">
           <Txt v="label">Property condition</Txt>
@@ -63,14 +65,14 @@ export default function OwnerReportView() {
           </View>
           {r.media_ids.length ? <Txt v="caption">Tap to view full screen</Txt> : null}
         </Card>
-        <Card style={{ gap: spacing.sm, backgroundColor: colors.brandTertiary, borderColor: colors.brandTertiary }}>
+        {isAdmin ? <Card style={{ gap: spacing.sm, backgroundColor: colors.brandTertiary, borderColor: colors.brandTertiary }}>
           <Txt v="subtitle" color={colors.onBrandTertiary}>Interactive owner link</Txt>
           <Txt v="caption">The owner can open this link on any phone to explore the split, OTA breakdown, photos and videos.</Txt>
           <View style={{ flexDirection: "row", gap: spacing.sm }}>
             <Button testID="report-share-link" small style={{ flex: 1 }} icon="link" title="Share link" onPress={shareLink} />
             <Button testID="report-open-link" small style={{ flex: 1 }} variant="ghost" icon="open-outline" title="Preview" onPress={() => WebBrowser.openBrowserAsync(link)} />
           </View>
-        </Card>
+        </Card> : null}
         <SettlementView s={r.settlement} />
       </ScrollView>
       <View style={{ position: "absolute", left: spacing.lg, right: spacing.lg, bottom: insets.bottom + 16 }}>
