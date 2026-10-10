@@ -130,4 +130,3 @@ export default function Staff() {
     </View>
   );
 }
-

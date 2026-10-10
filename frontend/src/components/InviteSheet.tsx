@@ -70,4 +70,3 @@ export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onC
     </Sheet>
   );
 }
-

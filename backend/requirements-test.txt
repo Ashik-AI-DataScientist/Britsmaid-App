@@ -3,4 +3,3 @@ pytest-xdist==3.8.0
 pytest-asyncio==1.4.0
 mongomock-motor==0.0.36
 httpx==0.28.1
-

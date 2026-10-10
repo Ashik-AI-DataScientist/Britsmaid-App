@@ -132,4 +132,3 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
 }
 
 export const useAuth = () => useContext(Ctx);
-

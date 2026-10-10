@@ -70,4 +70,3 @@ export default function Guests() {
     <ConfirmSheet visible={!!removeId} title="Delete guest ID?" message="The stored ID image will be permanently removed. Its access audit trail will remain." confirmLabel="Delete ID" onClose={() => setRemoveId(null)} onConfirm={() => run(async () => { if (removeId) await api.del(`/guest-ids/${removeId}`); setImage(null); setRemoveId(null); })} />
   </View>;
 }
-

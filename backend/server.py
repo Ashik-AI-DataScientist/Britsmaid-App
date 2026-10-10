@@ -1426,4 +1426,3 @@ async def shutdown_db_client():
             task.cancel()
     await asyncio.gather(*(task for task in tasks if task), return_exceptions=True)
     client.close()
-

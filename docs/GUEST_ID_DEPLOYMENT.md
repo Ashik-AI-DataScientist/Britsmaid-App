@@ -55,4 +55,3 @@ yarn expo export --platform web
 ```
 
 The existing remote suites expect the old direct cleaner-completion flow and unrestricted property discovery for cleaners. Update them for assigned properties, required checklists and awaiting-review semantics before running in staging.
-

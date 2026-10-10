@@ -67,4 +67,3 @@ This recommendation is based on documented coverage, not a pricing or hospitalit
 Next integration: server creates a provider transaction bound to booking + guest slot; guest completes a consent flow; server authenticates provider responses/webhooks, checks transaction binding, prevents replay, verifies issuer/document validity and records provider/method/transaction outcome. An OCR result alone must not set `verified`. Keep manual review available for failed/unsupported cases and preserve audit history. Do not store full Aadhaar numbers in ordinary booking fields or put provider credentials in Expo public environment variables.
 
 No external verification API is enabled by this change; vendor credentials and onboarding are needed.
-

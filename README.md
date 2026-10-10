@@ -7,4 +7,3 @@ Expo / React Native frontend, FastAPI backend and MongoDB.
 - [Existing product requirements](memory/PRD.md)
 
 New guest ID intake uses manual admin review and a dedicated private S3/KMS store. Automated Indian ID verification is a documented next phase and requires provider onboarding. Never commit guest documents or production credentials.
-

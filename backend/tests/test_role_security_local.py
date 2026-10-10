@@ -358,4 +358,3 @@ async def test_uploaded_cleaning_photo_loses_access_after_reassignment(ctx):
     await ctx["db"].media.insert_one({"_id": mid, "owner_id": str(ctx["users"]["cleaner"]["_id"]), "is_deleted": False, "storage_path": "photo", "kind": "image"})
     await ctx["db"].cleaning.update_one({"_id": ObjectId(ctx["cid"])}, {"$set": {"assigned_to": str(ctx["users"]["other_cleaner"]["_id"]), "rooms.0.before": [str(mid)]}})
     assert (await ctx["client"].get(f"/api/files/{mid}", headers=auth(ctx, "cleaner"))).status_code == 404
-

@@ -60,4 +60,3 @@ export const publicReportUrl = (shareToken: string) => `${BASE}/public/reports/$
 
 export const LOGO_URL =
   "https://customer-assets-lqy194kg.emergentagent.net/job_73724556-664b-45a9-8dc1-ea0e2573ffb5/artifacts/7ad33ebc61f9950d_Britsmaid%20Logo.jpg";
-

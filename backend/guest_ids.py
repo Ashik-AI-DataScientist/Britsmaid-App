@@ -282,4 +282,3 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         return {"ok": True}
 
     return purge
-
