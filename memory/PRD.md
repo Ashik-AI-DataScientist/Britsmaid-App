@@ -31,6 +31,13 @@ JWT email/password (Admin & Cleaning Staff roles) · iCal import per OTA · Emer
 - Payout confirmations: admin marks month paid (amount, date, method, reference) → receipt BM-PAY-YYYY-NNNN; owners see Paid/Pending + Payouts tab with PDF receipts
 - Emergent-managed Google sign-in (only for emails pre-created by admin; role from existing account)
 
+## Iteration 4 (2026-06)
+- Add/Edit/Delete property buttons clearly visible (Villas tab, property detail, edit screen)
+- Owner info: alt phone, address + contacts list (role tags: co-owner, family, caretaker, emergency, etc.; emergency flag) with call/WhatsApp
+- Admin ashik.ma@britsmaid.in seeded from env (ADMIN2_*); Google-only admins via GOOGLE_ADMIN_EMAILS
+- Team & logins: edit any member's access type, villas, name, phone and set a new password
+- Home button on every stack screen header
+
 ## Backlog
 - P1: Export bookings back to OTAs (iCal out feed)
 - P1: WhatsApp/email send of invoices & reports

@@ -217,6 +217,7 @@ class StaffIn(BaseModel):
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
+    role: Optional[Literal["admin", "cleaner", "owner"]] = None
     phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
     password: Optional[str] = Field(default=None, min_length=6)
@@ -288,18 +289,29 @@ async def create_user(body: StaffIn, _=Depends(admin_user)):
 
 
 @api.put("/users/{uid}")
-async def update_user(uid: str, body: UserUpdate, _=Depends(admin_user)):
+async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
     u = await db.users.find_one({"_id": oid(uid), "active": True})
     if not u:
         raise HTTPException(404, "User not found")
     changes: dict[str, Any] = {}
+    if body.role and body.role != u["role"]:
+        if str(admin["_id"]) == uid:
+            raise HTTPException(400, "You cannot change your own role")
+        if body.role == "owner" and not body.property_ids:
+            raise HTTPException(400, "Assign at least one villa to the owner")
+        changes["role"] = body.role
+        if body.role != "owner":
+            changes["property_ids"] = []
+        u["role"] = body.role
     if body.name:
         changes["name"] = body.name
     if body.phone is not None:
         changes["phone"] = body.phone.strip()
     if body.password:
         changes["password_hash"] = hash_pw(body.password)
-    if body.property_ids is not None:
+    if body.property_ids is not None and u["role"] != "owner" and "role" in changes:
+        pass
+    elif body.property_ids is not None:
         if u["role"] != "owner":
             raise HTTPException(400, "Only owners have villa assignments")
         if not body.property_ids:
@@ -368,12 +380,25 @@ class IcalFeed(BaseModel):
     last_synced: Optional[str] = None
 
 
+class ContactIn(BaseModel):
+    name: str
+    role: str = "Emergency contact"  # Owner, Co-owner, Family, Caretaker, Emergency contact, Property manager, Local contact, Other
+    phone: str = ""
+    alt_phone: str = ""
+    email: str = ""
+    notes: str = ""
+    emergency: bool = False
+
+
 class PropertyIn(BaseModel):
     name: str
     location: str = ""
     owner_name: str = ""
     owner_email: str = ""
     owner_phone: str = ""
+    owner_alt_phone: str = ""
+    owner_address: str = ""
+    contacts: List[ContactIn] = []
     owner_share_percent: float = Field(70, ge=0, le=100)
     electricity_mode: Literal["split_half", "owner"] = "owner"
     base_rate: float = 0
@@ -433,6 +458,7 @@ async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
 @api.delete("/properties/{pid}")
 async def delete_property(pid: str, _=Depends(admin_user)):
     await db.properties.update_one({"_id": oid(pid)}, {"$set": {"is_deleted": True}})
+    await db.users.update_many({"property_ids": pid}, {"$pull": {"property_ids": pid}})
     return {"ok": True}
 
 # ---------------------------------------------------------------- Bookings
@@ -1186,14 +1212,22 @@ async def startup():
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
+                                  (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
                                   (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
         if not existing:
             await db.users.insert_one({"email": email.lower(), "name": name, "password_hash": hash_pw(pw), "role": role, "active": True, "created_at": now_iso()})
-        elif not verify_pw(pw, existing["password_hash"]):
-            await db.users.update_one({"_id": existing["_id"]}, {"$set": {"password_hash": hash_pw(pw), "active": True}})
+        else:
+            fix: dict[str, Any] = {"role": role, "active": True}
+            if not verify_pw(pw, existing["password_hash"]):
+                fix["password_hash"] = hash_pw(pw)
+            await db.users.update_one({"_id": existing["_id"]}, {"$set": fix})
     if await db.properties.count_documents({}) == 0:
         await seed_demo()
+    for gmail in [e.strip().lower() for e in os.environ.get("GOOGLE_ADMIN_EMAILS", "").split(",") if e.strip()]:
+        if not await db.users.find_one({"email": gmail}):
+            await db.users.insert_one({"email": gmail, "name": gmail.split("@")[0], "password_hash": hash_pw(secrets.token_urlsafe(32)), "role": "admin",
+                                       "property_ids": [], "phone": "", "active": True, "created_at": now_iso()})
     owner_email = os.environ["OWNER_EMAIL"].lower()
     if not await db.users.find_one({"email": owner_email}):
         first = await db.properties.find_one({"name": "Villa Azure"}) or await db.properties.find_one({})

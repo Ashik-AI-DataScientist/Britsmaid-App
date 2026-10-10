@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
-import { Badge, Button, Card, Empty, ErrorState, IconButton, Loading, Txt } from "@/src/ui";
+import { Badge, Button, Card, Empty, ErrorState, Loading, Txt } from "@/src/ui";
 import { spacing, radius, useTheme } from "@/src/theme";
 
 export default function Properties() {
@@ -25,7 +25,7 @@ export default function Properties() {
           <Txt v="title">Villas</Txt>
           <Txt v="caption">{q.data?.length ?? 0} properties under management</Txt>
         </View>
-        <IconButton testID="add-property-button" name="add" tone="brand" onPress={() => router.push("/property/edit")} />
+        <Button testID="add-property-button" small icon="add" title="Add property" onPress={() => router.push("/property/edit")} />
       </View>
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState message="Failed to load properties" onRetry={q.refetch} /> : (
         <FlatList

@@ -58,7 +58,7 @@ export default function CalendarScreen() {
       setSyncing(false);
     }
   };
-  const mins = syncStatus.data?.last_run ? Math.max(0, Math.round((Date.now() - new Date(syncStatus.data.last_run).getTime()) / 60000)) : null;
+  const mins = syncStatus.data?.last_run ? Math.max(0, Math.round((syncStatus.dataUpdatedAt - new Date(syncStatus.data.last_run).getTime()) / 60000)) : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>

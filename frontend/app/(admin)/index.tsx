@@ -74,6 +74,17 @@ export default function Dashboard() {
             </Card>
           </Animated.View>
 
+          <Animated.View entering={FadeInDown.delay(150).duration(400)}>
+            <Card testID="dashboard-team-card" onPress={() => router.push("/staff")} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+              <Icon name="people" size={22} color={colors.brandPrimary} />
+              <View style={{ flex: 1 }}>
+                <Txt v="subtitle" style={{ fontSize: 15 }}>Team & logins</Txt>
+                <Txt v="caption">Add people, set passwords & choose their access</Txt>
+              </View>
+              <Icon name="chevron-forward" size={18} color={colors.muted} />
+            </Card>
+          </Animated.View>
+
           <Animated.View entering={FadeInDown.delay(200).duration(400)} style={{ gap: spacing.sm }}>
             <Txt v="label">Cleaning to verify</Txt>
             {d.pending_cleaning.length === 0 ? (

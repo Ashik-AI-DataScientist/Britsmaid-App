@@ -24,18 +24,26 @@ export default function Staff() {
   const [invite, setInvite] = useState<Invitee | null>(null);
   const [busy, setBusy] = useState(false);
   const [rm, setRm] = useState<any>(null);
-  const [edit, setEdit] = useState<{ id: string; name: string; property_ids: string[] } | null>(null);
+  const [edit, setEdit] = useState<{ id: string; name: string; phone: string; role: Role; password: string; property_ids: string[]; self: boolean } | null>(null);
   const pname = (id: string) => props.data?.find((p) => p.id === id)?.name ?? "—";
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
   const saveAssign = async () => {
     if (!edit) return;
-    if (!edit.property_ids.length) return toast("Assign at least one villa", "error");
+    if (!edit.name.trim()) return toast("Name is required", "error");
+    if (edit.role === "owner" && !edit.property_ids.length) return toast("Assign at least one villa", "error");
+    if (edit.password && edit.password.length < 6) return toast("Password must be at least 6 characters", "error");
     try {
-      await api.put(`/users/${edit.id}`, { property_ids: edit.property_ids });
+      await api.put(`/users/${edit.id}`, {
+        name: edit.name.trim(),
+        phone: edit.phone,
+        ...(edit.self ? {} : { role: edit.role }),
+        ...(edit.role === "owner" ? { property_ids: edit.property_ids } : {}),
+        ...(edit.password ? { password: edit.password } : {}),
+      });
       setEdit(null);
       q.refetch();
-      toast("Villas updated");
+      toast(edit.password ? "Member updated · new password set" : "Member updated");
     } catch (e: any) {
       toast(e.message, "error");
     }
@@ -65,12 +73,13 @@ export default function Staff() {
       {q.isLoading ? <Loading /> : (
         <KeyboardAwareScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }}>
           {(q.data ?? []).map((u) => (
-            <Card key={u.id} testID={`staff-${u.id}`} onPress={u.role === "owner" ? () => setEdit({ id: u.id, name: u.name, property_ids: u.property_ids ?? [] }) : undefined} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+            <Card key={u.id} testID={`staff-${u.id}`} onPress={() => setEdit({ id: u.id, name: u.name, phone: u.phone ?? "", role: u.role, password: "", property_ids: u.property_ids ?? [], self: u.id === user?.id })} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
               <Icon name={u.role === "admin" ? "shield-checkmark-outline" : u.role === "owner" ? "home-outline" : "sparkles-outline"} size={22} color={colors.brandPrimary} />
               <View style={{ flex: 1 }}>
                 <Txt v="subtitle" style={{ fontSize: 15 }}>{u.name}</Txt>
                 <Txt v="caption">{u.email}</Txt>
-                {u.role === "owner" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"} · tap to change</Txt> : null}
+                {u.role === "owner" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"}</Txt> : null}
+                <Txt v="caption" color={colors.brandPrimary}>Tap to edit access & password</Txt>
               </View>
               <Badge label={u.role === "admin" ? "Admin" : u.role === "owner" ? "Owner" : "Cleaner"} tone={u.role === "admin" ? "brand" : u.role === "owner" ? "info" : "neutral"} />
               {u.id !== user?.id ? <IconButton testID={`staff-invite-${u.id}`} name="paper-plane-outline" size={18} tone="brand" onPress={() => setInvite({ ...u, password: null })} /> : null}
@@ -95,15 +104,28 @@ export default function Staff() {
           <Button testID="staff-save-button" title="Add member" onPress={add} loading={busy} />
         </View>
       </Sheet>
-      <Sheet visible={!!edit} onClose={() => setEdit(null)} title={`Villas for ${edit?.name ?? ""}`} testID="assign-sheet">
-        <View style={{ gap: spacing.md }}>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
-            {(props.data ?? []).map((p) => <Chip key={p.id} testID={`assign-villa-${p.id}`} label={p.name} selected={!!edit?.property_ids.includes(p.id)} onPress={() => edit && setEdit({ ...edit, property_ids: toggle(edit.property_ids, p.id) })} />)}
-          </View>
-          <Button testID="assign-save-button" title="Save villas" onPress={saveAssign} />
-        </View>
+      <Sheet visible={!!edit} onClose={() => setEdit(null)} title={`Edit ${edit?.name ?? ""}`} testID="assign-sheet">
+        {edit ? (
+          <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: spacing.md }}>
+            {!edit.self ? (
+              <>
+                <Txt v="label">Access type</Txt>
+                <Segmented testID="edit-role" value={edit.role} onChange={(r) => setEdit({ ...edit, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
+              </>
+            ) : <Txt v="caption">This is your account — role cannot be changed here.</Txt>}
+            {edit.role === "owner" ? (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+                {(props.data ?? []).map((p) => <Chip key={p.id} testID={`assign-villa-${p.id}`} label={p.name} selected={edit.property_ids.includes(p.id)} onPress={() => setEdit({ ...edit, property_ids: toggle(edit.property_ids, p.id) })} />)}
+              </View>
+            ) : null}
+            <Input testID="edit-name-input" label="Name" value={edit.name} onChangeText={(t) => setEdit({ ...edit, name: t })} />
+            <Input testID="edit-phone-input" label="WhatsApp number" keyboardType="phone-pad" value={edit.phone} onChangeText={(t) => setEdit({ ...edit, phone: t })} />
+            <Input testID="edit-password-input" label="Set new password (optional)" secureTextEntry value={edit.password} onChangeText={(t) => setEdit({ ...edit, password: t })} placeholder="Leave blank to keep current" />
+            <Button testID="assign-save-button" title="Save changes" onPress={saveAssign} />
+          </KeyboardAwareScrollView>
+        ) : null}
       </Sheet>
-      <InviteSheet invitee={invite} onClose={() => setInvite(null)} />
+      <InviteSheet key={invite ? `${invite.id}-${invite.password ?? ""}` : "none"} invitee={invite} onClose={() => setInvite(null)} />
       <ConfirmSheet visible={!!rm} title="Remove member?" message={`${rm?.name} will no longer be able to sign in.`} confirmLabel="Remove" onClose={() => setRm(null)} onConfirm={async () => { await api.del(`/users/${rm.id}`); setRm(null); q.refetch(); toast("Member removed"); }} />
     </View>
   );

@@ -5,11 +5,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
-import { Button, Card, Chip, Header, Icon, Input, Loading, Segmented, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ConfirmSheet, Header, Icon, Input, Loading, Segmented, Txt, useToast } from "@/src/ui";
 import { OTAS, otaColor } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
+import { Contact, ContactsEditor } from "@/src/components/Contacts";
 
-const blank = { name: "", location: "", owner_name: "", owner_email: "", owner_phone: "", owner_share_percent: "70", electricity_mode: "owner" as "owner" | "split_half", base_rate: "", rooms: ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"], ical_feeds: [] as { ota: string; url: string; last_synced?: string | null }[], cover_url: "", notes: "" };
+const blank = { name: "", location: "", owner_name: "", owner_email: "", owner_phone: "", owner_alt_phone: "", owner_address: "", contacts: [] as Contact[], owner_share_percent: "70", electricity_mode: "owner" as "owner" | "split_half", base_rate: "", rooms: ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"], ical_feeds: [] as { ota: string; url: string; last_synced?: string | null }[], cover_url: "", notes: "" };
 
 export default function EditProperty() {
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -24,6 +25,19 @@ export default function EditProperty() {
   const [room, setRoom] = useState("");
   const [feedOta, setFeedOta] = useState("Airbnb");
   const [feedUrl, setFeedUrl] = useState("");
+  const [del, setDel] = useState(false);
+  const remove = async () => {
+    try {
+      await api.del(`/properties/${id}`);
+      qc.invalidateQueries();
+      setDel(false);
+      toast("Property deleted");
+      router.dismissAll();
+      router.replace("/(admin)/properties");
+    } catch (e: any) {
+      toast(e.message, "error");
+    }
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -74,10 +88,17 @@ export default function EditProperty() {
             <View style={{ flex: 1 }}><Input testID="property-owner-phone-input" label="Phone" keyboardType="phone-pad" value={f.owner_phone} onChangeText={set("owner_phone")} /></View>
             <View style={{ flex: 1 }}><Input testID="property-owner-email-input" label="Email" autoCapitalize="none" keyboardType="email-address" value={f.owner_email} onChangeText={set("owner_email")} /></View>
           </View>
+          <Input testID="property-owner-alt-phone-input" label="Alternate phone" keyboardType="phone-pad" value={f.owner_alt_phone} onChangeText={set("owner_alt_phone")} />
+          <Input testID="property-owner-address-input" label="Owner address" value={f.owner_address} onChangeText={set("owner_address")} />
           <Input testID="property-share-input" label="Owner share %" keyboardType="numeric" value={f.owner_share_percent} onChangeText={set("owner_share_percent")} />
           <Txt v="caption">Britsmaid keeps {100 - (Number(f.owner_share_percent) || 0)}% of net revenue (after OTA commissions).</Txt>
           <Txt v="label">Electricity bill</Txt>
           <Segmented testID="property-electricity-mode" value={f.electricity_mode} onChange={set("electricity_mode")} options={[{ value: "owner", label: "Owner pays all" }, { value: "split_half", label: "Britsmaid pays 50%" }]} />
+        </Card>
+        <Card style={{ gap: spacing.md }}>
+          <Txt v="label">Emergency & other contacts</Txt>
+          <Txt v="caption">Co-owners, family, caretakers, local emergency contacts — tag who each person is.</Txt>
+          <ContactsEditor value={f.contacts} onChange={set("contacts")} />
         </Card>
         <Card style={{ gap: spacing.md }}>
           <Txt v="label">Rooms & common areas</Txt>
@@ -122,7 +143,9 @@ export default function EditProperty() {
         </Card>
         <Input testID="property-notes-input" label="Notes" multiline value={f.notes} onChangeText={set("notes")} />
         <Button testID="property-save-button" title={id ? "Save changes" : "Add property"} onPress={save} loading={saving} />
+        {id ? <Button testID="property-delete-from-edit" variant="danger" icon="trash-outline" title="Delete property" onPress={() => setDel(true)} /> : null}
       </KeyboardAwareScrollView>
+      <ConfirmSheet visible={del} title="Delete property?" message={`${f.name} will be removed from all lists. Past bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
     </View>
   );
 }

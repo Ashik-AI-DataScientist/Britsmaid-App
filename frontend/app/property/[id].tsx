@@ -6,7 +6,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
-import { Badge, Button, Card, ConfirmSheet, ErrorState, Icon, IconButton, Input, Loading, Row, Segmented, Sheet, Txt, useToast } from "@/src/ui";
+import { Badge, Button, Card, ConfirmSheet, ErrorState, HomeButton, Icon, IconButton, Input, Loading, Row, Segmented, Sheet, Txt, useToast } from "@/src/ui";
+import { ContactsCard } from "@/src/components/Contacts";
 import { fmtDate, fmtShort, inr, monthLabel, otaColor, thisMonth, todayISO } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
@@ -74,6 +75,7 @@ export default function PropertyDetail() {
           <View style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, flexDirection: "row", justifyContent: "space-between" }}>
             <IconButton testID="property-back-button" name="chevron-back" tone="inverse" onPress={() => router.back()} />
             <View style={{ flexDirection: "row", gap: spacing.sm }}>
+              <HomeButton tone="inverse" />
               <IconButton testID="property-edit-button" name="create-outline" tone="inverse" onPress={() => router.push(`/property/edit?id=${id}`)} />
               <IconButton testID="property-delete-button" name="trash-outline" tone="inverse" onPress={() => setDel(true)} />
             </View>
@@ -102,11 +104,10 @@ export default function PropertyDetail() {
             </Card>
           ) : null}
 
+          <ContactsCard p={v} />
+
           <Card>
-            <Txt v="label" style={{ marginBottom: spacing.xs }}>Owner & revenue share</Txt>
-            <Row label="Owner" value={v.owner_name || "—"} />
-            {v.owner_phone ? <Row label="Phone" value={v.owner_phone} /> : null}
-            {v.owner_email ? <Row label="Email" value={v.owner_email} /> : null}
+            <Txt v="label" style={{ marginBottom: spacing.xs }}>Revenue share</Txt>
             <Row label="Owner share" value={`${v.owner_share_percent}%`} />
             <Row label="Britsmaid share" value={`${100 - v.owner_share_percent}%`} />
             <Row label="Electricity" value={v.electricity_mode === "split_half" ? "Britsmaid pays 50%" : "Owner managed"} />
@@ -174,6 +175,10 @@ export default function PropertyDetail() {
             </View>
           </Card>
           <Button testID="property-cleaning-history" variant="ghost" icon="sparkles-outline" title="Cleaning history" onPress={() => router.push(`/cleaning?property_id=${id}`)} />
+          <View style={{ flexDirection: "row", gap: spacing.sm }}>
+            <Button testID="property-edit-bottom" style={{ flex: 1 }} variant="secondary" icon="create-outline" title="Edit property" onPress={() => router.push(`/property/edit?id=${id}`)} />
+            <Button testID="property-delete-bottom" style={{ flex: 1 }} variant="danger" icon="trash-outline" title="Delete" onPress={() => setDel(true)} />
+          </View>
           <Txt v="caption" style={{ textAlign: "center" }}>Added {fmtDate(v.created_at)}</Txt>
         </View>
       </ScrollView>

@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { fonts, makeStyles, radius, spacing, useTheme } from "@/src/theme";
+import { useAuth } from "@/src/auth";
 
 export type IconName = React.ComponentProps<typeof Ionicons>["name"];
 export const Icon = Ionicons;
@@ -159,6 +160,23 @@ export function Segmented<T extends string>({ options, value, onChange, testID }
 }
 
 // ---------------------------------------------------------------- Header
+export function HomeButton({ tone = "brand" }: { tone?: "brand" | "inverse" }) {
+  const router = useRouter();
+  const { user } = useAuth();
+  const home = user?.role === "owner" ? "/owner" : user?.role === "cleaner" ? "/cleaning" : "/(admin)";
+  return (
+    <IconButton
+      testID="header-home-button"
+      name="home"
+      tone={tone}
+      onPress={() => {
+        if (router.canDismiss()) router.dismissAll();
+        router.replace(home as any);
+      }}
+    />
+  );
+}
+
 export function Header({ title, subtitle, back, right }: { title: string; subtitle?: string; back?: boolean; right?: React.ReactNode }) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -171,6 +189,7 @@ export function Header({ title, subtitle, back, right }: { title: string; subtit
         {subtitle ? <Txt v="caption" numberOfLines={1}>{subtitle}</Txt> : null}
       </View>
       {right}
+      {back ? <HomeButton /> : null}
     </View>
   );
 }

@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 4: Add/delete properties with contacts, Ashik admin login, user role/password/name/phone edits, header-home-button on stack screens — all verified. Backend: 10/10 new tests pass in test_iteration4.py (plus prior 63 regression tests still green). Coverage — Ashik: POST /api/auth/login with ashik.ma@britsmaid.in/Britsmaid2026@ashik returns role=admin + token. Properties: POST /api/properties persists owner_alt_phone, owner_address, contacts[]; GET round-trips 3 contacts with mixed roles (Caretaker, Co-owner, Emergency contact) and emergency flag; PUT appends a 4th contact and updates owner_address; DELETE flips is_deleted and removes from GET /api/properties. Users: PUT /api/users/{id} role switches cleaner->admin->cleaner, promote to owner requires property_ids (400 without, 200 with), switching away from owner clears property_ids to []; new password invalidates old (401) and the new one logs in (200); name & phone update persisted; admin cannot change own role (400) and remains admin. All 10 tests use new TEST_* users/villas and clean up after themselves — seeded accounts not modified. Frontend (390x844 mobile, Ashik logged in): Villas tab shows add-property-button, property card -> property/[id] renders property-contacts-card (Owner section with call/whatsapp icons visible; empty-state 'No emergency or other contacts yet' when none), property-edit-bottom, property-delete-bottom and header-home-button. property/edit shows contact-add-button, header-home-button and property-delete-from-edit. Contact sheet (contact-sheet) exposes role chips (Co-owner, Family member, Emergency contact, Caretaker, Property manager, Local contact, Security, Maintenance, Other), contact-name-input, contact-phone-input, contact-emergency-toggle, contact-save-button. header-home-button is auto-rendered by the shared Header whenever `back` is set, so it is present on property/[id], property/edit, staff, cleaning/[id], booking/new, invoice/[id], invoice/new, report/[id], report/new, report/settlement, and owner/[id]. Dashboard dashboard-team-card -> /staff shows staff-add-button, staff-invite-<id>, staff-remove-<id>; tapping a staff-<id> row opens assign-sheet with edit-role (Cleaner|Villa owner|Admin), edit-name-input, edit-phone-input, edit-password-input (secure) and assign-save-button. No critical issues found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iteration4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1276 lines — still well above the 700-line guideline. Property/user routers add new fields but overall file keeps growing; splitting into routers (users, properties, bookings, cleaning, reports, payouts, sync) would help maintenance.",
+    "update_user() has a dead branch at lines 312-313 (`if body.property_ids is not None and u['role'] != 'owner' and 'role' in changes: pass`) — the condition is only truthy when role was just set to a non-owner value, in which case the elif cannot run anyway. The `pass` is a no-op; the logic is correct but the branch can be simplified/removed for clarity.",
+    "PropertyIn.contacts has no server-side bound on list length; a hostile admin could POST thousands of contacts. Consider `Field(max_length=50)` or similar.",
+    "DELETE /api/properties/{pid} soft-deletes with is_deleted=True but does not revoke owner.property_ids references — if the sole villa of an owner is deleted, the owner retains a dangling pid and their list_properties returns []. Consider pulling the pid from all owners when a property is deleted."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/iteration_4.json"
+  ],
+  "success_rate": {"backend": "100% (10/10 new iteration-4 tests)", "frontend": "100% — all testIDs mentioned in the review request are present and reachable on mobile viewport"},
+  "seed_data_creation": "Tests create & tear down TEST_Villa_Contacts, TEST_Villa_Delete and TEST_Iter4 users (deactivated via DELETE). Seeded Villa Azure / Casa Palms untouched. Seeded admin, Ashik, cleaner, and owner accounts untouched.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iteration 4 testIDs — Villas: add-property-button, property-card-<id>, property-edit-bottom, property-delete-bottom, property-delete-from-edit, property-contacts-card. Contacts: contact-add-button, contact-sheet, contact-role-<role>, contact-name-input, contact-phone-input, contact-alt-phone-input (if present), contact-email-input (if present), contact-notes-input (if present), contact-emergency-toggle, contact-save-button. Header: header-back-button + header-home-button auto-rendered when Header has back=true. Staff: dashboard-team-card -> /staff with staff-add-button, staff-<uid>, staff-invite-<uid>, staff-remove-<uid>, staff-villas-<uid>; assign-sheet with edit-role / edit-role-{cleaner,owner,admin}, edit-name-input, edit-phone-input, edit-password-input, assign-save-button. Backend contact schema: name,role,phone,alt_phone,email,notes,emergency.",
+  "rca_of_issue": "N/A — all four new feature areas implemented correctly and verified end-to-end."
+}

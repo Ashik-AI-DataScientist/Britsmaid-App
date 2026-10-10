@@ -16,14 +16,9 @@ export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onC
   const toast = useToast();
   const { colors } = useTheme();
   const [password, setPassword] = useState<string | null>(null);
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState(invitee?.phone ?? "");
   const [busy, setBusy] = useState(false);
   const pw = invitee?.password ?? password;
-
-  React.useEffect(() => {
-    setPassword(null);
-    setPhone(invitee?.phone ?? "");
-  }, [invitee]);
 
   if (!invitee) return null;
   const msg = pw ? inviteMessage(invitee, pw) : "";
