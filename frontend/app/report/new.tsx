@@ -74,7 +74,7 @@ export default function NewOwnerReport() {
           <Button testID="report-submit-button" title="Create report" icon="send" onPress={submit} loading={saving} />
         </View>
       </KeyboardAwareScrollView>
-      <CaptureSheet visible={capture} onClose={() => setCapture(false)} allowVideo purpose="Capture photos or a walkthrough video so the owner can see the current status of their house." onUploaded={(m) => setMedia((x) => [...x, ...m])} />
+      <CaptureSheet visible={capture} onClose={() => setCapture(false)} allowVideo purpose="Capture photos or a walkthrough video so the owner can see the current status of their house." onUploaded={async (m) => { setMedia((x) => [...x, ...m]); }} />
     </View>
   );
 }

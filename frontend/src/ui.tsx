@@ -41,6 +41,9 @@ export function Button({ title, onPress, variant = "primary", icon, loading, dis
   return (
     <Pressable
       testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: !!disabled || !!loading }}
       onPress={onPress}
       disabled={disabled || loading}
       style={({ pressed }) => [
@@ -54,13 +57,23 @@ export function Button({ title, onPress, variant = "primary", icon, loading, dis
   );
 }
 
-export function IconButton({ name, onPress, testID, tone = "default", size = 22 }: { name: IconName; onPress?: () => void; testID?: string; tone?: "default" | "brand" | "inverse"; size?: number }) {
+const actionLabels: Partial<Record<IconName, string>> = {
+  "id-card-outline": "Guest IDs", "people-outline": "Team", "log-out-outline": "Sign out",
+  "chevron-back": "Back", "chevron-forward": "Next", home: "Home", sync: "Sync",
+  "hourglass-outline": "Syncing", add: "Add booking", "person-add-outline": "Add member",
+  "paper-plane-outline": "Invite", "trash-outline": "Delete", "create-outline": "Edit",
+  "document-text-outline": "Invoice", call: "Call", "logo-whatsapp": "WhatsApp", close: "Close",
+};
+
+export function IconButton({ name, label, onPress, testID, tone = "default", size = 22 }: { name: IconName; label?: string; onPress?: () => void; testID?: string; tone?: "default" | "brand" | "inverse"; size?: number }) {
   const { colors } = useTheme();
+  const text = label ?? actionLabels[name] ?? name.replace(/-outline$|-sharp$/g, "").replace(/-/g, " ");
   const bg = tone === "brand" ? colors.brandTertiary : tone === "inverse" ? colors.scrim : colors.surfaceSecondary;
   const fg = tone === "brand" ? colors.brandPrimary : tone === "inverse" ? colors.onSurfaceInverse : colors.onSurface;
   return (
-    <Pressable testID={testID} onPress={onPress} hitSlop={6} style={({ pressed }) => ({ width: 44, height: 44, borderRadius: radius.pill, backgroundColor: bg, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.7 : 1 })}>
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={text} onPress={onPress} hitSlop={6} style={({ pressed }) => ({ minWidth: 44, maxWidth: 96, minHeight: 54, paddingHorizontal: 8, paddingVertical: 6, gap: 3, borderRadius: radius.md, backgroundColor: bg, alignItems: "center", justifyContent: "center", opacity: pressed ? 0.7 : 1 })}>
       <Icon name={name} size={size} color={fg} />
+      <Text style={{ color: fg, fontFamily: fonts.textSemi, fontSize: 11, lineHeight: 14, textAlign: "center" }}>{text}</Text>
     </Pressable>
   );
 }
@@ -163,11 +176,12 @@ export function Segmented<T extends string>({ options, value, onChange, testID }
 export function HomeButton({ tone = "brand" }: { tone?: "brand" | "inverse" }) {
   const router = useRouter();
   const { user } = useAuth();
-  const home = user?.role === "owner" ? "/owner" : user?.role === "cleaner" ? "/cleaning" : "/(admin)";
+  const home = user?.role === "owner" ? "/owner" : user?.role === "cleaner" || user?.role === "supervisor" ? "/cleaning" : "/(admin)";
   return (
     <IconButton
       testID="header-home-button"
       name="home"
+      label="Home"
       tone={tone}
       onPress={() => {
         if (router.canDismiss()) router.dismissAll();
@@ -183,7 +197,7 @@ export function Header({ title, subtitle, back, right }: { title: string; subtit
   const { colors } = useTheme();
   return (
     <View style={{ paddingTop: insets.top + spacing.sm, paddingBottom: spacing.md, paddingHorizontal: spacing.lg, backgroundColor: colors.surface, borderBottomWidth: 1, borderBottomColor: colors.divider, flexDirection: "row", alignItems: "center", gap: spacing.md }}>
-      {back ? <IconButton testID="header-back-button" name="chevron-back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))} /> : null}
+      {back ? <IconButton testID="header-back-button" name="chevron-back" label="Back" onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))} /> : null}
       <View style={{ flex: 1 }}>
         <Txt v="title" numberOfLines={1}>{title}</Txt>
         {subtitle ? <Txt v="caption" numberOfLines={1}>{subtitle}</Txt> : null}
@@ -280,7 +294,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const show = useCallback((msg: string, tone: ToastT["tone"] = "success") => {
     setToast({ msg, tone });
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setToast(null), 3200);
+    timer.current = tone === "error" ? null : setTimeout(() => setToast(null), 3200);
   }, []);
   const icon: IconName = toast?.tone === "error" ? "alert-circle" : toast?.tone === "info" ? "information-circle" : "checkmark-circle";
   const tint = toast?.tone === "error" ? colors.error : toast?.tone === "info" ? colors.info : colors.success;
@@ -288,10 +302,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastCtx.Provider value={show}>
       {children}
       {toast ? (
-        <Animated.View entering={FadeInDown} exiting={FadeOutUp} pointerEvents="none" style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, zIndex: 999, elevation: 10 }}>
+        <Animated.View entering={FadeInDown} exiting={FadeOutUp} pointerEvents="auto" style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, zIndex: 999, elevation: 10 }}>
           <View testID="toast" style={{ backgroundColor: colors.surfaceInverse, borderRadius: radius.md, padding: spacing.md, flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
             <Icon name={icon} size={20} color={tint} />
-            <Text style={{ color: colors.onSurfaceInverse, fontFamily: fonts.textSemi, fontSize: 14, flex: 1 }}>{toast.msg}</Text>
+            <Text style={{ color: colors.onSurfaceInverse, fontFamily: fonts.textSemi, fontSize: 14, flex: 1 }}>{toast.msg}</Text><Pressable accessibilityRole="button" accessibilityLabel="Dismiss message" onPress={() => setToast(null)}><Text style={{ color: colors.onSurfaceInverse, padding: 8 }}>Close</Text></Pressable>
           </View>
         </Animated.View>
       ) : null}

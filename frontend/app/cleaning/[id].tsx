@@ -26,6 +26,12 @@ export default function CleaningSession() {
   const [target, setTarget] = useState<{ idx: number; phase: "before" | "after" } | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [adminOptions, setAdminOptions] = useState(false);
+  const [adminAction, setAdminAction] = useState<"reopen" | "complete" | "reassign">("reopen");
+  const [adminNote, setAdminNote] = useState("");
+  const [adminAssignee, setAdminAssignee] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [activeRoom, setActiveRoom] = useState(0);
 
   if (q.isLoading) return <Loading label="Loading task details..." />;
   if (q.isError) return <View style={{ flex: 1 }}><Header back title="Cleaning" /><ErrorState message="Could not load task details" onRetry={q.refetch} /></View>;
@@ -64,6 +70,15 @@ export default function CleaningSession() {
     setSubmitting(true);
     try { refresh(await api.post(`/cleaning/${id}/review`, { approved, notes: notes ?? "" })); setNotes(null); }
     catch (e: any) { toast(e.message, "error"); }
+    finally { setSubmitting(false); }
+  };
+  const saveAdminAction = async () => {
+    setSubmitting(true);
+    try {
+      refresh(await api.post(`/cleaning/${id}/admin-action`, { action: adminAction, note: adminNote, assigned_to: adminAssignee }));
+      setAdminNote(""); setAdminOptions(false); setNotes(null); setAdminAssignee(null);
+      toast(adminAction === "complete" ? "Marked complete with admin note" : "Cleaning reopened and ready to assign");
+    } catch (e: any) { toast(e.message, "error"); }
     finally { setSubmitting(false); }
   };
   const toggleCheck = async (idx: number, room: any, item: string) => {
@@ -108,9 +123,36 @@ export default function CleaningSession() {
           <Txt v="caption">{c.status === "awaiting_review" ? "Submitted for supervisor review" : done ? (c.completed_at ? `Completed ${fmtDate(c.completed_at)}` : "Read-only cleaning record") : "Photograph each room before you start, then again after cleaning & setting up."}</Txt>
         </Card>
 
+        {isAdmin ? <Card style={{ gap: spacing.sm }}>
+          <Button title={adminOptions ? "Close admin options" : "Admin: reopen, reassign or complete"} variant="secondary" onPress={() => { setAdminOptions(!adminOptions); setAdminAssignee(c.assigned_to ?? null); setAdminAction(c.status === "completed" ? "reopen" : "complete"); }} />
+          {adminOptions ? <>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+              {([ ["reopen", "Reopen cleaning"], ["reassign", "Send to another cleaner"], ["complete", "Mark complete"] ] as const).map(([value, label]) => <Chip key={value} label={label} selected={adminAction === value} onPress={() => setAdminAction(value)} />)}
+            </View>
+            <Txt>{adminAction === "complete" ? "Complete this task even if photos, checklists or supervisor review are missing." : "Send this task back to To do. Previous photos and checklists stay in history; the cleaner starts a fresh round."}</Txt>
+            {adminAction !== "complete" ? <>
+              <Txt v="label">Cleaner</Txt>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+                {(staff.data ?? []).filter(u => (u.property_ids ?? []).includes(c.property_id)).map(u => <Chip key={u.id} label={u.name} selected={adminAssignee === u.id} onPress={() => setAdminAssignee(u.id)} />)}
+              </View>
+              {!adminAssignee ? <Txt>No cleaner selected. Reopen keeps this task unassigned.</Txt> : null}
+            </> : null}
+            <Input testID="cleaning-admin-note" label="Reason (required)" value={adminNote} onChangeText={setAdminNote} multiline />
+            <Button testID="cleaning-admin-save" title="Save with note" disabled={submitting || !adminNote.trim() || (adminAction === "reassign" && !adminAssignee)} onPress={saveAdminAction} />
+          </> : null}
+          <Button title={showHistory ? "Hide admin history" : "View admin history"} variant="ghost" onPress={() => setShowHistory(!showHistory)} />
+          {showHistory ? c.admin_history?.length ? c.admin_history.slice().reverse().map((event: any, i: number) => <View key={i} style={{ gap: spacing.xs }}>
+            <Txt>{event.action} · {event.actor_name ?? "Admin"} · {new Date(event.at).toLocaleString()}</Txt>
+            <Txt>{event.note}</Txt>
+            <Txt v="caption">Previous status: {event.before?.status}</Txt>
+            {(event.before?.rooms ?? []).map((room: any, idx: number) => <View key={idx}><Txt v="caption">{room.name} · {(room.checked ?? []).length} checklist items recorded</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{[...(room.before ?? []), ...(room.after ?? [])].map((mid: string, k: number) => <MediaThumb key={`${mid}-${k}`} id={mid} size={64} />)}</View></View>)}
+          </View>) : <Txt>No admin actions yet.</Txt> : null}
+        </Card> : null}
+
         {canReview && !done ? (
           <Card style={{ gap: spacing.sm }}>
             <Txt v="label">Assign cleaner</Txt>
+            {staff.isLoading ? <Loading label="Loading cleaners..." /> : staff.isError ? <ErrorState message="Could not load cleaners" onRetry={staff.refetch} /> : !(staff.data ?? []).some((u: any) => (u.property_ids ?? []).includes(c.property_id)) ? <Txt>No cleaner has access to this property yet. Ask the admin to assign one.</Txt> : null}
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
               {(staff.data ?? []).filter((u) => (u.property_ids ?? []).includes(c.property_id)).map((u) => <Chip key={u.id} testID={`assign-${u.id}`} label={u.name} selected={c.assigned_to === u.id} onPress={() => assign(u.id).catch(e => toast(e.message, "error"))} />)}
             </View>
@@ -122,10 +164,12 @@ export default function CleaningSession() {
           <Card style={{ gap: spacing.sm }}>
             <Input label="Review notes (required for rework)" value={notes ?? ""} onChangeText={setNotes} multiline />
             <Button title="Approve: ready for guest" onPress={() => review(true)} loading={submitting} />
-            <Button title="Return for rework" onPress={() => review(false)} disabled={submitting} />
+            <Button title="Send back to cleaner" onPress={() => review(false)} disabled={submitting || !notes?.trim()} />
           </Card>
         ) : null}
+        {!canReview && !done && c.rooms.length ? <Card style={{ gap: spacing.sm }}><Txt v="subtitle">Room {activeRoom + 1} of {c.rooms.length}</Txt><Txt>1. Add a before photo · 2. Add an after photo · 3. Tick the checks</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>{c.rooms.map((room: any, idx: number) => <Chip key={idx} label={room.name} selected={activeRoom === idx} onPress={() => setActiveRoom(idx)} />)}</View></Card> : null}
         {c.rooms.map((room: any, idx: number) => {
+          if (!canReview && !done && idx !== activeRoom) return null;
           const ok = room.before.length && room.after.length;
           return (
             <Animated.View key={idx} entering={FadeInDown.delay(idx * 40)}>
@@ -148,6 +192,8 @@ export default function CleaningSession() {
             </Animated.View>
           );
         })}
+        {!canReview && !done && activeRoom < c.rooms.length - 1 ? <Button title="Next room" variant="secondary" onPress={() => setActiveRoom(activeRoom + 1)} /> : null}
+        {!done ? <Card><Txt v="label">Still needed before you send</Txt>{c.rooms.filter((r: any) => !r.before.length || !r.after.length || (r.checked ?? []).length !== (c.checklist_items ?? []).length).map((r: any) => <Txt key={r.name}>{r.name}: {[!r.before.length ? "before photo" : "", !r.after.length ? "after photo" : "", (r.checked ?? []).length !== (c.checklist_items ?? []).length ? "finish checks" : ""].filter(Boolean).join(", ")}</Txt>)}{c.rooms.every((r: any) => r.before.length && r.after.length && (r.checked ?? []).length === (c.checklist_items ?? []).length) ? <Txt>Everything is saved. You can send this for review.</Txt> : null}</Card> : null}
 
         {!done ? (
           <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
@@ -160,7 +206,7 @@ export default function CleaningSession() {
           <Button testID="cleaning-complete-button" icon="checkmark-done" title={c.rooms_done === c.rooms_total ? "Submit for supervisor review" : `Document ${c.rooms_total - c.rooms_done} more room${c.rooms_total - c.rooms_done === 1 ? "" : "s"}`} disabled={!c.rooms_total || c.rooms_done !== c.rooms_total || c.rooms.some((r: any) => (r.checked ?? []).length !== (c.checklist_items ?? []).length)} onPress={complete} loading={submitting} />
         </View>
       ) : null}
-      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m) => addMedia(m.map((x) => x.id)).catch((e) => toast(e.message, "error"))} />
+      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m) => addMedia(m.map((x) => x.id))} />
     </View>
   );
 }

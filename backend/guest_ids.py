@@ -106,6 +106,12 @@ class IDReview(BaseModel):
     reason: str = Field(default="", max_length=1000)
 
 
+class GuestAdminAction(BaseModel):
+    action: Literal["check_in", "undo_check_in", "approve_id", "reset_id", "reject_id"]
+    note: str = Field(min_length=1, max_length=2000)
+    document_id: str | None = None
+
+
 def register_guest_routes(api, db, admin_user, oid, now_iso):
     async def audit(action, actor, document_id=None, booking_id=None):
         await db.guest_id_audit.insert_one({"action": action, "actor_id": str(actor),
@@ -129,6 +135,27 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         await active_booking(link["booking_id"])
         return link
 
+    @api.get("/guest-bookings")
+    async def guest_bookings(user=Depends(admin_user)):
+        today = datetime.now(INDIA_TZ).date().isoformat()
+        bookings = await db.bookings.find({"status": "confirmed", "check_out": {"$gt": today}}).sort("check_in", 1).to_list(1000)
+        result = []
+        for b in bookings:
+            bid = str(b["_id"])
+            documents = await db.guest_ids.find({"booking_id": bid, "status": "verified", "deleted": False,
+                "delete_after": {"$gt": now_iso()}, "expires_on": {"$gte": b["check_out"]}}).to_list(300)
+            required = set(range(1, b.get("guests", 1) + 1))
+            verified = required.intersection(d.get("guest_number") for d in documents)
+            reason = ("Guests already checked in" if b.get("guest_checked_in_at") else
+                      "Check-in date has not arrived" if b["check_in"] > today else
+                      "Every guest needs an approved, valid ID" if verified != required else "Ready for check-in")
+            prop = await db.properties.find_one({"_id": oid(b["property_id"])})
+            result.append({"id": bid, "property_name": prop.get("name", "Property") if prop else "Property",
+                **{k: b.get(k) for k in ("guest_name", "check_in", "check_out", "guests", "guest_checked_in_at")},
+                "verified_guests": len(verified), "can_check_in": reason == "Ready for check-in", "check_in_reason": reason,
+                "admin_history": b.get("admin_history", [])})
+        return result
+
     @api.post("/bookings/{bid}/guest-link")
     async def invite(bid: str, user=Depends(admin_user)):
         await active_booking(bid)
@@ -140,6 +167,55 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         await audit("invite", user["_id"], booking_id=bid)
         return {"token": token, "expires_at": expiry}
 
+    @api.post("/bookings/{bid}/guest-admin-action")
+    async def admin_action(bid: str, body: GuestAdminAction, user=Depends(admin_user)):
+        if not body.note.strip():
+            raise HTTPException(422, "Add a reason for this admin action")
+        b = await db.bookings.find_one({"_id": oid(bid)})
+        if not b:
+            raise HTTPException(404, "Booking not found")
+        event = {"action": body.action, "note": body.note.strip(), "actor_id": str(user["_id"]),
+                 "actor_name": user.get("name", "Admin"), "at": now_iso(),
+                 "before": {k: b.get(k) for k in ("status", "guest_checked_in_at", "guest_checked_in_by")}}
+        if body.action in ("check_in", "undo_check_in"):
+            if body.action == "check_in" and b.get("guest_checked_in_at"):
+                raise HTTPException(409, "Guests are already checked in")
+            if body.action == "undo_check_in" and not b.get("guest_checked_in_at"):
+                raise HTTPException(409, "Guests are not checked in")
+            update = {"$push": {"admin_history": event}}
+            if body.action == "check_in":
+                update["$set"] = {"guest_checked_in_at": now_iso(), "guest_checked_in_by": str(user["_id"]), "status": "confirmed"}
+            else:
+                update["$unset"] = {"guest_checked_in_at": "", "guest_checked_in_by": ""}
+                previous = next((e for e in reversed(b.get("admin_history", [])) if e["action"] in ("check_in", "undo_check_in")), None)
+                if previous and previous["action"] == "check_in" and previous["before"].get("status"):
+                    update["$set"] = {"status": previous["before"]["status"]}
+            result = await db.bookings.update_one({"_id": b["_id"], "status": b.get("status"), "guest_checked_in_at": b.get("guest_checked_in_at")}, update)
+            if not result.matched_count:
+                raise HTTPException(409, "Booking changed; refresh and retry")
+            await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
+        else:
+            if not body.document_id:
+                raise HTTPException(422, "Choose an ID")
+            d = await document(body.document_id)
+            if d["booking_id"] != bid:
+                raise HTTPException(404, "ID does not belong to this booking")
+            status = {"approve_id": "verified", "reset_id": "pending", "reject_id": "rejected"}[body.action]
+            event["document_id"] = body.document_id
+            event["before"] = {k: d.get(k) for k in ("status", "review_reason", "reviewed_at", "reviewed_by")}
+            try:
+                result = await db.guest_ids.update_one({"_id": d["_id"], "status": d["status"], "deleted": False},
+                    {"$set": {"status": status, "active": status != "rejected", "review_reason": body.note.strip(),
+                              "reviewed_at": now_iso(), "reviewed_by": str(user["_id"]), "verification_method": "admin_override"},
+                     "$push": {"admin_history": event}})
+            except DuplicateKeyError:
+                raise HTTPException(409, "A newer ID exists for this guest; review that ID instead")
+            if not result.matched_count:
+                raise HTTPException(409, "ID changed; refresh and retry")
+            await db.bookings.update_one({"_id": b["_id"]}, {"$push": {"admin_history": event}})
+        await db.guest_id_audit.insert_one({**event, "action": "admin_" + body.action, "booking_id": bid})
+        return {"ok": True}
+
     @api.delete("/bookings/{bid}/guest-link")
     async def revoke(bid: str, user=Depends(admin_user)):
         await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
@@ -149,7 +225,7 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
     @api.get("/guest/check-in")
     async def guest_status(link=Depends(guest_link)):
         b = await active_booking(link["booking_id"])
-        documents = await db.guest_ids.find({"booking_id": link["booking_id"], "deleted": False},
+        documents = await db.guest_ids.find({"booking_id": link["booking_id"], "deleted": False, "delete_after": {"$gt": now_iso()}},
                                            {"guest_name": 1, "status": 1, "guest_number": 1, "review_reason": 1}).to_list(300)
         return {"check_in": b["check_in"], "check_out": b["check_out"], "guests": b.get("guests", 1),
                 "retention_days": os.getenv("GUEST_ID_RETENTION_DAYS", "not configured"),
@@ -181,6 +257,9 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         if file.content_type not in ("image/jpeg", "image/png"):
             raise HTTPException(422, "Only JPEG and PNG ID images are accepted")
         data = await run_in_threadpool(sanitise_image, data)
+        # A retained-but-expired record must not hold an invisible active slot.
+        await db.guest_ids.update_many({"booking_id": link["booking_id"], "guest_number": guest_number,
+            "active": True, "delete_after": {"$lte": now_iso()}}, {"$set": {"active": False}})
         _, _, _, retention = await run_in_threadpool(private_store)
         key = f"guest-ids/{uuid.uuid4()}.jpg"
         stored = await run_in_threadpool(store_image, key, data)
@@ -276,8 +355,12 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         slots = {d.get("guest_number") for d in documents}
         if not set(range(1, b.get("guests", 1) + 1)).issubset(slots):
             raise HTTPException(409, "Every guest needs an independently reviewed, valid ID")
+        result = await db.bookings.update_one({"_id": b["_id"], "status": "confirmed", "guest_checked_in_at": None,
+            **{k: b.get(k) for k in ("guests", "check_in", "check_out", "property_id")}},
+            {"$set": {"guest_checked_in_at": now_iso(), "guest_checked_in_by": str(user["_id"])}})
+        if not result.matched_count:
+            raise HTTPException(409, "Booking changed; refresh before checking in")
         await audit("check_in", user["_id"], booking_id=bid)
-        await db.bookings.update_one({"_id": b["_id"]}, {"$set": {"guest_checked_in_at": now_iso(), "guest_checked_in_by": str(user["_id"])}})
         await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         return {"ok": True}
 

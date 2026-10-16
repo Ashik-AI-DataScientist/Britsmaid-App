@@ -340,8 +340,8 @@ async def test_deletion_failure_keeps_record_for_retry(ctx, monkeypatch):
     def failed_delete(doc):
         raise RuntimeError("Storage unavailable")
     monkeypatch.setattr(guest_ids, "delete_image", failed_delete)
-    with pytest.raises(Exception):
-        await ctx["client"].delete(f"/api/guest-ids/{did}", headers=auth(ctx))
+    response = await ctx["client"].delete(f"/api/guest-ids/{did}", headers=auth(ctx))
+    assert response.status_code == 503 and response.json()["reference"]
     d = await ctx["db"].guest_ids.find_one({"_id": ObjectId(did)})
     assert not d["deleted"] and "storage_key" in d
 
@@ -358,3 +358,96 @@ async def test_uploaded_cleaning_photo_loses_access_after_reassignment(ctx):
     await ctx["db"].media.insert_one({"_id": mid, "owner_id": str(ctx["users"]["cleaner"]["_id"]), "is_deleted": False, "storage_path": "photo", "kind": "image"})
     await ctx["db"].cleaning.update_one({"_id": ObjectId(ctx["cid"])}, {"$set": {"assigned_to": str(ctx["users"]["other_cleaner"]["_id"]), "rooms.0.before": [str(mid)]}})
     assert (await ctx["client"].get(f"/api/files/{mid}", headers=auth(ctx, "cleaner"))).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_guest_booking_progress_and_repeat_checkin(ctx):
+    headers = await invitation(ctx)
+    for slot in (1, 2):
+        before = (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()[0]
+        assert before["verified_guests"] == slot - 1 and not before["can_check_in"]
+        did = (await upload_id(ctx, headers, slot)).json()["id"]
+        await ctx["client"].get(f"/api/guest-ids/{did}/image", headers=auth(ctx))
+        await ctx["client"].post(f"/api/guest-ids/{did}/review", headers=auth(ctx), json={"status": "verified"})
+    ready = (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()[0]
+    assert ready["can_check_in"] and ready["verified_guests"] == 2
+    url = f'/api/bookings/{ctx["bid"]}/check-in'
+    assert (await ctx["client"].post(url, headers=auth(ctx))).status_code == 200
+    assert (await ctx["client"].post(url, headers=auth(ctx))).status_code == 409
+    checked = (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()[0]
+    assert checked["guest_checked_in_at"] and not checked["can_check_in"]
+    assert await ctx["db"].guest_id_audit.count_documents({"action": "check_in"}) == 1
+
+
+@pytest.mark.asyncio
+async def test_guest_booking_queue_dates_and_access(ctx):
+    for role in ("owner", "cleaner", "supervisor"):
+        assert (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx, role))).status_code == 403
+    today = datetime.now(guest_ids.INDIA_TZ).date()
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_in": (today + timedelta(days=1)).isoformat()}})
+    upcoming = (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()[0]
+    assert not upcoming["can_check_in"] and upcoming["check_in_reason"] == "Check-in date has not arrived"
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_out": today.isoformat()}})
+    assert (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json() == []
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "cleaner", "supervisor"])
+async def test_admin_overrides_are_admin_only(ctx, role):
+    for url, body in [(f'/api/cleaning/{ctx["cid"]}/admin-action', {"action": "complete", "note": "Test"}),
+                      (f'/api/bookings/{ctx["bid"]}/guest-admin-action', {"action": "check_in", "note": "Test"})]:
+        assert (await ctx["client"].post(url, headers=auth(ctx, role), json=body)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_admin_cleaning_override_reopen_preserves_evidence(ctx):
+    url = f'/api/cleaning/{ctx["cid"]}/admin-action'
+    for note in ("", "   "):
+        assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "complete", "note": note})).status_code == 422
+    complete = await ctx["client"].post(url, headers=auth(ctx), json={"action": "complete", "note": "Inspected in person; camera unavailable"})
+    assert complete.status_code == 200 and complete.json()["status"] == "completed"
+    await ctx["db"].cleaning.update_one({"_id": ObjectId(ctx["cid"])}, {"$set": {"rooms.0.before": ["old-photo"], "rooms.0.checked": server.CHECKLIST}})
+    uid = str(ctx["users"]["other_cleaner"]["_id"])
+    assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "reassign", "assigned_to": uid, "note": "Needs rework"})).status_code == 422
+    await ctx["db"].users.update_one({"_id": ObjectId(uid)}, {"$set": {"property_ids": [ctx["p1"]]}})
+    reopened = await ctx["client"].post(url, headers=auth(ctx), json={"action": "reassign", "assigned_to": uid, "note": "Bathroom not cleaned"})
+    data = reopened.json()
+    assert reopened.status_code == 200 and data["status"] == "pending" and data["assigned_to"] == uid
+    assert "completed_at" not in data and data["rooms"][0]["before"] == [] and data["rooms"][0]["checked"] == []
+    assert data["admin_history"][-1]["before"]["rooms"][0]["before"] == ["old-photo"]
+    assert data["admin_history"][-1]["note"] == "Bathroom not cleaned"
+    assert (await ctx["client"].get(f'/api/cleaning/{ctx["cid"]}', headers=auth(ctx, "cleaner"))).status_code == 404
+    assert (await ctx["client"].put(f'/api/cleaning/{ctx["cid"]}', headers=auth(ctx, "other_cleaner"), json={"notes": "Starting rework"})).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_guest_admin_override_undo_and_privacy(ctx):
+    invite = await invitation(ctx)
+    url = f'/api/bookings/{ctx["bid"]}/guest-admin-action'
+    for note in ("", "   "):
+        assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "check_in", "note": note})).status_code == 422
+    today = datetime.now(guest_ids.INDIA_TZ).date()
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_in": (today + timedelta(days=1)).isoformat()}})
+    assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "check_in", "note": "Early arrival; IDs inspected in person"})).status_code == 200
+    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 401
+    assert await ctx["db"].guest_ids.count_documents({"status": "verified"}) == 0
+    for path in ("/api/bookings", f'/api/bookings/{ctx["bid"]}'):
+        assert "admin_history" not in (await ctx["client"].get(path, headers=auth(ctx, "owner"))).text
+    assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "undo_check_in", "note": "Wrong guest checked in"})).status_code == 200
+    booking = await ctx["db"].bookings.find_one({"_id": ObjectId(ctx["bid"])})
+    assert "guest_checked_in_at" not in booking and len(booking["admin_history"]) == 2
+    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_guest_admin_review_can_be_reversed_without_exposing_other_booking(ctx):
+    did = (await upload_id(ctx, await invitation(ctx))).json()["id"]
+    url = f'/api/bookings/{ctx["bid"]}/guest-admin-action'
+    for action, status in (("approve_id", "verified"), ("reset_id", "pending"), ("reject_id", "rejected")):
+        r = await ctx["client"].post(url, headers=auth(ctx), json={"action": action, "document_id": did, "note": "Admin correction"})
+        assert r.status_code == 200
+        document = await ctx["db"].guest_ids.find_one({"_id": ObjectId(did)})
+        assert document["status"] == status
+    assert len(document["admin_history"]) == 3
+    other = ObjectId()
+    await ctx["db"].bookings.insert_one({"_id": other, "status": "confirmed"})
+    assert (await ctx["client"].post(f'/api/bookings/{other}/guest-admin-action', headers=auth(ctx), json={"action": "reset_id", "document_id": did, "note": "Wrong booking"})).status_code == 404

@@ -86,3 +86,8 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+.local-preview/
+
+# Generated local QA output
+test_reports/edge-audit/*.xml
+test_reports/edge-audit/*.json
