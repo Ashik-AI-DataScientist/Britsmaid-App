@@ -43,7 +43,7 @@ if ($CheckOnly) {
     exit 0
 }
 
-$Host.UI.RawUI.WindowTitle = 'Britsmaid - Local testing'
+try { $Host.UI.RawUI.WindowTitle = 'Britsmaid - Local testing' } catch { }
 $mutex = New-Object Threading.Mutex($false, 'Local\BritsmaidLocalPreviewLauncher')
 if (!$mutex.WaitOne(0)) { Write-Host 'Britsmaid is already running. Use its open window for the phone link.'; Start-Sleep -Seconds 4; exit }
 $lastAddress = $null
@@ -59,7 +59,7 @@ try {
             $child = Start-Process -FilePath $pythonPath -ArgumentList $serverArguments -WorkingDirectory $projectPath -WindowStyle Hidden -RedirectStandardOutput (Join-Path $previewDirectory 'server.log') -RedirectStandardError (Join-Path $previewDirectory 'server-error.log') -PassThru
             $child.Id | Set-Content (Join-Path $previewDirectory 'server.pid')
             $lastAddress = $address
-            Clear-Host
+            try { Clear-Host } catch { }
             Write-Host 'BRITSMAID - LOCAL TESTING' -ForegroundColor Cyan
             Write-Host "`nOn this PC: http://127.0.0.1:8765/"
             if ($address) { Write-Host "`nENTER THIS ON YOUR PHONE: http://${address}:8765/" -ForegroundColor Green } else { Write-Host "`nConnect your PC to Wi-Fi to get a phone link." -ForegroundColor Yellow }
