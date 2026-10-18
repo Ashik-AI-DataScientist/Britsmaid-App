@@ -77,7 +77,8 @@ export default function OwnerVilla() {
         )
       ) : tab === "payouts" ? (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={payouts.isRefetching} onRefresh={payouts.refetch} tintColor={colors.brandPrimary} />}>
-          {payouts.isLoading ? <Loading /> : (payouts.data ?? []).length === 0 ? <Empty icon="cash-outline" title="No payouts recorded yet" subtitle="Payment confirmations from Britsmaid will appear here with receipts." /> : null}
+          {payouts.isError ? <ErrorState message="Could not load payments. Please try again." onRetry={payouts.refetch} /> : null}
+          {payouts.isLoading ? <Loading /> : !payouts.isError && (payouts.data ?? []).length === 0 ? <Empty icon="cash-outline" title="No payouts recorded yet" subtitle="Payment confirmations from Britsmaid will appear here with receipts." /> : null}
           {(payouts.data ?? []).map((p) => (
             <Card key={p.id} testID={`owner-payout-${p.id}`} style={{ gap: spacing.sm }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
@@ -94,16 +95,17 @@ export default function OwnerVilla() {
         </ScrollView>
       ) : tab === "stays" ? (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={bookings.isRefetching} onRefresh={bookings.refetch} tintColor={colors.brandPrimary} />}>
-          {bookings.isLoading ? <Loading /> : null}
+          {bookings.isLoading ? <Loading /> : bookings.isError ? <ErrorState message="Could not load stays" onRetry={bookings.refetch} /> : null}
           <Txt v="label">Current & upcoming ({upcoming.length})</Txt>
-          {upcoming.length === 0 && !bookings.isLoading ? <Card><Txt v="caption">No upcoming stays</Txt></Card> : upcoming.map(stay)}
+          {upcoming.length === 0 && !bookings.isLoading && !bookings.isError ? <Card><Txt v="caption">No upcoming stays</Txt></Card> : upcoming.map(stay)}
           <Txt v="label" style={{ marginTop: spacing.md }}>Recent stays</Txt>
-          {past.length === 0 && !bookings.isLoading ? <Card><Txt v="caption">No past stays yet</Txt></Card> : past.map(stay)}
+          {past.length === 0 && !bookings.isLoading && !bookings.isError ? <Card><Txt v="caption">No past stays yet</Txt></Card> : past.map(stay)}
         </ScrollView>
       ) : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={reports.isRefetching} onRefresh={() => { reports.refetch(); cleans.refetch(); }} tintColor={colors.brandPrimary} />}>
           <Txt v="label">Reports from Britsmaid</Txt>
-          {reports.isLoading ? <Loading /> : (reports.data ?? []).length === 0 ? <Empty icon="images-outline" title="No reports yet" subtitle="Status updates with photos & videos will appear here." /> : null}
+          {reports.isError ? <ErrorState message="Could not load property updates" onRetry={reports.refetch} /> : null}
+          {reports.isLoading ? <Loading /> : !reports.isError && (reports.data ?? []).length === 0 ? <Empty icon="images-outline" title="No reports yet" subtitle="Status updates with photos & videos will appear here." /> : null}
           {(reports.data ?? []).map((r) => (
             <Card key={r.id} testID={`owner-report-${r.id}`} onPress={() => router.push(`/report/${r.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
               <Icon name="document-text-outline" size={22} color={colors.brandPrimary} />
@@ -115,7 +117,8 @@ export default function OwnerVilla() {
             </Card>
           ))}
           <Txt v="label" style={{ marginTop: spacing.md }}>Cleaning records</Txt>
-          {(cleans.data ?? []).length === 0 && !cleans.isLoading ? <Card><Txt v="caption">No completed cleanings yet</Txt></Card> : null}
+          {cleans.isError ? <ErrorState message="Could not load cleaning records" onRetry={cleans.refetch} /> : null}
+          {(cleans.data ?? []).length === 0 && !cleans.isLoading && !cleans.isError ? <Card><Txt v="caption">No completed cleanings yet</Txt></Card> : null}
           {(cleans.data ?? []).slice(0, 10).map((c) => (
             <Card key={c.id} testID={`owner-cleaning-${c.id}`} onPress={() => router.push(`/cleaning/${c.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
               <Icon name="checkmark-done" size={20} color={colors.success} />

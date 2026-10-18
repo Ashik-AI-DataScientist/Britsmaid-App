@@ -15,8 +15,9 @@ export default function CleaningList() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const isCleaner = user?.role === "cleaner";
-  const [tab, setTab] = useState<"open" | "completed">("open");
+  const isCleaner = user?.role === "cleaner" || user?.role === "supervisor";
+  const canReview = user?.role === "admin" || user?.role === "supervisor";
+  const [tab, setTab] = useState<"open" | "completed" | "awaiting_review" | "unassigned">(canReview ? "awaiting_review" : "open");
   const q = useQuery({ queryKey: ["cleaning", tab, property_id], queryFn: () => api.get<any[]>(`/cleaning?status=${tab}${property_id ? `&property_id=${property_id}` : ""}`) });
 
   const groups: Record<string, any[]> = {};
@@ -28,7 +29,7 @@ export default function CleaningList() {
       <Header back={!isCleaner} title={isCleaner ? `Hi, ${user?.name?.split(" ")[0]}` : "Cleaning sessions"} subtitle={isCleaner ? "Your checkout cleaning tasks" : "Before & after documentation"}
         right={isCleaner ? <IconButton testID="cleaner-logout-button" name="log-out-outline" onPress={logout} /> : undefined} />
       <View style={{ padding: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface }}>
-        <Segmented testID="cleaning-tabs" value={tab} onChange={setTab} options={[{ value: "open", label: "To do" }, { value: "completed", label: "Completed" }]} />
+        <Segmented testID="cleaning-tabs" value={tab} onChange={setTab} options={canReview ? [{ value: "awaiting_review", label: "Review" }, { value: "unassigned", label: "Unassigned" }, { value: "open", label: "To do" }, { value: "completed", label: "Done" }] : [{ value: "open", label: "To do" }, { value: "completed", label: "Completed" }]} />
       </View>
       {q.isLoading ? <Loading label="Loading task details..." /> : q.isError ? <ErrorState message="Could not load tasks" onRetry={q.refetch} /> : (
         <SectionList
@@ -37,7 +38,7 @@ export default function CleaningList() {
           stickySectionHeadersEnabled={false}
           contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }}
           refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}
-          ListEmptyComponent={<Empty icon="checkmark-done-circle-outline" title={tab === "open" ? "All cleanings completed for today!" : "No completed sessions yet"} />}
+          ListEmptyComponent={<Empty icon="checkmark-done-circle-outline" title={tab === "awaiting_review" ? "No cleaning waiting for review" : tab === "unassigned" ? "All tasks have a cleaner" : tab === "open" ? "No tasks to do" : "No completed sessions yet"} />}
           renderSectionHeader={({ section }) => <Txt v="label" style={{ marginTop: spacing.sm, marginBottom: spacing.xs }}>{section.title}</Txt>}
           renderItem={({ item: c }) => {
             const pct = c.rooms_total ? c.rooms_done / c.rooms_total : 0;
@@ -52,7 +53,7 @@ export default function CleaningList() {
                     <Txt v="subtitle" style={{ fontSize: 15 }}>Checkout {fmtDate(c.date)}</Txt>
                     <Txt v="caption">{c.assigned_name ? `Assigned to ${c.assigned_name}` : "Unassigned"}</Txt>
                   </View>
-                  <Badge label={c.status === "completed" ? "Ready" : overdue ? "Overdue" : c.status === "in_progress" ? "In progress" : "Pending"} tone={c.status === "completed" ? "success" : overdue ? "error" : "warning"} />
+                  <Badge label={c.status === "completed" ? "Ready" : c.status === "awaiting_review" ? "Needs review" : overdue ? "Overdue" : c.status === "in_progress" ? "In progress" : "Pending"} tone={c.status === "completed" ? "success" : overdue ? "error" : "warning"} />
                 </View>
                 <View style={{ height: 6, borderRadius: 3, backgroundColor: colors.surfaceSecondary, overflow: "hidden" }}>
                   <View style={{ width: `${pct * 100}%`, height: "100%", backgroundColor: c.status === "completed" ? colors.success : colors.brandPrimary }} />

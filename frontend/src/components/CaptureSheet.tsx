@@ -24,11 +24,13 @@ async function uploadAsset(a: ImagePicker.ImagePickerAsset): Promise<Media> {
 type PermState = "unknown" | "denied" | "blocked";
 
 export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose, testID = "capture-sheet" }: {
-  visible: boolean; onClose: () => void; onUploaded: (m: Media[]) => void; allowVideo?: boolean; purpose: string; testID?: string;
+  visible: boolean; onClose: () => void; onUploaded: (m: Media[]) => Promise<void>; allowVideo?: boolean; purpose: string; testID?: string;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [perm, setPerm] = useState<PermState>("unknown");
+  const [pending, setPending] = useState<Media[]>([]);
+  const [failure, setFailure] = useState("");
 
   const ensure = async (camera: boolean) => {
     const get = camera ? ImagePicker.getCameraPermissionsAsync : ImagePicker.getMediaLibraryPermissionsAsync;
@@ -51,20 +53,26 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       const res = camera && Platform.OS !== "web" ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (res.canceled || !res.assets?.length) return;
       setBusy(true);
-      const uploaded: Media[] = [];
-      for (const a of res.assets) uploaded.push(await uploadAsset(a));
-      onUploaded(uploaded);
-      toast(`${uploaded.length} file${uploaded.length > 1 ? "s" : ""} uploaded`);
+      setFailure("");
+      for (const a of res.assets) {
+        const uploaded = await uploadAsset(a);
+        setPending([uploaded]);
+        await onUploaded([uploaded]);
+        setPending([]);
+      }
+      toast("Photos saved to this record");
       onClose();
     } catch (e: any) {
-      toast(e.message || "Upload failed", "error");
+      setFailure(e.message || "Photo was not saved. Please try again.");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Sheet visible={visible} onClose={onClose} title="Add media" testID={testID}>
+    <Sheet visible={visible} onClose={() => { if (!busy && !pending.length) onClose(); }} title="Add photos" testID={testID}>
+      {failure ? <View style={{ gap: spacing.sm }}><Txt>{failure}</Txt>{pending.length ? <Button title="Retry saving photo" disabled={busy} onPress={async () => { setBusy(true); try { await onUploaded(pending); setPending([]); setFailure(""); toast("Photo saved"); onClose(); } catch (e: any) { setFailure(e.message); } finally { setBusy(false); } }} /> : null}</View> : null}
+      {pending.length && !busy ? <Button title="Discard unsaved attachment" variant="ghost" onPress={() => { setPending([]); setFailure(""); onClose(); }} /> : null}
       <Txt v="body" style={{ marginBottom: spacing.lg }}>{purpose}</Txt>
       {perm !== "unknown" ? (
         <View testID="permission-notice" style={{ marginBottom: spacing.lg, gap: spacing.sm }}>
@@ -75,9 +83,9 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
         </View>
       ) : null}
       <View style={{ gap: spacing.sm }}>
-        <Button testID={`${testID}-take-photo`} icon="camera" title="Take photo" onPress={() => run("photo")} loading={busy} />
+        <Button testID={`${testID}-take-photo`} icon="camera" title="Take photo" onPress={() => run("photo")} loading={busy} disabled={!!pending.length} />
         {allowVideo ? <Button testID={`${testID}-record-video`} icon="videocam" variant="secondary" title="Record video" onPress={() => run("video")} disabled={busy} /> : null}
-        <Button testID={`${testID}-library`} icon="images" variant="secondary" title="Choose from library" onPress={() => run("library")} disabled={busy} />
+        <Button testID={`${testID}-library`} icon="images" variant="secondary" title="Choose from library" onPress={() => run("library")} disabled={busy || !!pending.length} />
       </View>
     </Sheet>
   );

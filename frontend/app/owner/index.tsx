@@ -8,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
-import { Badge, Card, Empty, ErrorState, IconButton, Loading, Txt } from "@/src/ui";
+import { Badge, Button, Card, Empty, ErrorState, IconButton, Loading, Txt } from "@/src/ui";
 import { fmtDate, inr, monthLabel } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
@@ -32,10 +32,12 @@ export default function OwnerHome() {
       {q.isLoading ? <Loading label="Loading your villas..." /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.lg, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>
           <Animated.View entering={FadeInDown} testID="owner-total-card" style={{ backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.xl }}>
-            <Txt v="label" color={colors.brandTertiary}>Your payout · {monthLabel(q.data.month)}</Txt>
+            <Txt v="label" color={colors.brandTertiary}>Expected earnings · {monthLabel(q.data.month)}</Txt>
             <Txt v="display" color={colors.onBrandPrimary} style={{ fontSize: 36, marginTop: spacing.xs }} testID="owner-total-payout">{inr(q.data.total_payout)}</Txt>
-            <Txt v="caption" color={colors.brandTertiary}>Across {q.data.villas.length} villa{q.data.villas.length === 1 ? "" : "s"} · updates live as bookings come in</Txt>
+            <Txt v="caption" color={colors.brandTertiary}>Paid: {inr(q.data.total_paid)} · Balance due: {inr(q.data.total_balance)}</Txt>
           </Animated.View>
+          <Txt v="caption">Last updated {new Date(q.dataUpdatedAt).toLocaleTimeString()}</Txt>
+          <Button title="Refresh my properties" variant="secondary" loading={q.isRefetching} onPress={() => q.refetch()} />
           {q.data.villas.length === 0 ? <Empty icon="business-outline" title="No villas assigned yet" subtitle="Contact Britsmaid to link your property." /> : null}
           {q.data.villas.map((v: any, i: number) => (
             <Animated.View key={v.id} entering={FadeInDown.delay(80 + i * 60)}>

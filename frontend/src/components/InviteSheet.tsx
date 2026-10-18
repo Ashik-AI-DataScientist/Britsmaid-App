@@ -6,7 +6,7 @@ import { radius, spacing, useTheme } from "@/src/theme";
 
 export type Invitee = { id: string; name: string; email: string; phone?: string; role: string; password?: string | null };
 
-const ROLE_LABEL: Record<string, string> = { owner: "villa owner", cleaner: "cleaning staff", admin: "admin" };
+const ROLE_LABEL: Record<string, string> = { owner: "villa owner", cleaner: "cleaning staff", supervisor: "cleaning supervisor", admin: "admin" };
 
 export function inviteMessage(u: Invitee, password: string) {
   return `Hi ${u.name.replace(/\s*\(Owner\)/, "")}, welcome to Britsmaid!\n\nYour ${ROLE_LABEL[u.role] ?? ""} login is ready:\nEmail: ${u.email}\nPassword: ${password}\n\nOpen the Britsmaid app and sign in with these details${u.role === "owner" ? " to see your villa earnings, stays, payouts and reports" : ""}. If this is your Google email you can also tap "Continue with Google".\n\n— Team Britsmaid`;

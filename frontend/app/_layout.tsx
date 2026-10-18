@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { LogBox, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { useFonts } from "expo-font";
+import { useAppFonts } from "@/src/app-fonts";
 import { StatusBar } from "expo-status-bar";
 
 import { ErrorBoundary } from "@/src/components/error-boundary";
@@ -22,7 +22,13 @@ function AuthGate() {
   useEffect(() => {
     if (loading) return;
     const onLogin = segments[0] === "login";
-    if (!user && !onLogin) router.replace("/login");
+    const isGuest = segments[0] === "guest-check-in";
+    if (!user && !onLogin && !isGuest) router.replace("/login");
+    if (user && !onLogin && !isGuest) {
+      const area = segments[0] as string;
+      if ((user.role === "cleaner" || user.role === "supervisor") && area && area !== "cleaning") router.replace("/cleaning");
+      if (user.role === "owner" && ["(admin)", "staff", "guests", "booking", "invoice", "issues"].includes(area)) router.replace("/owner");
+    }
   }, [user, loading, segments, router]);
   if (loading) return <Loading label="Signing you in..." />;
   return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surfaceSecondary } }} />;
@@ -30,13 +36,7 @@ function AuthGate() {
 
 export default function RootLayout() {
   // Prewarm icon + brand fonts so icons render on first paint (Expo Go Android fix).
-  const [loaded, error] = useFonts({
-    Ionicons: require("@react-native-vector-icons/ionicons/fonts/Ionicons.ttf"),
-    "SpaceGrotesk-Bold": require("../assets/fonts/SpaceGrotesk-Bold.ttf"),
-    "SpaceGrotesk-Medium": require("../assets/fonts/SpaceGrotesk-Medium.ttf"),
-    "Geist-Regular": require("../assets/fonts/Geist-Regular.ttf"),
-    "Geist-SemiBold": require("../assets/fonts/Geist-SemiBold.ttf"),
-  });
+  const [loaded, error] = useAppFonts();
   if (!loaded && !error) return <View style={{ flex: 1, backgroundColor: colors.surface }} />;
   return (
     <ErrorBoundary>

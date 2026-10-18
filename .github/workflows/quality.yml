@@ -1,0 +1,35 @@
+name: App quality checks
+on:
+  pull_request:
+  push:
+    branches: [main, feature/roles-cleaning-guest-verification]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
+      - run: python -m pytest backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py -q
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - working-directory: frontend
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - working-directory: frontend
+        run: pnpm typecheck && pnpm lint:check && pnpm test:edges
+      - working-directory: frontend
+        run: pnpm exec expo export --platform web --output-dir dist

@@ -20,16 +20,23 @@ export default function CleaningSession() {
   const { colors } = useTheme();
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const canReview = isAdmin || user?.role === "supervisor";
   const q = useQuery({ queryKey: ["cleaning-session", id], queryFn: () => api.get(`/cleaning/${id}`) });
-  const staff = useQuery({ queryKey: ["users"], queryFn: () => api.get<any[]>("/users"), enabled: isAdmin });
+  const staff = useQuery({ queryKey: ["cleaning-team"], queryFn: () => api.get<any[]>("/cleaning-team"), enabled: canReview });
   const [target, setTarget] = useState<{ idx: number; phase: "before" | "after" } | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [adminOptions, setAdminOptions] = useState(false);
+  const [adminAction, setAdminAction] = useState<"reopen" | "complete" | "reassign">("reopen");
+  const [adminNote, setAdminNote] = useState("");
+  const [adminAssignee, setAdminAssignee] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [activeRoom, setActiveRoom] = useState(0);
 
   if (q.isLoading) return <Loading label="Loading task details..." />;
   if (q.isError) return <View style={{ flex: 1 }}><Header back title="Cleaning" /><ErrorState message="Could not load task details" onRetry={q.refetch} /></View>;
   const c = q.data;
-  const done = c.status === "completed" || user?.role === "owner";
+  const done = c.status === "completed" || c.status === "awaiting_review" || user?.role === "owner";
   const refresh = (data: any) => {
     qc.setQueryData(["cleaning-session", id], data);
     qc.invalidateQueries({ queryKey: ["cleaning"] });
@@ -51,12 +58,33 @@ export default function CleaningSession() {
     setSubmitting(true);
     try {
       refresh(await api.put(`/cleaning/${id}`, { status: "completed", ...(notes !== null ? { notes } : {}) }));
-      toast("Villa marked ready for the next guest");
+      toast("Cleaning submitted for supervisor review");
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const review = async (approved: boolean) => {
+    setSubmitting(true);
+    try { refresh(await api.post(`/cleaning/${id}/review`, { approved, notes: notes ?? "" })); setNotes(null); }
+    catch (e: any) { toast(e.message, "error"); }
+    finally { setSubmitting(false); }
+  };
+  const saveAdminAction = async () => {
+    setSubmitting(true);
+    try {
+      refresh(await api.post(`/cleaning/${id}/admin-action`, { action: adminAction, note: adminNote, assigned_to: adminAssignee }));
+      setAdminNote(""); setAdminOptions(false); setNotes(null); setAdminAssignee(null);
+      toast(adminAction === "complete" ? "Marked complete with admin note" : "Cleaning reopened and ready to assign");
+    } catch (e: any) { toast(e.message, "error"); }
+    finally { setSubmitting(false); }
+  };
+  const toggleCheck = async (idx: number, room: any, item: string) => {
+    const checked: string[] = room.checked ?? [];
+    try { refresh(await api.put(`/cleaning/${id}/rooms/${idx}/checklist`, { checked: checked.includes(item) ? checked.filter(x => x !== item) : [...checked, item] })); }
+    catch (e: any) { toast(e.message, "error"); }
   };
 
   const phaseBox = (room: any, idx: number, phase: "before" | "after") => {
@@ -82,7 +110,7 @@ export default function CleaningSession() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
-      <Header back title={c.property_name} subtitle={`Checkout cleaning · ${fmtDate(c.date)}`} right={<Badge testID="cleaning-status-badge" label={done ? "Ready" : c.status === "in_progress" ? "In progress" : "Pending"} tone={done ? "success" : "warning"} />} />
+      <Header back title={c.property_name} subtitle={`Checkout cleaning · ${fmtDate(c.date)}`} right={<Badge testID="cleaning-status-badge" label={c.status === "completed" ? "Ready" : c.status === "awaiting_review" ? "Needs review" : c.status === "in_progress" ? "In progress" : "Pending"} tone={done ? "success" : "warning"} />} />
       <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: insets.bottom + (done ? spacing.xl : 100) }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>
         <Card style={{ gap: spacing.sm }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
@@ -92,19 +120,56 @@ export default function CleaningSession() {
           <View style={{ height: 8, borderRadius: 4, backgroundColor: colors.surfaceSecondary, overflow: "hidden" }}>
             <View style={{ width: `${c.rooms_total ? (c.rooms_done / c.rooms_total) * 100 : 0}%`, height: "100%", backgroundColor: done ? colors.success : colors.brandPrimary }} />
           </View>
-          <Txt v="caption">{done ? `Completed ${fmtDate(c.completed_at)}` : "Photograph each room before you start, then again after cleaning & setting up."}</Txt>
+          <Txt v="caption">{c.status === "awaiting_review" ? "Submitted for supervisor review" : done ? (c.completed_at ? `Completed ${fmtDate(c.completed_at)}` : "Read-only cleaning record") : "Photograph each room before you start, then again after cleaning & setting up."}</Txt>
         </Card>
 
-        {isAdmin && !done ? (
+        {isAdmin ? <Card style={{ gap: spacing.sm }}>
+          <Button title={adminOptions ? "Close admin options" : "Admin: reopen, reassign or complete"} variant="secondary" onPress={() => { setAdminOptions(!adminOptions); setAdminAssignee(c.assigned_to ?? null); setAdminAction(c.status === "completed" ? "reopen" : "complete"); }} />
+          {adminOptions ? <>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+              {([ ["reopen", "Reopen cleaning"], ["reassign", "Send to another cleaner"], ["complete", "Mark complete"] ] as const).map(([value, label]) => <Chip key={value} label={label} selected={adminAction === value} onPress={() => setAdminAction(value)} />)}
+            </View>
+            <Txt>{adminAction === "complete" ? "Complete this task even if photos, checklists or supervisor review are missing." : "Send this task back to To do. Previous photos and checklists stay in history; the cleaner starts a fresh round."}</Txt>
+            {adminAction !== "complete" ? <>
+              <Txt v="label">Cleaner</Txt>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
+                {(staff.data ?? []).filter(u => (u.property_ids ?? []).includes(c.property_id)).map(u => <Chip key={u.id} label={u.name} selected={adminAssignee === u.id} onPress={() => setAdminAssignee(u.id)} />)}
+              </View>
+              {!adminAssignee ? <Txt>No cleaner selected. Reopen keeps this task unassigned.</Txt> : null}
+            </> : null}
+            <Input testID="cleaning-admin-note" label="Reason (required)" value={adminNote} onChangeText={setAdminNote} multiline />
+            <Button testID="cleaning-admin-save" title="Save with note" disabled={submitting || !adminNote.trim() || (adminAction === "reassign" && !adminAssignee)} onPress={saveAdminAction} />
+          </> : null}
+          <Button title={showHistory ? "Hide admin history" : "View admin history"} variant="ghost" onPress={() => setShowHistory(!showHistory)} />
+          {showHistory ? c.admin_history?.length ? c.admin_history.slice().reverse().map((event: any, i: number) => <View key={i} style={{ gap: spacing.xs }}>
+            <Txt>{event.action} · {event.actor_name ?? "Admin"} · {new Date(event.at).toLocaleString()}</Txt>
+            <Txt>{event.note}</Txt>
+            <Txt v="caption">Previous status: {event.before?.status}</Txt>
+            {(event.before?.rooms ?? []).map((room: any, idx: number) => <View key={idx}><Txt v="caption">{room.name} · {(room.checked ?? []).length} checklist items recorded</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{[...(room.before ?? []), ...(room.after ?? [])].map((mid: string, k: number) => <MediaThumb key={`${mid}-${k}`} id={mid} size={64} />)}</View></View>)}
+          </View>) : <Txt>No admin actions yet.</Txt> : null}
+        </Card> : null}
+
+        {canReview && !done ? (
           <Card style={{ gap: spacing.sm }}>
             <Txt v="label">Assign cleaner</Txt>
+            {staff.isLoading ? <Loading label="Loading cleaners..." /> : staff.isError ? <ErrorState message="Could not load cleaners" onRetry={staff.refetch} /> : !(staff.data ?? []).some((u: any) => (u.property_ids ?? []).includes(c.property_id)) ? <Txt>No cleaner has access to this property yet. Ask the admin to assign one.</Txt> : null}
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>
-              {(staff.data ?? []).filter((u) => u.role === "cleaner").map((u) => <Chip key={u.id} testID={`assign-${u.id}`} label={u.name} selected={c.assigned_to === u.id} onPress={() => assign(u.id)} />)}
+              {(staff.data ?? []).filter((u) => (u.property_ids ?? []).includes(c.property_id)).map((u) => <Chip key={u.id} testID={`assign-${u.id}`} label={u.name} selected={c.assigned_to === u.id} onPress={() => assign(u.id).catch(e => toast(e.message, "error"))} />)}
             </View>
           </Card>
         ) : null}
 
+        {c.review_notes ? <Card><Txt v="label">Supervisor feedback</Txt><Txt>{c.review_notes}</Txt></Card> : null}
+        {canReview && c.status === "awaiting_review" ? (
+          <Card style={{ gap: spacing.sm }}>
+            <Input label="Review notes (required for rework)" value={notes ?? ""} onChangeText={setNotes} multiline />
+            <Button title="Approve: ready for guest" onPress={() => review(true)} loading={submitting} />
+            <Button title="Send back to cleaner" onPress={() => review(false)} disabled={submitting || !notes?.trim()} />
+          </Card>
+        ) : null}
+        {!canReview && !done && c.rooms.length ? <Card style={{ gap: spacing.sm }}><Txt v="subtitle">Room {activeRoom + 1} of {c.rooms.length}</Txt><Txt>1. Add a before photo · 2. Add an after photo · 3. Tick the checks</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>{c.rooms.map((room: any, idx: number) => <Chip key={idx} label={room.name} selected={activeRoom === idx} onPress={() => setActiveRoom(idx)} />)}</View></Card> : null}
         {c.rooms.map((room: any, idx: number) => {
+          if (!canReview && !done && idx !== activeRoom) return null;
           const ok = room.before.length && room.after.length;
           return (
             <Animated.View key={idx} entering={FadeInDown.delay(idx * 40)}>
@@ -118,10 +183,17 @@ export default function CleaningSession() {
                   <View style={{ width: 1, backgroundColor: colors.divider }} />
                   {phaseBox(room, idx, "after")}
                 </View>
+                <Txt v="label">Room checklist</Txt>
+                {(c.checklist_items ?? []).map((item: string) => (
+                  <Chip key={item} label={item} selected={(room.checked ?? []).includes(item)}
+                    onPress={() => { if (!done) toggleCheck(idx, room, item); }} />
+                ))}
               </Card>
             </Animated.View>
           );
         })}
+        {!canReview && !done && activeRoom < c.rooms.length - 1 ? <Button title="Next room" variant="secondary" onPress={() => setActiveRoom(activeRoom + 1)} /> : null}
+        {!done ? <Card><Txt v="label">Still needed before you send</Txt>{c.rooms.filter((r: any) => !r.before.length || !r.after.length || (r.checked ?? []).length !== (c.checklist_items ?? []).length).map((r: any) => <Txt key={r.name}>{r.name}: {[!r.before.length ? "before photo" : "", !r.after.length ? "after photo" : "", (r.checked ?? []).length !== (c.checklist_items ?? []).length ? "finish checks" : ""].filter(Boolean).join(", ")}</Txt>)}{c.rooms.every((r: any) => r.before.length && r.after.length && (r.checked ?? []).length === (c.checklist_items ?? []).length) ? <Txt>Everything is saved. You can send this for review.</Txt> : null}</Card> : null}
 
         {!done ? (
           <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
@@ -131,10 +203,10 @@ export default function CleaningSession() {
       </ScrollView>
       {!done ? (
         <View style={{ position: "absolute", left: spacing.lg, right: spacing.lg, bottom: insets.bottom + 16 }}>
-          <Button testID="cleaning-complete-button" icon="checkmark-done" title={c.rooms_done === c.rooms_total ? "Mark ready for next guest" : `Document ${c.rooms_total - c.rooms_done} more room${c.rooms_total - c.rooms_done === 1 ? "" : "s"}`} disabled={c.rooms_done !== c.rooms_total} onPress={complete} loading={submitting} />
+          <Button testID="cleaning-complete-button" icon="checkmark-done" title={c.rooms_done === c.rooms_total ? "Submit for supervisor review" : `Document ${c.rooms_total - c.rooms_done} more room${c.rooms_total - c.rooms_done === 1 ? "" : "s"}`} disabled={!c.rooms_total || c.rooms_done !== c.rooms_total || c.rooms.some((r: any) => (r.checked ?? []).length !== (c.checklist_items ?? []).length)} onPress={complete} loading={submitting} />
         </View>
       ) : null}
-      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m) => addMedia(m.map((x) => x.id)).catch((e) => toast(e.message, "error"))} />
+      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m) => addMedia(m.map((x) => x.id))} />
     </View>
   );
 }

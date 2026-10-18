@@ -20,6 +20,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard") });
   const d = q.data;
+  const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 
   const metric = (label: string, value: string, icon: IconName, testID: string, onPress?: () => void) => (
     <Card testID={testID} onPress={onPress} style={{ flex: 1, padding: spacing.md, gap: spacing.sm }}>
@@ -42,14 +43,20 @@ export default function Dashboard() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
-      <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
+      <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
         <Image source={require("../../assets/images/logo.jpg")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
         <View style={{ flex: 1 }}>
           <Txt v="caption">Hello, {user?.name?.split(" ")[0]}</Txt>
           <Txt v="title">Britsmaid</Txt>
         </View>
-        <IconButton testID="dashboard-staff-button" name="people-outline" onPress={() => router.push("/staff")} />
-        <IconButton testID="dashboard-logout-button" name="log-out-outline" onPress={logout} />
+        </View>
+        <View style={{ flexDirection: "row", gap: spacing.md, flexWrap: "wrap" }}>
+          <IconButton testID="dashboard-guests-button" name="id-card-outline" label="Guest IDs" onPress={() => router.push("/guests")} />
+          <IconButton testID="dashboard-staff-button" name="people-outline" label="Team" onPress={() => router.push("/staff")} />
+          <IconButton name="notifications-outline" label={`Notices${notices.data?.some((issue: any) => issue.status === "open") ? " !" : ""}`} onPress={() => router.push("/issues")} />
+          <IconButton testID="dashboard-logout-button" name="log-out-outline" label="Sign out" onPress={logout} />
+        </View>
       </View>
       {q.isLoading ? <Loading label="Syncing properties..." /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.lg, paddingBottom: bottomChrome + spacing.xl }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>

@@ -10,6 +10,7 @@ import { fonts, useTheme } from "@/src/theme";
 // required lazily — only on iOS 26+ where NativeTabs is actually rendered.
 let NativeTabsLayout: React.ComponentType | null = null;
 if (usesNativeTabs) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids loading unsupported native tabs on Android
   NativeTabsLayout = require("@/src/NativeTabsLayout").default;
 }
 

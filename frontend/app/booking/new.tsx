@@ -30,10 +30,10 @@ export default function BookingForm() {
     api.get(`/bookings/${id}`).then((b) => {
       setF({ ...b, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
       setLoading(false);
-    });
-  }, [id]);
+    }).catch((e) => { toast(e.message, "error"); setLoading(false); });
+  }, [id, toast]);
   useEffect(() => {
-    if (!f.property_id && props.data?.length) setF((x) => ({ ...x, property_id: props.data![0].id }));
+    if (!f.property_id && props.data?.length) { const first = props.data[0].id; Promise.resolve().then(() => setF((x) => x.property_id ? x : ({ ...x, property_id: first }))); }
   }, [props.data, f.property_id]);
 
   const set = (k: string) => (v: any) => setF((x) => ({ ...x, [k]: v }));

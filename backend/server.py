@@ -4,7 +4,9 @@ from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr, field_validator
+from validation import valid_date, valid_month, month_bounds
+from reservations import claim_nights, release_unused
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -126,7 +128,7 @@ DUMMY_HASH = hash_pw("dummy-password-xyz")
 
 def issue_token(user: dict) -> str:
     n = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
 
 
 async def user_from_token(token: Optional[str]):
@@ -144,13 +146,15 @@ async def user_from_token(token: Optional[str]):
             exp = exp.replace(tzinfo=timezone.utc)
         if exp < datetime.now(timezone.utc):
             raise HTTPException(401, "Session expired")
-        payload = {"sub": sess["user_id"]}
+        payload = {"sub": sess["user_id"], "sv": sess.get("session_version", 0)}
     uid = payload.get("sub")
     if not uid or not ObjectId.is_valid(uid):
         raise HTTPException(401, "Invalid token")
     user = await db.users.find_one({"_id": ObjectId(uid), "active": True})
     if not user:
         raise HTTPException(401, "Invalid token")
+    if payload.get("sv", 0) != user.get("session_version", 0):
+        raise HTTPException(401, "Your password changed. Please sign in again.")
     return user
 
 
@@ -168,7 +172,7 @@ async def admin_user(user=Depends(current_user)):
 
 async def staff_user(user=Depends(current_user)):
     """Admin or cleaner (internal team)."""
-    if user["role"] not in ("admin", "cleaner"):
+    if user["role"] not in ("admin", "cleaner", "supervisor"):
         raise HTTPException(403, "Team members only")
     return user
 
@@ -182,7 +186,7 @@ async def finance_user(user=Depends(current_user)):
 
 def owner_pids(user) -> Optional[List[str]]:
     """None = unrestricted; list = villas this owner may see."""
-    return list(user.get("property_ids") or []) if user["role"] == "owner" else None
+    return list(user.get("property_ids") or []) if user["role"] != "admin" else None
 
 
 def check_pid(user, pid: str):
@@ -210,14 +214,14 @@ class StaffIn(BaseModel):
     name: str
     email: EmailStr
     password: str = Field(min_length=6)
-    role: Literal["admin", "cleaner", "owner"] = "cleaner"
+    role: Literal["admin", "cleaner", "supervisor", "owner"] = "cleaner"
     property_ids: List[str] = []
     phone: str = ""
 
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
-    role: Optional[Literal["admin", "cleaner", "owner"]] = None
+    role: Optional[Literal["admin", "cleaner", "supervisor", "owner"]] = None
     phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
     password: Optional[str] = Field(default=None, min_length=6)
@@ -227,7 +231,7 @@ async def validate_pids(pids: List[str]) -> List[str]:
     pids = list(dict.fromkeys(pids))
     if any(not ObjectId.is_valid(x) for x in pids):
         raise HTTPException(422, "Invalid property id")
-    if await db.properties.count_documents({"_id": {"$in": [ObjectId(x) for x in pids]}}) != len(pids):
+    if await db.properties.count_documents({"_id": {"$in": [ObjectId(x) for x in pids]}, "is_deleted": {"$ne": True}}) != len(pids):
         raise HTTPException(400, "One or more properties do not exist")
     return pids
 
@@ -261,7 +265,7 @@ async def google_session(body: SessionIn):
     token = data["session_token"]
     await db.users.update_one({"_id": user["_id"]}, {"$set": {"picture": data.get("picture"), "google_linked": True}})
     await db.user_sessions.update_one({"session_token": token}, {"$set": {"session_token": token, "user_id": str(user["_id"]),
-                                      "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": datetime.now(timezone.utc)}}, upsert=True)
+                                      "session_version": user.get("session_version", 0), "expires_at": datetime.now(timezone.utc) + timedelta(days=7), "created_at": datetime.now(timezone.utc)}}, upsert=True)
     return {"session_token": token, "user": out(await db.users.find_one({"_id": user["_id"]}))}
 
 
@@ -282,7 +286,7 @@ async def create_user(body: StaffIn, _=Depends(admin_user)):
         raise HTTPException(409, "Email already registered")
     if body.role == "owner" and not body.property_ids:
         raise HTTPException(400, "Assign at least one villa to the owner")
-    pids = await validate_pids(body.property_ids) if body.role == "owner" else []
+    pids = await validate_pids(body.property_ids) if body.role != "admin" else []
     doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "phone": body.phone.strip(), "active": True, "created_at": now_iso()}
     r = await db.users.insert_one(doc)
     return out(await db.users.find_one({"_id": r.inserted_id}))
@@ -300,7 +304,8 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
         if body.role == "owner" and not body.property_ids:
             raise HTTPException(400, "Assign at least one villa to the owner")
         changes["role"] = body.role
-        if body.role != "owner":
+        changes["property_ids"] = []
+        if body.role == "admin":
             changes["property_ids"] = []
         u["role"] = body.role
     if body.name:
@@ -309,16 +314,20 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
         changes["phone"] = body.phone.strip()
     if body.password:
         changes["password_hash"] = hash_pw(body.password)
-    if body.property_ids is not None and u["role"] != "owner" and "role" in changes:
+    if body.property_ids is not None and u["role"] == "admin" and "role" in changes:
         pass
     elif body.property_ids is not None:
-        if u["role"] != "owner":
-            raise HTTPException(400, "Only owners have villa assignments")
-        if not body.property_ids:
+        if u["role"] == "admin":
+            raise HTTPException(400, "Admins do not need villa assignments")
+        if not body.property_ids and u["role"] == "owner":
             raise HTTPException(400, "Assign at least one villa")
         changes["property_ids"] = await validate_pids(body.property_ids)
     if changes:
-        await db.users.update_one({"_id": u["_id"]}, {"$set": changes})
+        update = {"$set": changes}
+        if body.password:
+            update["$inc"] = {"session_version": 1}
+            await db.user_sessions.delete_many({"user_id": str(u["_id"])})
+        await db.users.update_one({"_id": u["_id"]}, update)
     return out(await db.users.find_one({"_id": u["_id"]}))
 
 
@@ -329,7 +338,8 @@ async def reset_password(uid: str, _=Depends(admin_user)):
         raise HTTPException(404, "User not found")
     alphabet = string.ascii_letters + string.digits
     temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(8))
-    await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}})
+    await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}, "$inc": {"session_version": 1}})
+    await db.user_sessions.delete_many({"user_id": str(u["_id"])})
     return {"user": out(u), "temp_password": temp}
 
 
@@ -343,11 +353,20 @@ async def deactivate_user(uid: str, admin=Depends(admin_user)):
 # ---------------------------------------------------------------- Media
 @api.post("/upload")
 async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
-    data = await file.read()
+    data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
     ctype = file.content_type or "application/octet-stream"
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ("mp4" if ctype.startswith("video") else "jpg")
+    if ctype in ("image/jpeg", "image/png"):
+        from guest_ids import sanitise_image
+        data = await run_in_threadpool(sanitise_image, data)
+        ctype, ext = "image/jpeg", "jpg"
+    elif ctype == "video/mp4" and len(data) > 12 and data[4:8] == b"ftyp":
+        ext = "mp4"
+    elif ctype == "video/quicktime" and len(data) > 12 and data[4:8] == b"ftyp":
+        ext = "mov"
+    else:
+        raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
     path = f"{APP_NAME}/uploads/{user['_id']}/{uuid.uuid4()}.{ext}"
     res = await run_in_threadpool(put_object, path, data, ctype)
     doc = {"storage_path": res["path"], "content_type": ctype, "kind": "video" if ctype.startswith("video") else "image",
@@ -361,13 +380,31 @@ async def stream_media(media_id: str):
     if not m:
         raise HTTPException(404, "File not found")
     data, ctype = await run_in_threadpool(get_object, m["storage_path"])
-    return Response(content=data, media_type=m.get("content_type") or ctype, headers={"Cache-Control": "private, max-age=86400"})
+    safe_type = m.get("content_type") or ctype
+    if safe_type not in ("image/jpeg", "image/png", "video/mp4", "video/quicktime"):
+        raise HTTPException(422, "This file cannot be displayed safely. Upload a new photo or video.")
+    return Response(content=data, media_type=safe_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
 
 
 @api.get("/files/{media_id}")
 async def get_file(media_id: str, request: Request, token: Optional[str] = None):
     auth = request.headers.get("Authorization", "")
-    await user_from_token(auth[7:] if auth.lower().startswith("bearer ") else token)
+    user = await user_from_token(auth[7:] if auth.lower().startswith("bearer ") else token)
+    media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
+    if not media:
+        raise HTTPException(404, "File not found")
+    if user["role"] != "admin":
+        cq = scope(user, {"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
+        if user["role"] == "cleaner":
+            cq["assigned_to"] = str(user["_id"])
+        linked = await db.cleaning.find_one(cq)
+        if not linked and user["role"] == "owner":
+            linked = await db.owner_reports.find_one(scope(user, {"media_ids": media_id}))
+        if not linked:
+            linked_elsewhere = await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
+            linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
+            if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
+                raise HTTPException(404, "File not found")
     return await stream_media(media_id)
 
 # ---------------------------------------------------------------- Properties
@@ -419,8 +456,15 @@ async def list_properties(user=Depends(current_user)):
     for p in props:
         o = out(p)
         o.update(await property_status(o["id"], today))
+        o = property_view(o, user)
         result.append(o)
     return result
+
+
+def property_view(p, user):
+    if user["role"] in ("cleaner", "supervisor"):
+        return {k: v for k, v in p.items() if k in ("id", "name", "location", "rooms", "occupied", "needs_cleaning", "pending_cleaning_id")}
+    return p
 
 
 async def property_status(pid: str, day: str):
@@ -446,7 +490,7 @@ async def get_property(pid: str, user=Depends(current_user)):
         raise HTTPException(404, "Property not found")
     o = out(p)
     o.update(await property_status(pid, date.today().isoformat()))
-    return o
+    return property_view(o, user)
 
 
 @api.put("/properties/{pid}")
@@ -467,12 +511,12 @@ class BookingIn(BaseModel):
     guest_name: str
     guest_phone: str = ""
     guest_email: str = ""
-    guests: int = 1
+    guests: int = Field(default=1, ge=1, le=100)
     ota: str = "Direct"
     check_in: str
     check_out: str
-    amount: float = 0
-    ota_commission: float = 0
+    amount: float = Field(default=0, ge=0, allow_inf_nan=False)
+    ota_commission: float = Field(default=0, ge=0, allow_inf_nan=False)
     status: Literal["confirmed", "cancelled", "blocked"] = "confirmed"
     notes: str = ""
 
@@ -504,7 +548,7 @@ async def check_overlap(b: BookingIn, exclude: Optional[str] = None):
 
 
 @api.get("/bookings")
-async def list_bookings(property_id: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None, user=Depends(current_user)):
+async def list_bookings(property_id: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None, user=Depends(finance_user)):
     q: dict[str, Any] = {}
     if property_id:
         q["property_id"] = property_id
@@ -512,43 +556,77 @@ async def list_bookings(property_id: Optional[str] = None, start: Optional[str] 
     if start and end:
         q["check_in"] = {"$lt": end}
         q["check_out"] = {"$gt": start}
-    return [out(b) for b in await db.bookings.find(q).sort("check_in", 1).to_list(2000)]
+    projection = {"admin_history": 0} if user["role"] != "admin" else None
+    return [out(b) for b in await db.bookings.find(q, projection).sort("check_in", 1).to_list(2000)]
 
 
 @api.post("/bookings")
 async def create_booking(body: BookingIn, _=Depends(admin_user)):
+    await validate_pids([body.property_id])
     validate_dates(body.check_in, body.check_out)
     if body.status != "cancelled":
         await check_overlap(body)
     doc = body.model_dump()
     doc.update({"source": "manual", "created_at": now_iso()})
-    r = await db.bookings.insert_one(doc)
+    doc["_id"] = ObjectId()
+    if body.status != "cancelled":
+        await claim_nights(db, str(doc["_id"]), body.property_id, body.check_in, body.check_out)
+    try:
+        r = await db.bookings.insert_one(doc)
+    except Exception:
+        await release_unused(db, str(doc["_id"]))
+        raise
     if body.status == "confirmed":
         await ensure_cleaning(body.property_id, str(r.inserted_id), body.check_out)
     return out(await db.bookings.find_one({"_id": r.inserted_id}))
 
 
 @api.get("/bookings/{bid}")
-async def get_booking(bid: str, user=Depends(current_user)):
+async def get_booking(bid: str, user=Depends(finance_user)):
     b = await db.bookings.find_one({"_id": oid(bid)})
     if not b:
         raise HTTPException(404, "Booking not found")
     check_pid(user, b["property_id"])
+    if user["role"] != "admin":
+        b.pop("admin_history", None)
     return out(b)
 
 
 @api.put("/bookings/{bid}")
 async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
+    await validate_pids([body.property_id])
+    previous = await db.bookings.find_one({"_id": oid(bid)})
+    if not previous:
+        raise HTTPException(404, "Booking not found")
     validate_dates(body.check_in, body.check_out)
     if body.status != "cancelled":
         await check_overlap(body, bid)
-    await db.bookings.update_one({"_id": oid(bid)}, {"$set": body.model_dump()})
-    await db.cleaning.update_one({"booking_id": bid, "status": "pending"}, {"$set": {"date": body.check_out}})
+    claimed = []
+    if body.status != "cancelled":
+        claimed = await claim_nights(db, bid, body.property_id, body.check_in, body.check_out)
+    result = await db.bookings.update_one({"_id": oid(bid), "revision": previous.get("revision")}, {"$set": body.model_dump(), "$inc": {"revision": 1}})
+    if not result.matched_count:
+        await db.reserved_nights.delete_many({"_id": {"$in": claimed}, "booking_id": bid})
+        raise HTTPException(409, "Booking changed. Refresh before saving again.")
+    await release_unused(db, bid, body.property_id if body.status != "cancelled" else None, body.check_in, body.check_out)
+    if body.status == "confirmed":
+        await ensure_cleaning(body.property_id, bid, body.check_out)
+        prop = await db.properties.find_one({"_id": oid(body.property_id)})
+        task = await db.cleaning.find_one({"booking_id": bid})
+        changes = {"date": body.check_out, "property_id": body.property_id}
+        if task and task.get("property_id") != body.property_id:
+            changes.update(assigned_to=None, rooms=[{"name": r, "before": [], "after": [], "checked": []} for r in prop.get("rooms", [])])
+        if task and task["status"] == "cancelled":
+            changes["status"] = "pending"
+        await db.cleaning.update_one({"booking_id": bid, "status": {"$in": ["pending", "cancelled"]}}, {"$set": changes})
+    else:
+        await db.cleaning.update_many({"booking_id": bid, "status": {"$ne": "completed"}}, {"$set": {"status": "cancelled", "review_notes": "Booking cancelled or blocked"}})
     return await get_booking(bid, _)
 
 
 @api.delete("/bookings/{bid}")
 async def delete_booking(bid: str, _=Depends(admin_user)):
+    await release_unused(db, bid)
     await db.bookings.delete_one({"_id": oid(bid)})
     await db.cleaning.delete_one({"booking_id": bid, "status": "pending"})
     return {"ok": True}
@@ -608,6 +686,7 @@ async def sync_property(p: dict) -> list:
         f["last_synced"] = now_iso()
         report.append({"ota": f["ota"], "ok": True, "added": added, "updated": updated, "events": len(events)})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
+    await issue_tracker.record("Calendar sync " + pid, any(not item["ok"] for item in report))
     return report
 
 
@@ -671,7 +750,8 @@ async def sync_run(_=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Calendar
 @api.get("/calendar")
-async def calendar(month: str, property_id: Optional[str] = None, user=Depends(current_user)):
+async def calendar(month: str, property_id: Optional[str] = None, user=Depends(finance_user)):
+    month_bounds(month)
     y, m = map(int, month.split("-"))
     start = date(y, m, 1)
     end = date(y + (m // 12), (m % 12) + 1, 1)
@@ -682,7 +762,7 @@ async def calendar(month: str, property_id: Optional[str] = None, user=Depends(c
         cq["property_id"] = property_id
     scope(user, q)
     scope(user, cq)
-    bookings = [out(b) for b in await db.bookings.find(q).to_list(3000)]
+    bookings = [out(b) for b in await db.bookings.find(q, {"admin_history": 0} if user["role"] != "admin" else None).to_list(3000)]
     cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0}).to_list(3000)]
     return {"bookings": bookings, "cleanings": cleanings}
 
@@ -702,7 +782,119 @@ class RoomMediaIn(BaseModel):
 class CleaningUpdate(BaseModel):
     assigned_to: Optional[str] = None
     notes: Optional[str] = None
-    status: Optional[Literal["pending", "in_progress", "completed"]] = None
+    status: Optional[Literal["pending", "in_progress", "awaiting_review", "completed"]] = None
+
+
+CHECKLIST = ["Surfaces cleaned", "Linen replaced", "Bathroom sanitised", "Supplies restocked", "Damage checked"]
+
+
+async def checked_cleaning(cid, user, writable=False):
+    c = await db.cleaning.find_one({"_id": oid(cid)})
+    if not c:
+        raise HTTPException(404, "Session not found")
+    check_pid(user, c["property_id"])
+    if user["role"] == "cleaner" and c.get("assigned_to") != str(user["_id"]):
+        raise HTTPException(404, "Session not found")
+    if writable and c["status"] in ("completed", "awaiting_review"):
+        raise HTTPException(409, "Session is locked for review or completed")
+    return c
+
+
+async def validate_assignee(uid, pid):
+    u = await db.users.find_one({"_id": oid(uid), "active": True, "role": "cleaner", "property_ids": pid})
+    if not u:
+        raise HTTPException(422, "Assign an active cleaner with access to this property")
+
+
+class ChecklistIn(BaseModel):
+    checked: List[str]
+
+
+@api.put("/cleaning/{cid}/rooms/{idx}/checklist")
+async def set_checklist(cid: str, idx: int, body: ChecklistIn, user=Depends(staff_user)):
+    c = await checked_cleaning(cid, user, writable=True)
+    if idx < 0 or idx >= len(c.get("rooms", [])) or not set(body.checked).issubset(CHECKLIST):
+        raise HTTPException(422, "Invalid room or checklist item")
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, {"$set": {f"rooms.{idx}.checked": list(set(body.checked))}, "$inc": {"revision": 1}})
+    if not result.matched_count:
+        raise HTTPException(409, "Session changed; refresh and retry")
+    return await get_cleaning(cid, user)
+
+
+class ReviewIn(BaseModel):
+    approved: bool
+    notes: str = Field(default="", max_length=2000)
+
+
+class CleaningAdminAction(BaseModel):
+    action: Literal["reopen", "complete", "reassign"]
+    note: str = Field(min_length=1, max_length=2000)
+    assigned_to: Optional[str] = None
+
+
+@api.post("/cleaning/{cid}/admin-action")
+async def cleaning_admin_action(cid: str, body: CleaningAdminAction, user=Depends(admin_user)):
+    if not body.note.strip():
+        raise HTTPException(422, "Add a reason for this admin action")
+    c = await checked_cleaning(cid, user)
+    last = (c.get("admin_history") or [{}])[-1]
+    if (last.get("action") == body.action and last.get("note") == body.note.strip()
+            and last.get("result_revision") == c.get("revision")
+            and last.get("assigned_to") == (body.assigned_to or c.get("assigned_to"))):
+        return await get_cleaning(cid, user)
+    if body.assigned_to:
+        await validate_assignee(body.assigned_to, c["property_id"])
+    if body.action == "reassign" and not body.assigned_to:
+        raise HTTPException(422, "Choose a cleaner")
+    changes = {"status": "completed" if body.action == "complete" else "pending",
+               "review_notes": body.note.strip()}
+    if body.assigned_to:
+        changes["assigned_to"] = body.assigned_to
+    event = {"action": body.action, "note": body.note.strip(), "actor_id": str(user["_id"]),
+             "actor_name": user.get("name", "Admin"), "at": now_iso(), "result_revision": c.get("revision", 0) + 1,
+             "assigned_to": body.assigned_to or c.get("assigned_to"),
+             "before": {k: c.get(k) for k in ("status", "assigned_to", "completed_at", "reviewed_at", "reviewed_by", "review_notes", "submitted_at", "submitted_by", "rooms")}}
+    update = {"$set": changes, "$inc": {"revision": 1}, "$push": {"admin_history": event}}
+    if body.action == "complete":
+        changes.update(completed_at=now_iso(), reviewed_at=now_iso(), reviewed_by=str(user["_id"]))
+    else:
+        # Preserve old evidence in history; rework must collect fresh evidence.
+        changes["rooms"] = [{"name": r["name"], "before": [], "after": [], "checked": []} for r in c.get("rooms", [])]
+        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by")}
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, update)
+    if not result.matched_count:
+        raise HTTPException(409, "Session changed; refresh and retry")
+    return await get_cleaning(cid, user)
+
+
+@api.get("/cleaning-team")
+async def cleaning_team(user=Depends(staff_user)):
+    if user["role"] not in ("admin", "supervisor"):
+        raise HTTPException(403, "Supervisors only")
+    q = {"active": True, "role": "cleaner"}
+    if user["role"] == "supervisor":
+        q["property_ids"] = {"$in": owner_pids(user)}
+    users = await db.users.find(q, {"name": 1, "property_ids": 1}).to_list(500)
+    return [out(u) for u in users]
+
+
+@api.post("/cleaning/{cid}/review")
+async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
+    if user["role"] not in ("admin", "supervisor"):
+        raise HTTPException(403, "Supervisor review required")
+    c = await checked_cleaning(cid, user)
+    if c["status"] != "awaiting_review":
+        raise HTTPException(409, "Session is not awaiting review")
+    if not body.approved and not body.notes.strip():
+        raise HTTPException(422, "Explain what needs to be corrected")
+    changes = {"status": "completed" if body.approved else "in_progress", "review_notes": body.notes,
+               "reviewed_by": str(user["_id"]), "reviewed_at": now_iso()}
+    if body.approved:
+        changes["completed_at"] = now_iso()
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": "awaiting_review"}, {"$set": changes})
+    if not result.matched_count:
+        raise HTTPException(409, "Session changed; refresh and retry")
+    return await get_cleaning(cid, user)
 
 
 async def enrich_cleaning(c: dict):
@@ -715,6 +907,7 @@ async def enrich_cleaning(c: dict):
     rooms = o.get("rooms") or []
     o["rooms_total"] = len(rooms)
     o["rooms_done"] = sum(1 for r in rooms if r.get("before") and r.get("after"))
+    o["checklist_items"] = CHECKLIST
     return o
 
 
@@ -722,20 +915,28 @@ async def enrich_cleaning(c: dict):
 async def list_cleaning(status: Optional[str] = None, property_id: Optional[str] = None, user=Depends(current_user)):
     q: dict[str, Any] = {}
     if status == "open":
-        q["status"] = {"$ne": "completed"}
+        q["status"] = {"$nin": ["completed", "cancelled"]}
+    elif status == "unassigned":
+        q.update(status={"$nin": ["completed", "cancelled"]}, assigned_to=None)
     elif status:
         q["status"] = status
     if property_id:
         q["property_id"] = property_id
     scope(user, q)
     if user["role"] == "cleaner":
-        q["$or"] = [{"assigned_to": str(user["_id"])}, {"assigned_to": None}]
+        q["assigned_to"] = str(user["_id"])
     items = await db.cleaning.find(q).sort("date", 1 if status == "open" else -1).to_list(500)
     return [await enrich_cleaning(c) for c in items]
 
 
 @api.post("/cleaning")
 async def create_cleaning(body: CleaningIn, _=Depends(admin_user)):
+    try:
+        date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(422, "Invalid cleaning date")
+    if body.assigned_to:
+        await validate_assignee(body.assigned_to, body.property_id)
     p = await db.properties.find_one({"_id": oid(body.property_id)})
     if not p:
         raise HTTPException(404, "Property not found")
@@ -747,48 +948,63 @@ async def create_cleaning(body: CleaningIn, _=Depends(admin_user)):
 
 @api.get("/cleaning/{cid}")
 async def get_cleaning(cid: str, user=Depends(current_user)):
-    c = await db.cleaning.find_one({"_id": oid(cid)})
-    if not c:
-        raise HTTPException(404, "Session not found")
-    check_pid(user, c["property_id"])
+    c = await checked_cleaning(cid, user)
     return await enrich_cleaning(c)
 
 
 @api.post("/cleaning/{cid}/rooms/{idx}/media")
 async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(staff_user)):
-    c = await db.cleaning.find_one({"_id": oid(cid)})
+    c = await checked_cleaning(cid, user, writable=True)
     if not c or idx < 0 or idx >= len(c.get("rooms", [])):
         raise HTTPException(404, "Room not found")
     if c["status"] == "completed":
         raise HTTPException(400, "Session already completed")
-    upd = {"$push": {f"rooms.{idx}.{body.phase}": body.media_id}, "$set": {"status": "in_progress"}}
-    if not c.get("assigned_to"):
-        upd["$set"]["assigned_to"] = str(user["_id"])
-    await db.cleaning.update_one({"_id": c["_id"]}, upd)
+    media = await db.media.find_one({"_id": oid(body.media_id), "is_deleted": False})
+    if not media or media.get("kind") != "image" or (user["role"] != "admin" and media.get("owner_id") != str(user["_id"])):
+        raise HTTPException(422, "Use a photo uploaded by your account")
+    photos = list(dict.fromkeys([*c["rooms"][idx].get(body.phase, []), body.media_id]))
+    upd = {"$set": {f"rooms.{idx}.{body.phase}": photos, "status": "in_progress"}, "$inc": {"revision": 1}}
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, upd)
+    if not result.matched_count:
+        raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
 
 
 @api.delete("/cleaning/{cid}/rooms/{idx}/media/{phase}/{media_id}")
 async def remove_room_media(cid: str, idx: int, phase: Literal["before", "after"], media_id: str, user=Depends(staff_user)):
-    await db.cleaning.update_one({"_id": oid(cid), "status": {"$ne": "completed"}}, {"$pull": {f"rooms.{idx}.{phase}": media_id}})
+    c = await checked_cleaning(cid, user, writable=True)
+    if idx < 0 or idx >= len(c.get("rooms", [])):
+        raise HTTPException(404, "Room not found")
+    photos = [mid for mid in c["rooms"][idx].get(phase, []) if mid != media_id]
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, {"$set": {f"rooms.{idx}.{phase}": photos}, "$inc": {"revision": 1}})
+    if not result.matched_count:
+        raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
 
 
 @api.put("/cleaning/{cid}")
 async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(staff_user)):
-    c = await db.cleaning.find_one({"_id": oid(cid)})
-    if not c:
-        raise HTTPException(404, "Session not found")
-    changes = body.model_dump(exclude_none=True)
-    if "assigned_to" in changes and user["role"] != "admin":
-        raise HTTPException(403, "Only admins can assign")
-    if changes.get("status") == "completed":
+    c = await checked_cleaning(cid, user, writable=True)
+    changes = body.model_dump(exclude_unset=True)
+    if "assigned_to" in changes and user["role"] not in ("admin", "supervisor"):
+        raise HTTPException(403, "Only admins or supervisors can assign")
+    if changes.get("assigned_to"):
+        await validate_assignee(changes["assigned_to"], c["property_id"])
+    if changes.get("status") in ("completed", "awaiting_review"):
+        if not c.get("rooms"):
+            raise HTTPException(400, "Configure rooms before submitting cleaning")
         missing = [r["name"] for r in c.get("rooms", []) if not r.get("before") or not r.get("after")]
         if missing:
             raise HTTPException(400, "Before & after photos missing for: " + ", ".join(missing))
-        changes["completed_at"] = now_iso()
-        changes["completed_by"] = str(user["_id"])
-    await db.cleaning.update_one({"_id": c["_id"]}, {"$set": changes})
+        if any(set(r.get("checked", [])) != set(CHECKLIST) for r in c["rooms"]):
+            raise HTTPException(400, "Complete every room checklist")
+        changes["status"] = "awaiting_review"
+        changes["submitted_at"] = now_iso()
+        changes["submitted_by"] = str(user["_id"])
+    if changes:
+        result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "assigned_to": c.get("assigned_to"), "revision": c.get("revision")}, {"$set": changes, "$inc": {"revision": 1}})
+        if not result.matched_count:
+            raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
 
 # ---------------------------------------------------------------- Expenses (electricity)
@@ -796,8 +1012,9 @@ class ExpenseIn(BaseModel):
     property_id: str
     month: str  # YYYY-MM
     type: Literal["electricity", "other"] = "electricity"
-    amount: float
+    amount: float = Field(ge=0, allow_inf_nan=False)
     notes: str = ""
+    _month = field_validator("month")(valid_month)
 
 
 @api.get("/expenses")
@@ -808,6 +1025,7 @@ async def list_expenses(property_id: str, user=Depends(finance_user)):
 
 @api.post("/expenses")
 async def create_expense(body: ExpenseIn, _=Depends(admin_user)):
+    await validate_pids([body.property_id])
     doc = body.model_dump()
     doc["created_at"] = now_iso()
     r = await db.expenses.insert_one(doc)
@@ -821,8 +1039,7 @@ async def delete_expense(eid: str, _=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Settlement & reports
 def month_range(month: str):
-    y, m = map(int, month.split("-"))
-    return date(y, m, 1).isoformat(), date(y + (m // 12), (m % 12) + 1, 1).isoformat()
+    return month_bounds(month)
 
 
 def shift_month(month: str, delta: int) -> str:
@@ -851,10 +1068,11 @@ async def compute_settlement(p: dict, month: str):
     owner_payout = round(owner_share - owner_elec - other, 2)
     bm_net = round(bm_share - bm_elec, 2)
     nights = 0
+    occupied = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$lt": end}, "check_out": {"$gt": start}}).to_list(5000)
+    nights = sum((min(date.fromisoformat(b["check_out"]), date.fromisoformat(end)) - max(date.fromisoformat(b["check_in"]), date.fromisoformat(start))).days for b in occupied)
     by_ota: dict[str, dict] = {}
     for b in bookings:
         n = (date.fromisoformat(b["check_out"]) - date.fromisoformat(b["check_in"])).days
-        nights += n
         o = by_ota.setdefault(b["ota"], {"ota": b["ota"], "bookings": 0, "nights": 0, "gross": 0, "commission": 0})
         o["bookings"] += 1
         o["nights"] += n
@@ -897,11 +1115,13 @@ async def settlement(property_id: str, month: str, months: int = 1, user=Depends
 class PayoutIn(BaseModel):
     property_id: str
     month: str
-    amount: float = Field(ge=0)
+    amount: float = Field(ge=0, allow_inf_nan=False)
     paid_on: str
     method: Literal["Bank transfer", "UPI", "Cash", "Cheque"] = "Bank transfer"
     reference: str = ""
     notes: str = ""
+    _month = field_validator("month")(valid_month)
+    _paid_on = field_validator("paid_on")(valid_date)
 
 
 @api.post("/payouts")
@@ -1063,8 +1283,8 @@ table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px 
 # ---------------------------------------------------------------- Invoices
 class InvoiceItem(BaseModel):
     description: str
-    qty: float = 1
-    rate: float = 0
+    qty: float = Field(default=1, gt=0, allow_inf_nan=False)
+    rate: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 class InvoiceIn(BaseModel):
@@ -1076,12 +1296,18 @@ class InvoiceIn(BaseModel):
     bill_to_phone: str = ""
     bill_to_address: str = ""
     items: List[InvoiceItem]
-    tax_percent: float = 0
-    discount: float = 0
+    tax_percent: float = Field(default=0, ge=0, le=100, allow_inf_nan=False)
+    discount: float = Field(default=0, ge=0, allow_inf_nan=False)
     issue_date: str
     due_date: str = ""
     notes: str = ""
     status: Literal["unpaid", "paid"] = "unpaid"
+    _issue = field_validator("issue_date")(valid_date)
+
+    @field_validator("due_date")
+    @classmethod
+    def check_due(cls, value):
+        return valid_date(value) if value else value
 
 
 def invoice_totals(d: dict):
@@ -1109,6 +1335,8 @@ async def list_invoices(type: Optional[str] = None, _=Depends(admin_user)):
 
 @api.post("/invoices")
 async def create_invoice(body: InvoiceIn, _=Depends(admin_user)):
+    if body.property_id:
+        await validate_pids([body.property_id])
     if not body.items:
         raise HTTPException(400, "Add at least one line item")
     ctr = await db.counters.find_one_and_update({"_id": "invoice"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
@@ -1185,10 +1413,14 @@ async def owner_dashboard(user=Depends(finance_user)):
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
              "reports": await db.owner_reports.count_documents({"property_id": pid}),
-             "month_paid": bool(await db.payouts.find_one({"property_id": pid, "month": month}))}
+             "month_paid": False}
+        payment = await db.payouts.find_one({"property_id": pid, "month": month})
+        o["paid_amount"] = payment.get("amount", 0) if payment else 0
+        o["balance_due"] = max(0, round(s["owner_payout"] - o["paid_amount"], 2))
+        o["month_paid"] = bool(payment) and o["balance_due"] == 0
         o.update(await property_status(pid, today))
         villas.append(o)
-    return {"month": month, "villas": villas, "total_payout": sum(v["month_payout"] for v in villas)}
+    return {"month": month, "villas": villas, "total_payout": sum(v["month_payout"] for v in villas), "total_paid": sum(v["paid_amount"] for v in villas), "total_balance": sum(v["balance_due"] for v in villas)}
 
 
 @api.get("/meta")
@@ -1196,13 +1428,58 @@ async def meta():
     return {"otas": OTAS}
 
 # ---------------------------------------------------------------- Startup
+from guest_ids import register_guest_routes, BoundedGuestUploads
+purge_guest_ids = register_guest_routes(api, db, admin_user, oid, now_iso)
+from operations import IssueTracker
+issue_tracker = IssueTracker(db)
+issue_tracker.register(api, admin_user)
 app.include_router(api)
+app.add_middleware(BoundedGuestUploads)
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def private_guest_responses(request: Request, call_next):
+    from fastapi.responses import JSONResponse
+    try:
+        response = await call_next(request)
+    except Exception:
+        route = request.scope.get("route")
+        label = request.method + " " + (getattr(route, "path", None) or "unknown route")
+        reference = await issue_tracker.record(label, True)
+        status = 503 if any(x in label for x in ("guest-ids", "/upload", "/files/", "/guest/documents")) else 500
+        return JSONResponse({"detail": f"Service temporarily unavailable. Please try again. Reference: {reference}", "code": "SERVICE_UNAVAILABLE", "reference": reference}, status_code=status, headers={"Cache-Control": "no-store"})
+    route = request.scope.get("route")
+    if route and not request.url.path.startswith("/api/system/"):
+        label = request.method + " " + route.path
+        if response.status_code >= 500:
+            await issue_tracker.record(label, True)
+        elif response.status_code < 400:
+            await issue_tracker.record(label, False)
+    if request.url.path.startswith(("/api/guest/", "/api/guest-ids", "/api/guest-id-audit")) or request.url.path.endswith("/guest-link"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+async def guest_retention_loop():
+    while True:
+        try:
+            await purge_guest_ids({"_id": "retention-worker"})
+            await issue_tracker.record("Background guest ID cleanup", False)
+        except Exception:
+            logger.error("Guest ID retention purge failed; retrying next hour")
+            await issue_tracker.record("Background guest ID cleanup", True)
+        await asyncio.sleep(3600)
 
 
 @app.on_event("startup")
 async def startup():
     await db.users.create_index("email", unique=True)
+    await db.guest_links.create_index("token_hash", unique=True)
+    await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
+    await db.guest_ids.create_index("delete_after")
+    await db.guest_ids.create_index([("booking_id", 1), ("guest_number", 1)], unique=True, partialFilterExpression={"active": True})
     await db.bookings.create_index([("property_id", 1), ("check_in", 1)])
     await db.owner_reports.create_index("share_token")
     await db.user_sessions.create_index("session_token", unique=True)
@@ -1211,18 +1488,14 @@ async def startup():
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
+    app.state.retention_task = asyncio.create_task(guest_retention_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
                                   (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
         if not existing:
             await db.users.insert_one({"email": email.lower(), "name": name, "password_hash": hash_pw(pw), "role": role, "active": True, "created_at": now_iso()})
-        else:
-            fix: dict[str, Any] = {"role": role, "active": True}
-            if not verify_pw(pw, existing["password_hash"]):
-                fix["password_hash"] = hash_pw(pw)
-            await db.users.update_one({"_id": existing["_id"]}, {"$set": fix})
-    if await db.properties.count_documents({}) == 0:
+    if os.getenv("SEED_DEMO_DATA", "false").lower() == "true" and await db.properties.count_documents({}) == 0:
         await seed_demo()
     for gmail in [e.strip().lower() for e in os.environ.get("GOOGLE_ADMIN_EMAILS", "").split(",") if e.strip()]:
         if not await db.users.find_one({"email": gmail}):
@@ -1237,7 +1510,8 @@ async def startup():
         init_storage()
         logger.info("Object storage ready")
     except Exception as e:
-        logger.error(f"Storage init failed: {e}")
+        logger.error("Storage initialization failed")
+        await issue_tracker.record("Storage initialization", True)
 
 
 async def seed_demo():
@@ -1274,4 +1548,9 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task")]
+    for task in tasks:
+        if task:
+            task.cancel()
+    await asyncio.gather(*(task for task in tasks if task), return_exceptions=True)
     client.close()
