@@ -1,4 +1,3 @@
-/* global __dirname */
 const assert=require('node:assert/strict');
 const buildConfig=require('../app.config.js');
 const base=require('../app.json').expo;
