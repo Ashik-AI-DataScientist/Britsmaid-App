@@ -28,7 +28,10 @@ with patch("motor.motor_asyncio.AsyncIOMotorClient", AsyncMongoMockClient):
     import server
 import guest_ids
 
-PASSWORD = "Preview@2026"
+PASSWORD = secrets.token_urlsafe(18) if os.environ.get("BRITSMAID_PREVIEW_PRIVATE") == "1" else "Preview@2026"
+if os.environ.get("BRITSMAID_PREVIEW_PRIVATE") == "1":
+    account_file = ROOT / ".local-preview" / "private-test-accounts.txt"
+    account_file.write_text("Local synthetic test accounts only. Resets on restart.\n" + "\n".join(f"{r}@example.com : {PASSWORD}" for r in ("admin", "owner", "cleaner", "supervisor", "relief")), encoding="utf-8")
 
 
 def media_path(key):
@@ -89,10 +92,14 @@ def sample_photo(label, colour):
 @server.app.on_event("startup")
 async def seed_local_preview():
     db = server.db
+    await server.training.indexes()
     await db.users.create_index("email", unique=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("guest_number", 1)], unique=True, partialFilterExpression={"active": True})
     await server.seed_demo()
+    from training import LessonIn
+    sample = LessonIn(title="SAMPLE — Room photo basics", instructions="SAMPLE ONLY: not approved business training.\n1. Open your assigned task and choose the room.\n2. Save a before photo before cleaning.\n3. Follow your supervisor's approved cleaning instructions.\n4. Save an after photo, finish the checklist and submit for review.", onboarding=True, refresher_days=30)
+    await db.training_lessons.insert_one({"draft": sample.model_dump(), "revision": 0, "archived": False, "created_at": server.now_iso(), "updated_at": server.now_iso()})
     properties = await db.properties.find({}).sort("name", 1).to_list(10)
     pids = [str(p["_id"]) for p in properties]
     users = {}
@@ -135,7 +142,7 @@ async def seed_local_preview():
     for p in properties:
         await server.create_owner_report(server.OwnerReportIn(property_id=str(p["_id"]), month=today.isoformat()[:7],
             title=f"{p['name']} - sample owner report", condition_notes="Sample report. All amounts and guests are fictional.", media_ids=mids), users["admin"])
-    print("LOCAL DEMO READY: http://127.0.0.1:8765 - four roles @example.com - database resets on restart", flush=True)
+    print("LOCAL DEMO READY - four roles @example.com - database resets on restart; use the printed listener addresses", flush=True)
 
 
 @server.app.get("/preview-health")
@@ -173,6 +180,7 @@ if __name__ == "__main__":
     import socket
     import uvicorn
     parser = argparse.ArgumentParser(description="Local demo; optionally share on a private Wi-Fi IPv4 address")
+    parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--lan-ip", help="Computer's private Wi-Fi IPv4 address")
     options = parser.parse_args()
     addresses = ["127.0.0.1"]
@@ -185,13 +193,13 @@ if __name__ == "__main__":
     try:
         for address in addresses:
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.bind((address, 8765))
+            listener.bind((address, options.port))
             listener.listen(128)
             listener.setblocking(False)
             sockets.append(listener)
         for address in addresses:
-            print(f"Demo preview: http://{address}:8765", flush=True)
-        config = uvicorn.Config(server.app, host="127.0.0.1", port=8765, access_log=True)
+            print(f"Demo preview: http://{address}:{options.port}", flush=True)
+        config = uvicorn.Config(server.app, host="127.0.0.1", port=options.port, access_log=False)
         uvicorn.Server(config).run(sockets=sockets)
     finally:
         for listener in sockets:

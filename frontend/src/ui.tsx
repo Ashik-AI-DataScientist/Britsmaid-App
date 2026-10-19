@@ -52,7 +52,7 @@ export function Button({ title, onPress, variant = "primary", icon, loading, dis
       ]}
     >
       {loading ? <ActivityIndicator color={fg} /> : icon ? <Icon name={icon} size={small ? 16 : 18} color={fg} /> : null}
-      <Text style={{ color: fg, fontFamily: fonts.textSemi, fontSize: small ? 13 : 15 }}>{title}</Text>
+      <Text style={{ color: fg, fontFamily: fonts.textSemi, fontSize: small ? 13 : 15, flexShrink: 1, textAlign: "center" }}>{title}</Text>
     </Pressable>
   );
 }

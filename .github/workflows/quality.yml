@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
-      - run: python -m pytest backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py -q
+      - run: python -m pytest backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py backend/tests/test_camera_training_local.py -q
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -33,3 +33,6 @@ jobs:
         run: pnpm typecheck && pnpm lint:check && pnpm test:edges
       - working-directory: frontend
         run: pnpm exec expo export --platform web --output-dir dist
+
+      - working-directory: frontend
+        run: pnpm exec expo export --platform android --output-dir dist-android

@@ -48,10 +48,12 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
   }, []);
 
   const logout = useCallback(async () => {
-    await storage.secureRemove(TOKEN_KEY);
+    // Cancel in-flight reads before clearing so old responses cannot populate a new user's cache.
     setToken(null);
     setUser(null);
+    await queryClient.cancelQueries();
     queryClient.clear();
+    await storage.secureRemove(TOKEN_KEY);
   }, []);
 
   useEffect(() => {
@@ -100,6 +102,8 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
     setAuthError("");
     const res = await request<{ access_token: string; user: User }>("/auth/login", { method: "POST", body: { email, password } });
     await storage.secureSet(TOKEN_KEY, res.access_token);
+    await queryClient.cancelQueries();
+    queryClient.clear();
     setToken(res.access_token);
     setUser(res.user);
     return res.user;

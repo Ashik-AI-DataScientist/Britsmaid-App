@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { ActivityIndicator, Pressable, View } from "react-native";
+import Constants from "expo-constants";
 import { Image } from "expo-image";
 import { Redirect } from "expo-router";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
@@ -58,6 +59,7 @@ export default function Login() {
             <Txt v="subtitle" style={{ fontSize: 15 }}>Continue with Google</Txt>
           </Pressable>
           {authError ? <Txt testID="login-google-error" v="body" color={colors.error}>{authError}</Txt> : null}
+          {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)} · use synthetic data only</Txt> : null}
           <Txt v="caption" style={{ textAlign: "center" }}>Admins manage everything. Cleaning staff see their checkout tasks.</Txt>
         </Animated.View>
       </KeyboardAwareScrollView>

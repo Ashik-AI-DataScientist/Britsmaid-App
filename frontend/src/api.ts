@@ -3,7 +3,9 @@ const BASE = `${BACKEND_URL}/api`;
 export const TOKEN_KEY = "bm_token";
 let token: string | null = null;
 let onUnauthorized: (() => void) | null = null;
-export function setToken(value: string | null) { token = value; }
+let authEpoch = 0;
+export function getAuthEpoch() { return authEpoch; }
+export function setToken(value: string | null) { if (token !== value) authEpoch++; token = value; }
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn; }
 type Opts = { method?: string; body?: unknown; form?: FormData; authorization?: string };
 

@@ -5,7 +5,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
-import { Badge, Button, Card, Chip, ConfirmSheet, Header, Icon, IconButton, Input, Loading, Segmented, Sheet, Txt, useToast } from "@/src/ui";
+import { Badge, Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, IconButton, Input, Loading, Segmented, Sheet, Txt, useToast } from "@/src/ui";
 import { spacing, useTheme } from "@/src/theme";
 import { InviteSheet, Invitee } from "@/src/components/InviteSheet";
 
@@ -70,7 +70,7 @@ export default function Staff() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title="Team & logins" subtitle="Admins, supervisors, cleaners & owners" right={<IconButton testID="staff-add-button" name="person-add-outline" tone="brand" onPress={() => setOpen(true)} />} />
-      {q.isLoading ? <Loading /> : (
+      {q.isLoading ? <Loading /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
         <KeyboardAwareScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }}>
           {(q.data ?? []).map((u) => (
             <Card key={u.id} testID={`staff-${u.id}`} onPress={() => setEdit({ id: u.id, name: u.name, phone: u.phone ?? "", role: u.role, password: "", property_ids: u.property_ids ?? [], self: u.id === user?.id })} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>

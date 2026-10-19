@@ -81,6 +81,7 @@ export default function Dashboard() {
             </Card>
           </Animated.View>
 
+          <Card onPress={() => router.push("/training")}><Txt v="subtitle">Cleaner training</Txt><Txt v="caption">Lessons, onboarding, refreshers and completion history</Txt></Card>
           <Animated.View entering={FadeInDown.delay(150).duration(400)}>
             <Card testID="dashboard-team-card" onPress={() => router.push("/staff")} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
               <Icon name="people" size={22} color={colors.brandPrimary} />
