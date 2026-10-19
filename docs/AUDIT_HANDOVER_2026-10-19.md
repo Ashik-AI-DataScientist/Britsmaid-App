@@ -22,12 +22,12 @@ The existing Expo/React Native design and FastAPI/MongoDB application were exten
 | Property inputs allowed blank/duplicate room names and negative rates | Missing model constraints | Distinct nonempty trimmed room names, bounded property name and nonnegative finite base rate | Property validation and history-preservation tests |
 | Reports/invoices accepted broken references or invalid recipient/date combinations | Some server validations were missing | Validate report media existence, invoice booking/property binding, nonblank recipient and due date order | Report reference, invoice validation/calculation/status tests |
 | Some edit screens spun forever or opened blank after load failure | Unhandled/reduced GET failures | Persistent retry cards for property/booking/invoice/report/team loads; stale response guards; invoice prefill applied once | Type/lint/build checks and source review; actual outage interaction on each form not executed |
-| Notes could not be saved before task submission | The screen sent notes only with final completion | Explicit Save notes action awaits the server; failed writes keep the text and show an error | Positive notes-save/incomplete-submit regression test; browser check recorded after rebuild |
+| Notes could not be saved before task submission | The screen sent notes only with final completion | Explicit Save notes action awaits the server; failed writes keep the text and show an error | Positive notes-save/incomplete-submit regression test; browser save and reload retained notes before room completion |
 | Late responses could cross a login change | Asynchronous file preparation and response handling used mutable global authentication | Capture-bound auth epochs stop a delayed upload before POST; stale responses/private blobs are rejected and cannot sign out the new account | Four request-level account-switch regressions |
 | Previous user information could remain in request cache during role switching | Logout cleared without first cancelling active reads | Cancel reads and clear user cache before a subsequent login; drafts are scoped by account | Four-role browser sign-out/login smoke checks; cross-role API tests |
 | Native release compile failed while exports had passed | Custom Metro config required an undeclared transitive cache module | Use Expo defaults; directly load Metro config in regression command | Initial native compiler log; corrected config-load/web/Android checks; APK result recorded below |
 
-The compatibility pass preserves image/video report library selection and multiple-file batches. Batch revisions advance only after each acknowledged attachment; partial retries keep the successful items. A recovered cleaner draft can also be explicitly discarded from the task list if its original task is no longer accessible.
+The compatibility pass preserves image/video report library selection and multiple-file batches. A browser two-image batch attached both files to the selected before phase, and they remained after reload. Batch revisions advance only after each acknowledged attachment; partial retries keep the successful items. A recovered cleaner draft can also be explicitly discarded from the task list if its original task is no longer accessible.
 
 New training features and their operational instructions are in [Cleaner training](CLEANER_TRAINING.md). This includes publishable versions, immutable assignment snapshots, admin assignment/all-active assignment, onboarding, due dates, inactive-account filtering, idempotent completion, refresher scheduling and historical records. A scheduler issue is visible in the existing admin issue panel. Lessons do not block cleaning access.
 
@@ -106,16 +106,17 @@ The in-app issue panel records sanitized server failures/recovery. It cannot ale
 
 ## APK, local PC and exact version
 
-APK build/installation status and final commit evidence are appended after the native workflow finishes. See [Android preview instructions](ANDROID_PREVIEW.md) for private-PC start, random test accounts, permissions, source identification, installation/signing limits and the physical-device checklist.
+The final standalone APK compiled successfully and was independently verified before replacing the PC download copy. Installation on a physical phone remains untested. See [Android preview instructions](ANDROID_PREVIEW.md) for private-PC start, random test accounts, permissions, source identification, installation/signing limits and the physical-device checklist.
 
 
 ### Verified current build evidence
 
-- Signed standalone ARM64 APK **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286736988
-- Exact APK source/configuration commit: **3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550**. Subsequent commits update local launcher compatibility and handover evidence; mobile feature code is unchanged.
-- Quality checks: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286746555 (175 backend tests, 30 frontend tests, type/lint, web and Android exports). Individual backend/frontend check steps passed.
-- APK SHA-256 independently matched the workflow checksum: `3b494b45b9d0e9e04d3b6bfd3d8659ff1c64400370dbf4c21343221c17a37dab`.
-- Embedded `assets/app.config` and Hermes bundle independently inspected: package `com.emergent.britsmaidrevshare.ixdi3x`, source `3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550`, backend **http://192.168.1.11:8766**, testOnly true. APK is 49,240,647 bytes; compressed artifact is about 30 MB.
+- Signed standalone ARM64 APK **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39293758998
+- Exact APK source/configuration commit: **ebe4254444e7735d07818a0782738bd8ac38c3ed**. This is the frozen app-code commit, including notes saving, batch capture compatibility and authentication-session safeguards. A subsequent documentation-only commit records this evidence.
+- Quality checks: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39293768309 (175 backend tests, 30 frontend tests, type/lint, web and Android exports). Individual backend/frontend check steps passed.
+- Artifact ID **12205719866**; ZIP SHA-256 `23237787208bd6a526e2a6a49d34a3b583606455f648589398460cc55f55d266` independently matched GitHub metadata.
+- APK SHA-256 independently matched the workflow checksum: `fedbe6d2a4a5d3f49556b1ba26c8763ed467962a8c60a73726fbb96c407b3a10`.
+- Embedded `assets/app.config` and Hermes bundle independently inspected: package `com.emergent.britsmaidrevshare.ixdi3x`, source `ebe4254444e7735d07818a0782738bd8ac38c3ed`, backend **http://192.168.1.11:8766**, testOnly true. APK is 49,245,147 bytes; compressed artifact is about 30 MB.
 - PC file: `C:/Users/HP/Projects/Britsmaid/App/.local-preview/android/Britsmaid-preview-arm64.apk`.
 - Phone download while PC preview runs: **http://192.168.1.11:8766/preview.apk**. The route's HTTP status, MIME type, size and ZIP signature were checked through the PC's private interface; this does not prove a physical phone's firewall/network path.
 - The first successful APK was built for a different Wi-Fi address (192.168.29.55). The PC changed networks before handover, so a new APK was compiled for 192.168.1.11. The old file is retained separately as `Britsmaid-preview-previous-network.apk`; it is not served by the active download route.
