@@ -1,4 +1,4 @@
-param([string]$LanAddress='192.168.29.55', [int]$Port=8766)
+param([string]$LanAddress='192.168.1.11', [int]$Port=8766)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 Set-Location $root
@@ -18,6 +18,6 @@ Write-Host 'Synthetic test backend only. Keep this PC awake; phone must use the 
 Write-Host 'Never upload real guest IDs. Do not forward this port through the router.'
 Write-Host "Phone/backend address: http://${LanAddress}:$Port"
 Write-Host 'Random test passwords are generated on each restart in .local-preview\private-test-accounts.txt.'
-Write-Host 'The current APK expects 192.168.29.55:8766. A different address needs a newly configured APK.'
+Write-Host 'The current APK expects 192.168.1.11:8766. A different address needs a newly configured APK.'
 & $python scripts/local_preview.py --lan-ip $LanAddress --port $Port --compat-port 8765
 if ($LASTEXITCODE -ne 0) { throw "Preview stopped with code $LASTEXITCODE. A previous preview may still own the port." }

@@ -115,3 +115,6 @@ APK build/installation status and final commit evidence are appended after the n
 - Local file: `.local-preview/android/Britsmaid-preview-arm64.apk`. Phone download, while the private PC preview runs: **http://192.168.29.55:8766/preview.apk**.
 - GitHub artifact expires 22 October 2026; the downloaded local copy is retained. No Play Store submission, production signing key, main merge, production DB or cloud deployment was made.
 - APK installation/launch, physical camera/permissions and device-specific usability remain **untested** until the user installs it. Native compile success is not a physical camera test.
+
+
+The PC changed Wi-Fi after the first verified APK: 192.168.29.55 became 192.168.1.11. That earlier artifact is valid only for the earlier address. A new build is required for the current private LAN endpoint; its verified evidence is recorded below after completion. This is a network change, not evidence that the earlier APK reached a physical phone.

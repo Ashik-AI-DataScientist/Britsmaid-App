@@ -8,7 +8,7 @@ on:
       backend_url:
         description: 'Explicit HTTPS staging or private PC LAN backend origin (no localhost)'
         required: true
-        default: 'http://192.168.29.55:8766'
+        default: 'http://192.168.1.11:8766'
 permissions:
   contents: read
 concurrency:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      EXPO_PUBLIC_BACKEND_URL: ${{ inputs.backend_url || 'http://192.168.29.55:8766' }}
+      EXPO_PUBLIC_BACKEND_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
       BRITSMAID_PREVIEW_LAN: '1'
       CI: '1'
     defaults:
