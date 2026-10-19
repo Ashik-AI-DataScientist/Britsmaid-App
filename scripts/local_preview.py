@@ -5,6 +5,7 @@ Database records reset on restart; uploaded test files remain in .local-preview/
 Never use this launcher for deployment or real guest documents.
 """
 import io
+import asyncio
 import os
 import secrets
 import sys
@@ -142,12 +143,29 @@ async def seed_local_preview():
     for p in properties:
         await server.create_owner_report(server.OwnerReportIn(property_id=str(p["_id"]), month=today.isoformat()[:7],
             title=f"{p['name']} - sample owner report", condition_notes="Sample report. All amounts and guests are fictional.", media_ids=mids), users["admin"])
+    server.app.state.training_task = asyncio.create_task(server.training_loop())
     print("LOCAL DEMO READY - four roles @example.com - database resets on restart; use the printed listener addresses", flush=True)
+
+
+@server.app.on_event("shutdown")
+async def stop_local_training():
+    task = getattr(server.app.state, "training_task", None)
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @server.app.get("/preview-health")
 async def preview_health():
-    return {"mode": "local-demo", "database": "in-memory", "storage": "local-demo-unencrypted", "production_connected": False}
+    return {"mode": "local-demo", "database": "in-memory", "storage": "local-demo-unencrypted", "production_connected": False, "android_preview": os.environ.get("BRITSMAID_PREVIEW_PRIVATE") == "1"}
+
+
+@server.app.get("/preview.apk", include_in_schema=False)
+async def preview_apk():
+    apk = ROOT / ".local-preview" / "android" / "Britsmaid-preview-arm64.apk"
+    if os.environ.get("BRITSMAID_PREVIEW_PRIVATE") != "1" or not apk.is_file():
+        raise HTTPException(404, "Android preview is not available")
+    return FileResponse(apk, media_type="application/vnd.android.package-archive", filename="Britsmaid-preview-arm64.apk", headers={"Cache-Control": "no-store"})
 
 
 @server.app.get("/{preview_path:path}", include_in_schema=False)
@@ -181,6 +199,7 @@ if __name__ == "__main__":
     import uvicorn
     parser = argparse.ArgumentParser(description="Local demo; optionally share on a private Wi-Fi IPv4 address")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--compat-port", type=int, help="Optional old bookmark port served by the same app/database")
     parser.add_argument("--lan-ip", help="Computer's private Wi-Fi IPv4 address")
     options = parser.parse_args()
     addresses = ["127.0.0.1"]
@@ -191,14 +210,15 @@ if __name__ == "__main__":
         addresses.append(str(address))
     sockets = []
     try:
-        for address in addresses:
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.bind((address, options.port))
-            listener.listen(128)
-            listener.setblocking(False)
-            sockets.append(listener)
-        for address in addresses:
-            print(f"Demo preview: http://{address}:{options.port}", flush=True)
+        ports = list(dict.fromkeys([options.port] + ([options.compat_port] if options.compat_port else [])))
+        for port in ports:
+            for address in addresses:
+                listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.bind((address, port))
+                listener.listen(128)
+                listener.setblocking(False)
+                sockets.append(listener)
+                print(f"Demo preview: http://{address}:{port}", flush=True)
         config = uvicorn.Config(server.app, host="127.0.0.1", port=options.port, access_log=False)
         uvicorn.Server(config).run(sockets=sockets)
     finally:
