@@ -35,3 +35,7 @@ export class CaptureQueue {
     } finally { this.busy = false; }
   }
 }
+
+export function captureMediaTypes(mode: "photo" | "video" | "library", allowVideo = false): ("images" | "videos")[] {
+  return mode === "video" ? ["videos"] : mode === "library" && allowVideo ? ["images", "videos"] : ["images"];
+}

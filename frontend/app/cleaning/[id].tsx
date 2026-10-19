@@ -50,6 +50,8 @@ export default function CleaningSession() {
     for (const mid of ids) data = await api.post(`/cleaning/${destination.taskId}/rooms/${destination.roomIndex}/media`, {
       phase: destination.phase, media_id: mid, room_name: destination.roomName, expected_revision: destination.revision
     });
+    // Advance only the revision after an acknowledged batch item; room/task/phase stay fixed.
+    destination.revision = data.revision ?? destination.revision;
     refresh(data);
   };
   const removeMedia = async (idx: number, phase: string, mid: string) => refresh(await api.del(`/cleaning/${id}/rooms/${idx}/media/${phase}/${mid}`));

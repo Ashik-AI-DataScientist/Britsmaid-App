@@ -1,7 +1,7 @@
 /* global __dirname */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path'),ts=require('../node_modules/typescript');
 const compiled=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/capture-workflow.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
-const context={exports:{}};vm.runInNewContext(compiled,context);const {CaptureQueue,acquirePicker,releasePicker}=context.exports;
+const context={exports:{}};vm.runInNewContext(compiled,context);const {CaptureQueue,acquirePicker,releasePicker,captureMediaTypes}=context.exports;
 const tests=[];function test(n,f){tests.push([n,f]);}
 function draft(){return {userId:'cleaner1',target:{key:'task1:room1:before',taskId:'task1',roomIndex:1,phase:'before',label:'Room 1 before'},assets:[{uri:'file://synthetic.jpg'}],startedAt:'synthetic'};}
 test('one global picker despite immediate repeated taps',async()=>{const a={},b={};assert.equal(acquirePicker(a),true);assert.equal(acquirePicker(a),false);assert.equal(acquirePicker(b),false);releasePicker(b);assert.equal(acquirePicker(b),false);releasePicker(a);assert.equal(acquirePicker(b),true);releasePicker(b);});
@@ -12,4 +12,16 @@ test('account change after upload prevents attaching with another login',async()
 test('serialized recovery retains task room phase and avoids another upload',async()=>{const d=draft();d.uploaded={id:'existing'};const restored=JSON.parse(JSON.stringify(d));const q=new CaptureQueue(restored,{persist:async()=>{},upload:async()=>assert.fail('duplicate upload'),attach:async(m,t)=>{assert.equal(t.roomIndex,1);assert.equal(t.phase,'before');assert.equal(m[0].id,'existing');},isCurrent:()=>true});await q.save();});
 test('persistence failure stops attachment and keeps uploaded result in memory',async()=>{const d=draft();const q=new CaptureQueue(d,{persist:async()=>{throw Error('disk full');},upload:async()=>({id:'m'}),attach:async()=>assert.fail('must persist first'),isCurrent:()=>true});await assert.rejects(q.save(),/disk full/);assert.equal(d.uploaded.id,'m');});
 test('cancelled empty draft never uploads or attaches',async()=>{const d=draft();d.assets=[];const q=new CaptureQueue(d,{persist:async()=>{},upload:async()=>assert.fail('empty upload'),attach:async()=>assert.fail('empty attachment'),isCurrent:()=>true});await q.save();});
+for(const [mode,allow,expected] of [["photo",true,["images"]],["video",true,["videos"]],["library",false,["images"]],["library",true,["images","videos"]]]) {
+ test(`picker preserves ${mode} media types (video allowed: ${allow})`,async()=>assert.deepEqual(Array.from(captureMediaTypes(mode,allow)),expected));
+}
+test('partial batch retry keeps successful item and uploads remaining item only once',async()=>{
+ const d=draft();d.assets.push({uri:'file://second.jpg'});d.target.revision=0;
+ let uploads=0,attempts=0;const saved=[];
+ const q=new CaptureQueue(d,{persist:async()=>{},upload:async()=>({id:`m${++uploads}`}),attach:async(m,t)=>{
+   if(++attempts===2)throw Error('second attach failed');saved.push(m[0].id);t.revision++;
+ },isCurrent:()=>true});
+ await assert.rejects(q.save(),/second attach failed/);assert.equal(d.assets.length,1);assert.equal(d.uploaded.id,'m2');assert.equal(d.target.revision,1);
+ await q.save();assert.equal(uploads,2);assert.deepEqual(saved,['m1','m2']);assert.equal(d.target.revision,2);
+});
 (async()=>{let failed=0;for(const[n,f]of tests){try{await f();console.log('PASS '+n);}catch(e){failed++;console.error('FAIL '+n,e);}}console.log(`${tests.length-failed} passed; ${failed} failed`);process.exitCode=failed?1:0;})();

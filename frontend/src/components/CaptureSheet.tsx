@@ -7,7 +7,7 @@ import { getAuthEpoch, request } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { spacing } from "@/src/theme";
-import { acquirePicker, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
+import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
 export type Media = { id: string; kind: "image" | "video"; content_type: string };
 async function uploadAsset(a: CaptureAsset): Promise<Media> {
   if (a.fileSize && a.fileSize > 100 * 1024 * 1024) throw new Error("Choose a file smaller than 100 MB.");
@@ -107,7 +107,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       d = { userId: user.id, target: { ...target }, assets: [], startedAt: new Date().toISOString() };
       const epoch = getAuthEpoch();
       await persist(d);
-      const opts: ImagePicker.ImagePickerOptions = { mediaTypes: mode === "video" ? ["videos"] : mode === "photo" ? ["images"] : allowVideo ? ["images", "videos"] : ["images"], quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: false };
+      const opts: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(mode, allowVideo), quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library", selectionLimit: 10 };
       const result = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (result.canceled || !result.assets?.length) { await persist(null, user?.id); return; }
       d.assets = await Promise.all(result.assets.map(keepAsset));
@@ -116,12 +116,12 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
     finally { setBusy(false); releasePicker(lock.current); }
   };
   // Web must invoke the picker synchronously in the user's gesture, before any storage/permission await.
-  const runWeb = (camera: boolean) => {
+  const runWeb = (camera: boolean, video = false) => {
     if (!user || pending || !acquirePicker(lock.current)) return;
     setBusy(true); setFailure("");
     const d: CaptureDraft = { userId: user.id, target: { ...(destination ?? { key: purpose, label: purpose }) }, assets: [], startedAt: new Date().toISOString() };
     const epoch = getAuthEpoch();
-    const options: ImagePicker.ImagePickerOptions = { mediaTypes: ["images"], allowsMultipleSelection: false, quality: 0.6, cameraType: ImagePicker.CameraType.back };
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(camera ? video ? "video" : "photo" : "library", allowVideo), allowsMultipleSelection: !camera, selectionLimit: 10, quality: 0.6, videoMaxDuration: 60, cameraType: ImagePicker.CameraType.back };
     const result = camera ? ImagePicker.launchCameraAsync(options) : ImagePicker.launchImageLibraryAsync(options);
     // Browser cancellation is inconsistent: explicit reset releases a stuck picker without permitting late results.
     const owner = lock.current;
@@ -137,7 +137,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       .finally(() => { releasePicker(owner); if (lock.current === owner) setBusy(false); });
   };
   const close = () => { if (busy) return; if (pending) { setFailure("This photo has not been saved. Retry or explicitly discard it before closing."); return; } onClose(); };
-  return <Sheet visible={visible} onClose={close} title="Add photo" testID={testID}><ScrollView contentContainerStyle={{ gap: spacing.sm }}>
+  return <Sheet visible={visible} onClose={close} title={allowVideo ? "Add photos or video" : "Add photo"} testID={testID}><ScrollView contentContainerStyle={{ gap: spacing.sm }}>
     <Txt v="subtitle">{pending?.target.label ?? destination?.label ?? purpose}</Txt>
     <Txt>{purpose}</Txt>
     {Platform.OS === "web" ? <Txt v="caption">Take photo requests your phone camera. Some browsers show a file chooser instead. You can take a photo in your camera app, then choose it from the library. Keep this page open until saved.</Txt> : null}
@@ -147,7 +147,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       <Button title="Discard unsaved photo" variant="ghost" disabled={busy} onPress={() => setDiscard(true)} />
       {discard ? <><Txt>Discard this pending photo? It will not be attached. An already uploaded file may remain until storage cleanup.</Txt><Button title="Yes, discard photo" variant="danger" disabled={busy} onPress={async () => { try { await cleanup(pending); await persist(null, user?.id); setPending(null); setDiscard(false); setFailure(""); onClose(); } catch { setFailure("Could not discard the draft. Try again."); } }} /><Button title="Keep photo" variant="secondary" onPress={() => setDiscard(false)} /></> : null}</> : <>
       <Button title="Take photo" testID={`${testID}-take-photo`} icon="camera" loading={busy} onPress={() => Platform.OS === "web" ? runWeb(true) : run("photo")} />
-      {allowVideo && Platform.OS !== "web" ? <Button title="Record video" disabled={busy} variant="secondary" onPress={() => { Alert.alert("Walkthrough video", "Video may require microphone permission. Only record non-private property areas.", [{ text: "Cancel" }, { text: "Continue", onPress: () => run("video") }]); }} /> : null}
+      {allowVideo ? <Button title="Record video" disabled={busy} variant="secondary" onPress={() => { if (Platform.OS === "web") { runWeb(true, true); return; } Alert.alert("Walkthrough video", "Video may require microphone permission. Only record non-private property areas.", [{ text: "Cancel" }, { text: "Continue", onPress: () => run("video") }]); }} /> : null}
       <Button title="Choose from library" testID={`${testID}-library`} icon="images" disabled={busy} variant="secondary" onPress={() => Platform.OS === "web" ? runWeb(false) : run("library")} />
     </>}
     {Platform.OS === "web" && busy ? <Button title="Camera cancelled? Return to options" variant="ghost" onPress={() => { const previous=lock.current; releasePicker(previous); lock.current={}; setBusy(false); }} /> : null}

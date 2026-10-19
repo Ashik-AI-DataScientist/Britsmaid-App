@@ -26,12 +26,14 @@ The existing Expo/React Native design and FastAPI/MongoDB application were exten
 | Previous user information could remain in request cache during role switching | Logout cleared without first cancelling active reads | Cancel reads and clear user cache before a subsequent login; drafts are scoped by account | Four-role browser sign-out/login smoke checks; cross-role API tests |
 | Native release compile failed while exports had passed | Custom Metro config required an undeclared transitive cache module | Use Expo defaults; directly load Metro config in regression command | Initial native compiler log; corrected config-load/web/Android checks; APK result recorded below |
 
+The compatibility pass preserves image/video report library selection and multiple-file batches. Batch revisions advance only after each acknowledged attachment; partial retries keep the successful items. A recovered cleaner draft can also be explicitly discarded from the task list if its original task is no longer accessible.
+
 New training features and their operational instructions are in [Cleaner training](CLEANER_TRAINING.md). This includes publishable versions, immutable assignment snapshots, admin assignment/all-active assignment, onboarding, due dates, inactive-account filtering, idempotent completion, refresher scheduling and historical records. A scheduler issue is visible in the existing admin issue panel. Lessons do not block cleaning access.
 
 ## Automated results
 
 - **175 isolated backend tests passed**, including the earlier 133 and 42 added/expanded cases. Latest local run uses Python 3.12, FastAPI HTTPX ASGI transport, MongoMock Motor and synthetic image/storage fixtures; pytest-xdist runs two workers. No external service is contacted. Known dependency warnings concern FastAPI on_event and multipart deprecation; they are not test failures.
-- **21 frontend tests passed**: nine request/error/auth cases, eight capture queue/lock/recovery cases, four preview network/config cases. These execute in Node with a mocked request environment or pure capture controller; they are not real camera tests. Metro configuration also loads successfully from the pinned dependencies.
+- **26 frontend tests passed**: nine request/error/auth cases, 13 capture queue/lock/recovery/media-mode cases, four preview network/config cases. These execute in Node with a mocked request environment or pure capture controller; they are not real camera tests. Metro configuration also loads successfully from the pinned dependencies.
 - TypeScript and ESLint pass with zero errors/warnings on the final source. Frozen pnpm install is retained. Web and Android JavaScript exports and Android native prebuild are checked separately from native compilation.
 - GitHub quality checks run the same isolated backend, type/lint/frontend tests and both JS exports. Current links/status are recorded with the APK result below; a local pass is not substituted for CI.
 - During implementation an xdist collection error from a random parametrization ID and an unused test lint declaration were fixed and rerun. Failed intermediate native/CI runs remain visible in GitHub; they are not passing APKs.
@@ -110,7 +112,7 @@ APK build/installation status and final commit evidence are appended after the n
 
 - Signed standalone ARM64 APK **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286736988
 - Exact APK source/configuration commit: **3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550**. Subsequent commits update local launcher compatibility and handover evidence; mobile feature code is unchanged.
-- Quality checks: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286746555 (175 backend tests, 21 frontend tests, type/lint, web and Android exports). Individual backend/frontend check steps passed.
+- Quality checks: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286746555 (175 backend tests, 26 frontend tests, type/lint, web and Android exports). Individual backend/frontend check steps passed.
 - APK SHA-256 independently matched the workflow checksum: `3b494b45b9d0e9e04d3b6bfd3d8659ff1c64400370dbf4c21343221c17a37dab`.
 - Embedded `assets/app.config` and Hermes bundle independently inspected: package `com.emergent.britsmaidrevshare.ixdi3x`, source `3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550`, backend **http://192.168.1.11:8766**, testOnly true. APK is 49,240,647 bytes; compressed artifact is about 30 MB.
 - PC file: `C:/Users/HP/Projects/Britsmaid/App/.local-preview/android/Britsmaid-preview-arm64.apk`.
