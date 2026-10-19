@@ -6,6 +6,7 @@ Set-Location $root
 $url=[Uri]$BackendUrl
 if (-not $url.IsAbsoluteUri) { throw 'Use a complete backend URL' }
 $env:EXPO_PUBLIC_BACKEND_URL=$BackendUrl.TrimEnd('/')
+$env:EXPO_PUBLIC_GUEST_WEB_URL=$BackendUrl.TrimEnd('/')
 $env:BRITSMAID_PREVIEW_LAN=if ($url.Scheme -eq 'http') {'1'} else {'0'}
 $commit=(& git rev-parse HEAD).Trim()
 $dirty=((& git status --porcelain --untracked-files=normal) -join "`n")

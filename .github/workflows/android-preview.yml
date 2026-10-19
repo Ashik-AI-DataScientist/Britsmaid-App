@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 45
     env:
       EXPO_PUBLIC_BACKEND_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
+      EXPO_PUBLIC_GUEST_WEB_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
       BRITSMAID_PREVIEW_LAN: '1'
       CI: '1'
     defaults:
