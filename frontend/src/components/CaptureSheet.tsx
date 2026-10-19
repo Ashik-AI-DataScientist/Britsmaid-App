@@ -10,6 +10,7 @@ import { spacing } from "@/src/theme";
 import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
 export type Media = { id: string; kind: "image" | "video"; content_type: string };
 async function uploadAsset(a: CaptureAsset): Promise<Media> {
+  const expectedAuthEpoch = getAuthEpoch();
   if (a.fileSize && a.fileSize > 100 * 1024 * 1024) throw new Error("Choose a file smaller than 100 MB.");
   const isVideo = a.type === "video";
   const type = a.mimeType || (isVideo ? "video/mp4" : "image/jpeg");
@@ -20,7 +21,7 @@ async function uploadAsset(a: CaptureAsset): Promise<Media> {
     const blob = await (await fetch(a.uri)).blob();
     form.append("file", blob, name);
   } else form.append("file", { uri: a.uri, name, type } as any);
-  return request<Media>("/upload", { method: "POST", form });
+  return request<Media>("/upload", { method: "POST", form, expectedAuthEpoch });
 }
 async function persist(d: CaptureDraft | null, ownerId?: string) {
   const ok = d ? await storage.setItem(`${DRAFT_KEY}:${d.userId}`, JSON.stringify(d)) : await storage.removeItem(`${DRAFT_KEY}:${ownerId}`);
@@ -88,6 +89,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
   };
   const run = async (mode: "photo" | "video" | "library") => {
     if (!user || pending || !acquirePicker(lock.current)) return;
+    const epoch = getAuthEpoch();
     setBusy(true); setFailure("");
     let d: CaptureDraft | null = null;
     try {
@@ -105,7 +107,6 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       setPerm("unknown");
       const target = destination ?? { key: purpose, label: purpose };
       d = { userId: user.id, target: { ...target }, assets: [], startedAt: new Date().toISOString() };
-      const epoch = getAuthEpoch();
       await persist(d);
       const opts: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(mode, allowVideo), quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library", selectionLimit: 10 };
       const result = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);

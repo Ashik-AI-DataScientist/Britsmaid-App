@@ -7,9 +7,10 @@ let authEpoch = 0;
 export function getAuthEpoch() { return authEpoch; }
 export function setToken(value: string | null) { if (token !== value) authEpoch++; token = value; }
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn; }
-type Opts = { method?: string; body?: unknown; form?: FormData; authorization?: string };
+type Opts = { method?: string; body?: unknown; form?: FormData; authorization?: string; expectedAuthEpoch?: number };
 
 export async function request<T = any>(path: string, opts: Opts = {}): Promise<T> {
+  if (opts.expectedAuthEpoch !== undefined && opts.expectedAuthEpoch !== authEpoch) throw new Error("Your session changed. Sign in to the original account to resume this photo.");
   const headers: Record<string, string> = {};
   const auth = opts.authorization !== undefined ? opts.authorization : token;
   if (auth) headers.Authorization = `Bearer ${auth}`;
@@ -21,10 +22,11 @@ export async function request<T = any>(path: string, opts: Opts = {}): Promise<T
   try {
     const res = await fetch(BASE + path, { method: opts.method ?? (body ? "POST" : "GET"), headers, body, signal: controller.signal });
     const text = await res.text();
+    if (auth && opts.authorization === undefined && auth !== token) throw new Error("Your session changed. Please retry from the current account.");
     let data: any = null;
     try { data = text ? JSON.parse(text) : null; } catch { /* Invalid responses are reported below. */ }
     if (!res.ok) {
-      if (res.status === 401 && token && opts.authorization === undefined && !path.startsWith("/auth/login")) onUnauthorized?.();
+      if (res.status === 401 && auth === token && token && opts.authorization === undefined && !path.startsWith("/auth/login")) onUnauthorized?.();
       const detail = data?.detail;
       const message = typeof detail === "string" ? detail : Array.isArray(detail) ? `${detail[0]?.loc?.slice(-1)[0] ?? ""} ${detail[0]?.msg ?? "Please check this field"}`.trim() : "The server is temporarily unavailable. Please try again.";
       throw Object.assign(new Error(message), { status: res.status });
@@ -44,12 +46,16 @@ export const api = {
   del: <T = any>(p: string) => request<T>(p, { method: "DELETE" }),
 };
 export async function authenticatedBlob(path: string): Promise<Blob> {
+  const blobAuth = token;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);
   try {
-    const res = await fetch(BASE + path, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: controller.signal });
-    if (!res.ok) { if (res.status === 401) onUnauthorized?.(); throw new Error("Could not open the document. Please try again."); }
-    return await res.blob();
+    const res = await fetch(BASE + path, { headers: blobAuth ? { Authorization: `Bearer ${blobAuth}` } : {}, signal: controller.signal });
+    if (blobAuth !== token) throw new Error("Your session changed. Please open the document from the current account.");
+    if (!res.ok) { if (res.status === 401 && blobAuth === token) onUnauthorized?.(); throw new Error("Could not open the document. Please try again."); }
+    const blob = await res.blob();
+    if (blobAuth !== token) throw new Error("Your session changed. Please open the document from the current account.");
+    return blob;
   } catch (e: any) {
     if (e.name === "AbortError" || e.name === "TypeError") throw new Error("Connection interrupted. Please try opening the document again.");
     throw e;
