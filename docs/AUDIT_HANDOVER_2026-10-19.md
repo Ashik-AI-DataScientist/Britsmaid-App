@@ -105,16 +105,23 @@ The in-app issue panel records sanitized server failures/recovery. It cannot ale
 APK build/installation status and final commit evidence are appended after the native workflow finishes. See [Android preview instructions](ANDROID_PREVIEW.md) for private-PC start, random test accounts, permissions, source identification, installation/signing limits and the physical-device checklist.
 
 
-### Verified build evidence
+### Verified current build evidence
 
-- Signed standalone ARM64 APK **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39194469236
-- Final application-source commit: **b30c3664940576d362b736d33d74ebc91412a906**. The subsequent handover commit contains documentation/local preview delivery changes; application source is unchanged.
-- Quality CI **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39194473723 (174 backend tests, 21 frontend tests, type/lint, web and Android exports).
-- APK downloaded and its SHA-256 independently matched the workflow checksum: `16444329b1a56f7fca7cde3c44c90d8cbf825f8664789df25d995379298c51bf`.
-- Embedded `assets/app.config` independently inspected: package `com.emergent.britsmaidrevshare.ixdi3x`, preview source `b30c3664940576d362b736d33d74ebc91412a906`, backend `http://192.168.29.55:8766`, testOnly true. APK is 49,240,651 bytes; artifact ZIP is about 30 MB.
-- Local file: `.local-preview/android/Britsmaid-preview-arm64.apk`. Phone download, while the private PC preview runs: **http://192.168.29.55:8766/preview.apk**.
-- GitHub artifact expires 22 October 2026; the downloaded local copy is retained. No Play Store submission, production signing key, main merge, production DB or cloud deployment was made.
+- Signed standalone ARM64 APK **success**: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286736988
+- Exact APK source/configuration commit: **3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550**. Subsequent commits update local launcher compatibility and handover evidence; mobile feature code is unchanged.
+- Quality checks: https://github.com/Ashik-AI-DataScientist/Britsmaid-App/actions/runs/39286746555 (174 backend tests, 21 frontend tests, type/lint, web and Android exports). Individual backend/frontend check steps passed.
+- APK SHA-256 independently matched the workflow checksum: `3b494b45b9d0e9e04d3b6bfd3d8659ff1c64400370dbf4c21343221c17a37dab`.
+- Embedded `assets/app.config` and Hermes bundle independently inspected: package `com.emergent.britsmaidrevshare.ixdi3x`, source `3d0f913704ccb71fa6a6c841a2b04cb2cf3e3550`, backend **http://192.168.1.11:8766**, testOnly true. APK is 49,240,647 bytes; compressed artifact is about 30 MB.
+- PC file: `C:/Users/HP/Projects/Britsmaid/App/.local-preview/android/Britsmaid-preview-arm64.apk`.
+- Phone download while PC preview runs: **http://192.168.1.11:8766/preview.apk**. The route's HTTP status, MIME type, size and ZIP signature were checked through the PC's private interface; this does not prove a physical phone's firewall/network path.
+- The first successful APK was built for a different Wi-Fi address (192.168.29.55). The PC changed networks before handover, so a new APK was compiled for 192.168.1.11. The old file is retained separately as `Britsmaid-preview-previous-network.apk`; it is not served by the active download route.
+- GitHub artifact expires 22 October 2026; the downloaded PC copy is retained. No Play Store submission, production signing key, main merge, production DB or cloud deployment was made.
 - APK installation/launch, physical camera/permissions and device-specific usability remain **untested** until the user installs it. Native compile success is not a physical camera test.
 
+### Updated PC verification
 
-The PC changed Wi-Fi after the first verified APK: 192.168.29.55 became 192.168.1.11. That earlier artifact is valid only for the earlier address. A new build is required for the current private LAN endpoint; its verified evidence is recorded below after completion. This is a network change, not evidence that the earlier APK reached a physical phone.
+The original checkout `C:/Users/HP/Projects/Britsmaid/App` is switched to the new working branch. Its broken dependency links from the earlier folder relocation were preserved under ignored `.local-preview/dependencies-before-relink` and replaced with a fresh pinned install. Expo resolution and direct Metro config loading now work there. Main remains `3e72b8dd6ab6c96f1a66b239b58f69c32774827b`; the original feature branch remains `8e57274879de0c91b4cc7db645729dccf21f42dd`.
+
+One restarted private preview serves **8765 and 8766 from the same app/database**, so old PC bookmarks and the native app share test data. All four role logins and scoped workspaces were checked through real local HTTP, non-admin guest-ID access was denied, and a synthetic disk-backed upload retry produced one media ID and attached only to the chosen room. Incomplete completion was denied. Private-interface health returned successfully. These are still in-memory demo tests, not real MongoDB or a physical phone.
+
+The new Start Android Test Preview launcher recognises the running server. The existing Start Britsmaid launcher now reuses it instead of stopping it and replacing the APK backend; its existing-preview self-test passed. Current test passwords are in `.local-preview/private-test-accounts.txt`, excluded from GitHub. They reset on restart. Keep this backend running when testing phone interruption recovery: restarting this demo also replaces task/user IDs, so a photo draft pointing to the previous demo database cannot restore that old task.
