@@ -6,7 +6,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { DateField } from "@/src/components/DateField";
-import { Badge, Button, Card, Chip, ChipRow, ConfirmSheet, Header, IconButton, Input, Loading, Txt, useToast } from "@/src/ui";
+import { Badge, Button, Card, Chip, ChipRow, ConfirmSheet, ErrorState, Header, IconButton, Input, Loading, Txt, useToast } from "@/src/ui";
 import { OTAS, addDays, inr, nightsBetween, otaColor, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
@@ -21,17 +21,22 @@ export default function BookingForm() {
   const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
   const start = params.date || todayISO();
   const [f, setF] = useState({ property_id: params.property_id || "", guest_name: "", guest_phone: "", guest_email: "", guests: "2", ota: "Direct", check_in: start, check_out: addDays(start, 1), amount: "", ota_commission: "", status: "confirmed", notes: "", source: "manual" });
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
   const [del, setDel] = useState(false);
 
   useEffect(() => {
     if (!id) return;
+    let alive = true;
     api.get(`/bookings/${id}`).then((b) => {
+      if (!alive) return;
       setF({ ...b, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
       setLoading(false);
-    }).catch((e) => { toast(e.message, "error"); setLoading(false); });
-  }, [id, toast]);
+    }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
+    return () => { alive=false; };
+  }, [id, loadAttempt]);
   useEffect(() => {
     if (!f.property_id && props.data?.length) { const first = props.data[0].id; Promise.resolve().then(() => setF((x) => x.property_id ? x : ({ ...x, property_id: first }))); }
   }, [props.data, f.property_id]);
@@ -59,6 +64,7 @@ export default function BookingForm() {
   };
 
   if (loading || props.isLoading) return <Loading />;
+  if (loadError || props.isError) return <View style={{flex:1}}><Header back title="Booking" /><ErrorState message={loadError || (props.error as Error)?.message} onRetry={() => { if (loadError) { setLoadError(""); setLoading(true); setLoadAttempt(x=>x+1); } props.refetch(); }} /></View>;
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title={id ? "Booking" : "New booking"} subtitle={f.source === "ical" ? `Imported from ${f.ota} iCal` : undefined}

@@ -1,6 +1,6 @@
 export type CaptureTarget = { key: string; label: string; taskId?: string; roomIndex?: number; roomName?: string; phase?: "before" | "after"; revision?: number };
 export type CaptureMedia = { id: string; kind: "image" | "video"; content_type: string };
-export type CaptureAsset = { uri: string; type?: string | null; mimeType?: string; fileName?: string | null; fileSize?: number; width: number; height: number };
+export type CaptureAsset = { uri: string; type?: string | null; mimeType?: string; fileName?: string | null; fileSize?: number; uploadKey?: string; width: number; height: number };
 export type CaptureDraft = { userId: string; target: CaptureTarget; assets: CaptureAsset[]; uploaded?: CaptureMedia; startedAt: string };
 export const DRAFT_KEY = "bm_capture_v1";
 // One lock across all sheets: React state updates alone cannot stop two rapid taps.

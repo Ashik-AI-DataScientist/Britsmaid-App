@@ -81,7 +81,14 @@ class Training:
         for lesson in await self.db.training_lessons.find({'archived': False, 'published.onboarding': True}).to_list(None):
             for cleaner in await self.db.users.find({'active': True, 'role': 'cleaner', 'created_at': {'$gte': lesson['published_at']}}).to_list(None):
                 await self.assign(lesson, cleaner, f"onboarding:{lesson['_id']}:{cleaner['_id']}", source='onboarding', now=now)
-        for previous in await self.db.training_assignments.find({'completed_at': {'$ne': None}}).to_list(None):
+        seen = set()
+        for previous in await self.db.training_assignments.find({'completed_at': {'$ne': None}}).sort('completed_at', -1).to_list(None):
+            pair = (previous['lesson_id'], previous['cleaner_id'])
+            if pair in seen:
+                continue
+            seen.add(pair)
+            if await self.db.training_assignments.find_one({'lesson_id': pair[0], 'cleaner_id': pair[1], 'completed_at': None}):
+                continue
             days = previous['lesson'].get('refresher_days')
             if not days:
                 continue

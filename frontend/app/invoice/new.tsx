@@ -6,7 +6,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { DateField } from "@/src/components/DateField";
-import { Button, Card, Chip, ChipRow, Header, Icon, Input, Row, Segmented, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ChipRow, ErrorState, Header, Icon, Input, Row, Segmented, Txt, useToast } from "@/src/ui";
 import { addDays, inr, nightsBetween, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
@@ -29,19 +29,26 @@ export default function NewInvoice() {
   const [issue, setIssue] = useState(todayISO());
   const [due, setDue] = useState(addDays(todayISO(), 7));
   const [notes, setNotes] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const loadedBooking = React.useRef("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!booking_id || !props.data) return;
+    if (!booking_id || !props.data || loadedBooking.current === booking_id) return;
+    let alive=true;
     api.get(`/bookings/${booking_id}`).then((b) => {
+      if (!alive) return;
+      loadedBooking.current=booking_id;
       const n = nightsBetween(b.check_in, b.check_out);
       const p = props.data!.find((x) => x.id === b.property_id);
       setType("guest");
       setPid(b.property_id);
       setBill({ name: b.guest_name, email: b.guest_email, phone: b.guest_phone, address: "" });
       setItems([{ description: `Stay at ${p?.name ?? "villa"} (${b.check_in} → ${b.check_out})`, qty: String(n), rate: String(n ? Math.round((b.amount || (p?.base_rate ?? 0) * n) / n) : 0) }]);
-    });
-  }, [booking_id, props.data]);
+    }).catch(e=>{if(alive) setLoadError(e.message);});
+    return ()=>{alive=false;};
+  }, [booking_id, props.data, loadAttempt]);
 
   const pickProperty = (p: any) => {
     setPid(p.id);
@@ -73,6 +80,7 @@ export default function NewInvoice() {
 
   const presets = type === "guest" ? ["Extra bed", "Airport transfer", "Breakfast", "Late checkout"] : ["Deep cleaning", "Maintenance visit", "Linen replacement", "Photography", "Management fee"];
 
+  if (loadError || props.isError) return <View style={{flex:1}}><Header back title="Invoice" /><ErrorState message={loadError || (props.error as Error)?.message} onRetry={() => { setLoadError(""); setLoadAttempt(x=>x+1); props.refetch(); }} /></View>;
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title="New invoice" />

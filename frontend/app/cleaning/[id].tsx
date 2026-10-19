@@ -102,8 +102,8 @@ export default function CleaningSession() {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           {list.map((mid, k) => <MediaThumb key={mid} testID={`room-${idx}-${phase}-media-${k}`} id={mid} size={64} onRemove={done ? undefined : () => removeMedia(idx, phase, mid)} />)}
           {!done ? (
-            <Pressable testID={`room-${idx}-${phase}-add`} accessibilityLabel={`Add ${phase} photo of ${room.name}`} onPress={() => setTarget({ idx, phase })} style={({ pressed }) => ({ width: 64, height: 64, borderRadius: radius.sm + 2, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.brandTertiary : colors.surfaceSecondary })}>
-              <Icon name="camera-outline" size={22} color={colors.brandPrimary} />
+            <Pressable testID={`room-${idx}-${phase}-add`} accessibilityLabel={`Add ${phase} photo of ${room.name}`} onPress={() => setTarget({ idx, phase })} style={({ pressed }) => ({ width: 82, minHeight: 76, paddingVertical: 8, gap: 4, borderRadius: radius.sm + 2, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.brandTertiary : colors.surfaceSecondary })}>
+              <Icon name="camera-outline" size={22} color={colors.brandPrimary} /><Txt v="caption">Add photo</Txt>
             </Pressable>
           ) : null}
         </View>

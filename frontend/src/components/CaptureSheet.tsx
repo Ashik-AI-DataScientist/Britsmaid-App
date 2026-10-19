@@ -15,6 +15,7 @@ async function uploadAsset(a: CaptureAsset): Promise<Media> {
   const type = a.mimeType || (isVideo ? "video/mp4" : "image/jpeg");
   const name = a.fileName || `capture-${Date.now()}.${isVideo ? "mp4" : "jpg"}`;
   const form = new FormData();
+  if (a.uploadKey) form.append("request_key", a.uploadKey);
   if (Platform.OS === "web") {
     const blob = await (await fetch(a.uri)).blob();
     form.append("file", blob, name);
@@ -26,12 +27,13 @@ async function persist(d: CaptureDraft | null, ownerId?: string) {
   if (!ok) throw new Error("Could not preserve the pending photo on this device. Keep this screen open and retry.");
 }
 async function keepAsset(a: ImagePicker.ImagePickerAsset): Promise<CaptureAsset> {
-  if (Platform.OS === "web") return a;
+  const uploadKey = `photo_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  if (Platform.OS === "web") return { ...a, uploadKey };
   const dir = `${FileSystem.documentDirectory}capture-drafts/`;
   await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
   const uri = `${dir}${Date.now()}-${Math.random().toString(36).slice(2)}.${a.type === "video" ? "mp4" : "jpg"}`;
   await FileSystem.copyAsync({ from: a.uri, to: uri });
-  return { ...a, uri };
+  return { ...a, uri, uploadKey };
 }
 async function cleanup(d: CaptureDraft) {
   if (Platform.OS !== "web") for (const a of d.assets) if (a.uri.startsWith(`${FileSystem.documentDirectory}capture-drafts/`)) await FileSystem.deleteAsync(a.uri, { idempotent: true }).catch(() => {});
@@ -128,7 +130,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       if (r.canceled || !r.assets?.length) return;
       const old = await storage.getItem(`${DRAFT_KEY}:${user?.id}`, "");
       if (old) { const previous: CaptureDraft = JSON.parse(old); if (previous.userId !== user.id || previous.assets.length || previous.uploaded) throw new Error("Save or discard the previous photo from its original task first."); }
-      d.assets = r.assets;
+      d.assets = await Promise.all(r.assets.map(keepAsset));
       setPending(d);
       await persist(d); await save(d, epoch);
     }).catch(e => { if (d.assets.length || d.uploaded) setPending(d); setFailure(e.message || "Photo could not be saved."); })

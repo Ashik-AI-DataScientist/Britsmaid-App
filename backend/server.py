@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Request
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import Response, HTMLResponse
 from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
@@ -11,7 +11,7 @@ from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from bson import ObjectId
-import os, logging, uuid, secrets, html, json, asyncio, string, hashlib
+import os, logging, uuid, secrets, html, json, asyncio, string, hashlib, re
 from zoneinfo import ZoneInfo
 from pymongo.errors import DuplicateKeyError
 import bcrypt, jwt, requests
@@ -331,7 +331,10 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
             update["$inc"] = {"session_version": 1}
             await db.user_sessions.delete_many({"user_id": str(u["_id"])})
         await db.users.update_one({"_id": u["_id"]}, update)
-    return out(await db.users.find_one({"_id": u["_id"]}))
+    updated = await db.users.find_one({"_id": u["_id"]})
+    if changes.get("role") == "cleaner":
+        await training.onboarding(updated)
+    return out(updated)
 
 
 @api.post("/users/{uid}/reset-password")
@@ -355,7 +358,7 @@ async def deactivate_user(uid: str, admin=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Media
 @api.post("/upload")
-async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
+async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form(None), user=Depends(staff_user)):
     data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
@@ -370,12 +373,27 @@ async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
         ext = "mov"
     else:
         raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
-    path = f"{APP_NAME}/uploads/{user['_id']}/{uuid.uuid4()}.{ext}"
+    if request_key and not re.fullmatch(r"[A-Za-z0-9_-]{8,120}", request_key):
+        raise HTTPException(422, "Invalid upload retry reference")
+    digest = hashlib.sha256(data).hexdigest()
+    media_oid = ObjectId(hashlib.sha256(f"{user['_id']}:{request_key}".encode()).hexdigest()[:24]) if request_key else ObjectId()
+    existing = await db.media.find_one({"_id": media_oid})
+    if existing:
+        if existing.get("upload_digest") != digest or existing.get("is_deleted"):
+            raise HTTPException(409, "Upload reference changed; select the original photo or start a new capture")
+        return out(existing)
+    path = f"{APP_NAME}/uploads/{user['_id']}/{media_oid}-{digest[:32]}.{ext}"
     res = await run_in_threadpool(put_object, path, data, ctype)
     doc = {"storage_path": res["path"], "content_type": ctype, "kind": "video" if ctype.startswith("video") else "image",
            "original_name": file.filename, "size": res.get("size"), "owner_id": str(user["_id"]), "created_at": now_iso(), "is_deleted": False}
-    r = await db.media.insert_one(doc)
-    return out(await db.media.find_one({"_id": r.inserted_id}))
+    doc.update(_id=media_oid, upload_digest=digest)
+    try:
+        await db.media.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await db.media.find_one({"_id": media_oid})
+        if existing.get("upload_digest") != digest:
+            raise HTTPException(409, "Upload reference already used for a different photo")
+    return out(await db.media.find_one({"_id": media_oid}))
 
 
 async def stream_media(media_id: str):
@@ -649,7 +667,7 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
 async def delete_booking(bid: str, _=Depends(admin_user)):
     await release_unused(db, bid)
     await db.bookings.delete_one({"_id": oid(bid)})
-    await db.cleaning.delete_one({"booking_id": bid, "status": "pending"})
+    await db.cleaning.update_many({"booking_id": bid, "status": {"$ne": "completed"}}, {"$set": {"status": "cancelled", "review_notes": "Booking removed"}, "$inc": {"revision": 1}})
     return {"ok": True}
 
 
@@ -1242,6 +1260,9 @@ async def create_owner_report(body: OwnerReportIn, user=Depends(admin_user)):
     p = await db.properties.find_one({"_id": oid(body.property_id)})
     if not p:
         raise HTTPException(404, "Property not found")
+    for mid in set(body.media_ids):
+        if not ObjectId.is_valid(mid) or not await db.media.find_one({"_id": oid(mid), "is_deleted": False}):
+            raise HTTPException(422, "Choose existing uploaded report attachments")
     snap = await compute_settlement(p, body.month)
     doc = body.model_dump()
     doc.update({"title": body.title or f"{p['name']} — {body.month}", "settlement": snap, "share_token": secrets.token_urlsafe(16),
@@ -1382,6 +1403,14 @@ async def list_invoices(type: Optional[str] = None, _=Depends(admin_user)):
 async def create_invoice(body: InvoiceIn, _=Depends(admin_user)):
     if body.property_id:
         await validate_pids([body.property_id])
+    if not body.bill_to_name.strip():
+        raise HTTPException(422, "Enter the invoice recipient")
+    if body.due_date and body.due_date < body.issue_date:
+        raise HTTPException(422, "Due date cannot be before the issue date")
+    if body.booking_id:
+        booking = await db.bookings.find_one({"_id": oid(body.booking_id)})
+        if not booking or (body.property_id and booking["property_id"] != body.property_id):
+            raise HTTPException(422, "Choose a booking belonging to this property")
     if not body.items:
         raise HTTPException(400, "Add at least one line item")
     ctr = await db.counters.find_one_and_update({"_id": "invoice"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)

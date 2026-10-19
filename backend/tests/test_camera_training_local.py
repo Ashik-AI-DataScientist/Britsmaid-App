@@ -190,3 +190,49 @@ async def test_photo_claim_stops_simultaneous_cross_phase_attachment(ctx):
         return await ctx['client'].post(f"/api/cleaning/{ctx['cid']}/rooms/0/media",headers=auth(ctx,'cleaner'),json={'phase':phase,'media_id':str(mid)})
     rows=await asyncio.gather(post('before'),post('after'))
     assert sorted(x.status_code for x in rows)==[200,409]
+@pytest.mark.parametrize('field,value',[('bill_to_name',' '),('due_date','2020-01-01'),('booking_id','invalid')])
+async def test_invoice_reference_recipient_dates(ctx,field,value):
+    body={'type':'guest','bill_to_name':'SAMPLE','items':[{'description':'Stay','qty':2,'rate':100}],'issue_date':'2026-10-19',field:value}
+    r=await ctx['client'].post('/api/invoices',headers=auth(ctx),json=body)
+    assert 400 <= r.status_code < 500
+
+async def test_invoice_totals_and_status(ctx):
+    r=await ctx['client'].post('/api/invoices',headers=auth(ctx),json={'type':'guest','bill_to_name':'SAMPLE','items':[{'description':'Stay','qty':2,'rate':100}],'discount':50,'tax_percent':18,'issue_date':'2026-10-19'})
+    assert r.status_code==200,r.text
+    assert r.json()['subtotal']==200 and r.json()['total']==177
+    url=f"/api/invoices/{r.json()['id']}/status"
+    assert (await ctx['client'].put(url,headers=auth(ctx),json={'status':'paid'})).json()['status']=='paid'
+    assert (await ctx['client'].put(url,headers=auth(ctx,'owner'),json={'status':'unpaid'})).status_code==403
+
+@pytest.mark.parametrize('mid',['invalid','000000000000000000000123'])
+async def test_report_rejects_missing_or_private_document_reference(ctx,mid):
+    r=await ctx['client'].post('/api/owner-reports',headers=auth(ctx),json={'property_id':ctx['p1'],'month':'2026-10','media_ids':[mid]})
+    assert r.status_code==422
+
+async def test_delete_booking_cancels_work_without_erasing_room_evidence(ctx):
+    await ctx['db'].cleaning.update_one({'_id':ObjectId(ctx['cid'])},{'$set':{'booking_id':ctx['bid'],'status':'in_progress','rooms.0.before':['synthetic']}})
+    r=await ctx['client'].delete(f"/api/bookings/{ctx['bid']}",headers=auth(ctx))
+    assert r.status_code==200
+    task=await ctx['db'].cleaning.find_one({'_id':ObjectId(ctx['cid'])})
+    assert task['status']=='cancelled' and task['rooms'][0]['before']==['synthetic']
+
+async def test_upload_lost_ack_retry_reuses_media_and_storage(ctx,monkeypatch):
+    from test_role_security_local import jpeg
+    writes=[]
+    monkeypatch.setattr(server,'put_object',lambda path,data,ctype:(writes.append(path) or {'path':path,'size':len(data)}))
+    result=[]
+    for _ in range(2):
+        r=await ctx['client'].post('/api/upload',headers=auth(ctx,'cleaner'),data={'request_key':'synthetic-photo-1'},files={'file':('sample.jpg',jpeg(),'image/jpeg')})
+        assert r.status_code==200,r.text
+        result.append(r.json()['id'])
+    assert result[0]==result[1] and len(writes)==1
+    assert await ctx['db'].media.count_documents({})==1
+
+async def test_multiple_completed_assignments_produce_one_current_refresher(ctx):
+    lid=await lesson(ctx,refresher_days=30)
+    for request in ['procedure-original','procedure-update']:
+        row=(await assign(ctx,lid,request_id=request))[0]
+        await ctx['client'].post(f"/api/training/assignments/{row['id']}/complete",headers=auth(ctx,'cleaner'))
+    await server.training.schedule()
+    await server.training.schedule()
+    assert await ctx['db'].training_assignments.count_documents({'source':'refresher','completed_at':None})==1

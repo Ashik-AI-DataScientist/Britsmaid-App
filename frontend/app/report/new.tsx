@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { CaptureSheet, Media } from "@/src/components/CaptureSheet";
 import { MediaThumb } from "@/src/components/MediaThumb";
-import { Button, Card, Chip, ChipRow, Header, IconButton, Input, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ChipRow, ErrorState, Header, IconButton, Input, Txt, useToast } from "@/src/ui";
 import { monthLabel, shiftMonth, thisMonth } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
@@ -42,6 +42,7 @@ export default function NewOwnerReport() {
     }
   };
 
+  if (props.isError) return <View style={{flex:1}}><Header back title="Owner report" /><ErrorState message={(props.error as Error).message} onRetry={props.refetch} /></View>;
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title="Owner report" subtitle="Status update with photos, videos & payout" />
