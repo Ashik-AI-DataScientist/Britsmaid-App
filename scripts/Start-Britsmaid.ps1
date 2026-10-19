@@ -43,6 +43,20 @@ if ($CheckOnly) {
     exit 0
 }
 
+# Do not replace the shared Android test backend with a separate old demo.
+try {
+    $androidPreview = Invoke-RestMethod -Uri 'http://127.0.0.1:8766/preview-health' -TimeoutSec 2
+    if ($androidPreview.mode -eq 'local-demo' -and $androidPreview.android_preview) {
+        Write-Host 'The updated Android test preview is already running.'
+        Write-Host 'PC: http://127.0.0.1:8765/'
+        $phoneAddress = Get-PhoneAddress
+        if ($phoneAddress) { Write-Host "Phone APK: http://${phoneAddress}:8766/preview.apk" }
+        Write-Host 'Use .local-preview\private-test-accounts.txt for current test passwords.'
+        if ($SelfTest) { Write-Output 'PASS: existing Android preview health' }
+        exit 0
+    }
+} catch { }
+
 try { $Host.UI.RawUI.WindowTitle = 'Britsmaid - Local testing' } catch { }
 $mutex = New-Object Threading.Mutex($false, 'Local\BritsmaidLocalPreviewLauncher')
 if (!$mutex.WaitOne(0)) { Write-Host 'Britsmaid is already running. Use its open window for the phone link.'; Start-Sleep -Seconds 4; exit }
