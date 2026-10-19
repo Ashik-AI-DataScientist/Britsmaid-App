@@ -91,3 +91,12 @@ credentials.json
 # Generated local QA output
 test_reports/edge-audit/*.xml
 test_reports/edge-audit/*.json
+
+frontend/preview-source.json
+*.apk
+*.aab
+*.jks
+*.keystore
+frontend/android/
+frontend/ios/
+frontend/dist-android/

@@ -1,0 +1,78 @@
+name: Android test APK
+on:
+  push:
+    branches: [fix/camera-training-android-preview]
+    paths: ['frontend/**', '.github/workflows/android-preview.yml']
+  workflow_dispatch:
+    inputs:
+      backend_url:
+        description: 'Explicit HTTPS staging or private PC LAN backend origin (no localhost)'
+        required: true
+        default: 'http://192.168.1.11:8766'
+permissions:
+  contents: read
+concurrency:
+  group: android-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apk:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      EXPO_PUBLIC_BACKEND_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
+      EXPO_PUBLIC_GUEST_WEB_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
+      BRITSMAID_PREVIEW_LAN: '1'
+      CI: '1'
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm typecheck && pnpm lint:check && pnpm test:edges
+      - name: Record exact source and preview endpoint
+        run: |
+          node -e 'const fs=require("fs"); fs.writeFileSync("preview-source.json",JSON.stringify({commit:process.env.GITHUB_SHA,backend:process.env.EXPO_PUBLIC_BACKEND_URL,testOnly:true}));'
+      - run: pnpm exec expo prebuild --platform android --no-install
+      - name: Create ephemeral preview signing key (never uploaded)
+        run: |
+          PREVIEW_KEY_PASSWORD=$(openssl rand -hex 24)
+          echo "::add-mask::$PREVIEW_KEY_PASSWORD"
+          echo "PREVIEW_KEY_PASSWORD=$PREVIEW_KEY_PASSWORD" >> "$GITHUB_ENV"
+          keytool -genkeypair -noprompt -keystore android/app/preview.keystore -storepass "$PREVIEW_KEY_PASSWORD" -keypass "$PREVIEW_KEY_PASSWORD" -alias britsmaidpreview -keyalg RSA -keysize 2048 -validity 30 -dname 'CN=Britsmaid Synthetic Preview'
+          node <<'JS'
+          const fs=require('fs'); const p='android/app/build.gradle';
+          let s=fs.readFileSync(p,'utf8');
+          s=s.replace("storeFile file('debug.keystore')", "storeFile file('preview.keystore')")
+            .replace("storePassword 'android'", "storePassword System.getenv('PREVIEW_KEY_PASSWORD')")
+            .replace("keyAlias 'androiddebugkey'", "keyAlias 'britsmaidpreview'")
+            .replace("keyPassword 'android'", "keyPassword System.getenv('PREVIEW_KEY_PASSWORD')");
+          fs.writeFileSync(p,s);
+          JS
+      - name: Compile standalone ARM64 test APK
+        working-directory: frontend/android
+        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon -Dorg.gradle.jvmargs='-Xmx4g -XX:MaxMetaspaceSize=1g'
+      - name: Record checksum
+        run: sha256sum android/app/build/outputs/apk/release/app-release.apk > preview-apk-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: britsmaid-android-preview-${{ github.sha }}
+          path: |
+            frontend/android/app/build/outputs/apk/release/app-release.apk
+            frontend/preview-source.json
+            frontend/preview-apk-sha256.txt
+          retention-days: 3
+          if-no-files-found: error

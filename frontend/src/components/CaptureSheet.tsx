@@ -1,92 +1,157 @@
-import React, { useState } from "react";
-import { Linking, Platform, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { Alert, Linking, Platform, ScrollView, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import { Button, Sheet, Txt, useToast } from "@/src/ui";
-import { request } from "@/src/api";
+import { getAuthEpoch, request } from "@/src/api";
+import { useAuth } from "@/src/auth";
+import { storage } from "@/src/utils/storage";
 import { spacing } from "@/src/theme";
-
+import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
 export type Media = { id: string; kind: "image" | "video"; content_type: string };
-
-async function uploadAsset(a: ImagePicker.ImagePickerAsset): Promise<Media> {
+async function uploadAsset(a: CaptureAsset): Promise<Media> {
+  const expectedAuthEpoch = getAuthEpoch();
+  if (a.fileSize && a.fileSize > 100 * 1024 * 1024) throw new Error("Choose a file smaller than 100 MB.");
   const isVideo = a.type === "video";
   const type = a.mimeType || (isVideo ? "video/mp4" : "image/jpeg");
   const name = a.fileName || `capture-${Date.now()}.${isVideo ? "mp4" : "jpg"}`;
   const form = new FormData();
+  if (a.uploadKey) form.append("request_key", a.uploadKey);
   if (Platform.OS === "web") {
     const blob = await (await fetch(a.uri)).blob();
     form.append("file", blob, name);
-  } else {
-    form.append("file", { uri: a.uri, name, type } as any);
-  }
-  return request<Media>("/upload", { method: "POST", form });
+  } else form.append("file", { uri: a.uri, name, type } as any);
+  return request<Media>("/upload", { method: "POST", form, expectedAuthEpoch });
 }
-
-type PermState = "unknown" | "denied" | "blocked";
-
-export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose, testID = "capture-sheet" }: {
-  visible: boolean; onClose: () => void; onUploaded: (m: Media[]) => Promise<void>; allowVideo?: boolean; purpose: string; testID?: string;
+async function persist(d: CaptureDraft | null, ownerId?: string) {
+  const ok = d ? await storage.setItem(`${DRAFT_KEY}:${d.userId}`, JSON.stringify(d)) : await storage.removeItem(`${DRAFT_KEY}:${ownerId}`);
+  if (!ok) throw new Error("Could not preserve the pending photo on this device. Keep this screen open and retry.");
+}
+async function keepAsset(a: ImagePicker.ImagePickerAsset): Promise<CaptureAsset> {
+  const uploadKey = `photo_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  if (Platform.OS === "web") return { ...a, uploadKey };
+  const dir = `${FileSystem.documentDirectory}capture-drafts/`;
+  await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  const uri = `${dir}${Date.now()}-${Math.random().toString(36).slice(2)}.${a.type === "video" ? "mp4" : "jpg"}`;
+  await FileSystem.copyAsync({ from: a.uri, to: uri });
+  return { ...a, uri, uploadKey };
+}
+async function cleanup(d: CaptureDraft) {
+  if (Platform.OS !== "web") for (const a of d.assets) if (a.uri.startsWith(`${FileSystem.documentDirectory}capture-drafts/`)) await FileSystem.deleteAsync(a.uri, { idempotent: true }).catch(() => {});
+}
+export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose, successMessage, destination, onRestore, testID = "capture-sheet" }: {
+  visible: boolean; onClose: () => void; onUploaded: (m: Media[], target: CaptureTarget) => Promise<void>;
+  allowVideo?: boolean; purpose: string; successMessage?: string; destination?: CaptureTarget; onRestore?: (target: CaptureTarget) => void; testID?: string;
 }) {
   const toast = useToast();
+  const { user } = useAuth();
+  const actor = useRef(user?.id);
+  const lock = useRef({});
   const [busy, setBusy] = useState(false);
-  const [perm, setPerm] = useState<PermState>("unknown");
-  const [pending, setPending] = useState<Media[]>([]);
+  const [perm, setPerm] = useState<"unknown" | "denied" | "blocked">("unknown");
+  const [pending, setPending] = useState<CaptureDraft | null>(null);
   const [failure, setFailure] = useState("");
-
-  const ensure = async (camera: boolean) => {
-    const get = camera ? ImagePicker.getCameraPermissionsAsync : ImagePicker.getMediaLibraryPermissionsAsync;
-    const ask = camera ? ImagePicker.requestCameraPermissionsAsync : ImagePicker.requestMediaLibraryPermissionsAsync;
-    let p = await get();
-    if (p.granted) return true;
-    if (!p.canAskAgain) { setPerm("blocked"); return false; }
-    p = await ask();
-    if (p.granted) { setPerm("unknown"); return true; }
-    setPerm(p.canAskAgain ? "denied" : "blocked");
-    return false;
-  };
-
-  const run = async (mode: "photo" | "video" | "library") => {
-    try {
-      const camera = mode !== "library";
-      if (Platform.OS !== "web" && !(await ensure(camera))) return;
-      const mediaTypes: ImagePicker.MediaType[] = mode === "photo" ? ["images"] : mode === "video" ? ["videos"] : allowVideo ? ["images", "videos"] : ["images"];
-      const opts: ImagePicker.ImagePickerOptions = { mediaTypes, quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library", selectionLimit: 10 };
-      const res = camera && Platform.OS !== "web" ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
-      if (res.canceled || !res.assets?.length) return;
-      setBusy(true);
-      setFailure("");
-      for (const a of res.assets) {
-        const uploaded = await uploadAsset(a);
-        setPending([uploaded]);
-        await onUploaded([uploaded]);
-        setPending([]);
+  const [discard, setDiscard] = useState(false);
+  const callback = useRef(onUploaded);
+  const restore = useRef(onRestore);
+  useEffect(() => { actor.current = user?.id; callback.current = onUploaded; restore.current = onRestore; }, [user?.id, onUploaded, onRestore]);
+  const taskId = destination?.taskId;
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const raw = await storage.getItem(`${DRAFT_KEY}:${user?.id}`, "");
+      if (!raw || !alive) return;
+      let d: CaptureDraft;
+      try { d = JSON.parse(raw); } catch { return; }
+      if (d.userId !== user?.id || (d.target.taskId ? d.target.taskId !== taskId : d.target.key !== destination?.key)) return;
+      if (Platform.OS === "android") {
+        const result = await ImagePicker.getPendingResultAsync();
+        if (result && !("code" in result) && !result.canceled && result.assets?.length && !d.assets.length && !d.uploaded) {
+          d.assets = await Promise.all(result.assets.map(keepAsset)); await persist(d);
+        } else if (result && "code" in result) { setFailure("The camera could not recover its result. Please take the photo again."); toast("The camera result could not be recovered. Please take the photo again.", "error"); }
       }
-      toast("Photos saved to this record");
-      onClose();
-    } catch (e: any) {
-      setFailure(e.message || "Photo was not saved. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
+      if (!alive) return;
+      if (!d.assets.length && !d.uploaded) { await persist(null, user?.id); return; }
+      setPending(d); restore.current?.(d.target);
+      setFailure("A photo is waiting to be saved to its original destination. Check the task, then retry.");
+    })().catch(() => { if (alive) setFailure("Could not restore the pending photo. Keep this screen open and try again."); });
+    return () => { alive = false; };
+  }, [user?.id, taskId, destination?.key, toast]);
 
-  return (
-    <Sheet visible={visible} onClose={() => { if (!busy && !pending.length) onClose(); }} title="Add photos" testID={testID}>
-      {failure ? <View style={{ gap: spacing.sm }}><Txt>{failure}</Txt>{pending.length ? <Button title="Retry saving photo" disabled={busy} onPress={async () => { setBusy(true); try { await onUploaded(pending); setPending([]); setFailure(""); toast("Photo saved"); onClose(); } catch (e: any) { setFailure(e.message); } finally { setBusy(false); } }} /> : null}</View> : null}
-      {pending.length && !busy ? <Button title="Discard unsaved attachment" variant="ghost" onPress={() => { setPending([]); setFailure(""); onClose(); }} /> : null}
-      <Txt v="body" style={{ marginBottom: spacing.lg }}>{purpose}</Txt>
-      {perm !== "unknown" ? (
-        <View testID="permission-notice" style={{ marginBottom: spacing.lg, gap: spacing.sm }}>
-          <Txt v="body" color="#B45309">
-            {perm === "blocked" ? "Access is turned off. Enable camera / photos for Britsmaid in Settings to continue." : "Permission was declined. Tap again to allow access."}
-          </Txt>
-          {perm === "blocked" ? <Button small variant="secondary" icon="settings-outline" title="Open Settings" onPress={() => Linking.openSettings()} testID="open-settings-button" /> : null}
-        </View>
-      ) : null}
-      <View style={{ gap: spacing.sm }}>
-        <Button testID={`${testID}-take-photo`} icon="camera" title="Take photo" onPress={() => run("photo")} loading={busy} disabled={!!pending.length} />
-        {allowVideo ? <Button testID={`${testID}-record-video`} icon="videocam" variant="secondary" title="Record video" onPress={() => run("video")} disabled={busy} /> : null}
-        <Button testID={`${testID}-library`} icon="images" variant="secondary" title="Choose from library" onPress={() => run("library")} disabled={busy || !!pending.length} />
-      </View>
-    </Sheet>
-  );
+  const save = async (d: CaptureDraft, epoch: number) => {
+    setPending(d);
+    const originals = { ...d, assets: [...d.assets] };
+    const queue = new CaptureQueue(d, { persist: async next => { await persist(next, d.userId); setPending(next); }, upload: uploadAsset,
+      attach: (m, target) => callback.current(m, target), isCurrent: () => actor.current === d.userId && getAuthEpoch() === epoch });
+    await queue.save();
+    await cleanup(originals);
+    toast(successMessage ?? ("Saved to " + d.target.label)); setPending(null); setFailure(""); onClose();
+  };
+  const run = async (mode: "photo" | "video" | "library") => {
+    if (!user || pending || !acquirePicker(lock.current)) return;
+    const epoch = getAuthEpoch();
+    setBusy(true); setFailure("");
+    let d: CaptureDraft | null = null;
+    try {
+      const old = await storage.getItem(`${DRAFT_KEY}:${user?.id}`, "");
+      if (old) {
+        const previous: CaptureDraft = JSON.parse(old);
+        if (previous.userId !== user.id || previous.assets.length || previous.uploaded) throw new Error("There is an unsaved photo. Return to its original task and save or discard it first.");
+      }
+      const camera = mode !== "library";
+      if (Platform.OS !== "web" && camera) {
+        let p = await ImagePicker.getCameraPermissionsAsync();
+        if (!p.granted && p.canAskAgain) p = await ImagePicker.requestCameraPermissionsAsync();
+        if (!p.granted) { setPerm(p.canAskAgain ? "denied" : "blocked"); return; }
+      }
+      setPerm("unknown");
+      const target = destination ?? { key: purpose, label: purpose };
+      d = { userId: user.id, target: { ...target }, assets: [], startedAt: new Date().toISOString() };
+      await persist(d);
+      const opts: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(mode, allowVideo), quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library", selectionLimit: 10 };
+      const result = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
+      if (result.canceled || !result.assets?.length) { await persist(null, user?.id); return; }
+      d.assets = await Promise.all(result.assets.map(keepAsset));
+      await persist(d); await save(d, epoch);
+    } catch (e: any) { if (d?.assets.length || d?.uploaded) setPending(d); else if (d) await persist(null, user?.id).catch(() => {}); setFailure(e.message || "Photo was not saved. Please retry."); }
+    finally { setBusy(false); releasePicker(lock.current); }
+  };
+  // Web must invoke the picker synchronously in the user's gesture, before any storage/permission await.
+  const runWeb = (camera: boolean, video = false) => {
+    if (!user || pending || !acquirePicker(lock.current)) return;
+    setBusy(true); setFailure("");
+    const d: CaptureDraft = { userId: user.id, target: { ...(destination ?? { key: purpose, label: purpose }) }, assets: [], startedAt: new Date().toISOString() };
+    const epoch = getAuthEpoch();
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(camera ? video ? "video" : "photo" : "library", allowVideo), allowsMultipleSelection: !camera, selectionLimit: 10, quality: 0.6, videoMaxDuration: 60, cameraType: ImagePicker.CameraType.back };
+    const result = camera ? ImagePicker.launchCameraAsync(options) : ImagePicker.launchImageLibraryAsync(options);
+    // Browser cancellation is inconsistent: explicit reset releases a stuck picker without permitting late results.
+    const owner = lock.current;
+    result.then(async r => {
+      if (lock.current !== owner) return;
+      if (r.canceled || !r.assets?.length) return;
+      const old = await storage.getItem(`${DRAFT_KEY}:${user?.id}`, "");
+      if (old) { const previous: CaptureDraft = JSON.parse(old); if (previous.userId !== user.id || previous.assets.length || previous.uploaded) throw new Error("Save or discard the previous photo from its original task first."); }
+      d.assets = await Promise.all(r.assets.map(keepAsset));
+      setPending(d);
+      await persist(d); await save(d, epoch);
+    }).catch(e => { if (d.assets.length || d.uploaded) setPending(d); setFailure(e.message || "Photo could not be saved."); })
+      .finally(() => { releasePicker(owner); if (lock.current === owner) setBusy(false); });
+  };
+  const close = () => { if (busy) return; if (pending) { setFailure("This photo has not been saved. Retry or explicitly discard it before closing."); return; } onClose(); };
+  return <Sheet visible={visible} onClose={close} title={allowVideo ? "Add photos or video" : "Add photo"} testID={testID}><ScrollView contentContainerStyle={{ gap: spacing.sm }}>
+    <Txt v="subtitle">{pending?.target.label ?? destination?.label ?? purpose}</Txt>
+    <Txt>{purpose}</Txt>
+    {Platform.OS === "web" ? <Txt v="caption">Take photo requests your phone camera. Some browsers show a file chooser instead. You can take a photo in your camera app, then choose it from the library. Keep this page open until saved.</Txt> : null}
+    {failure ? <View accessibilityRole="alert"><Txt color="#B45309">{failure}</Txt></View> : null}
+    {perm !== "unknown" ? <View><Txt>{perm === "blocked" ? "Camera access is off. Enable it in your phone Settings, or choose an existing photo." : "Camera permission was declined. Try again or choose an existing photo."}</Txt>{perm === "blocked" ? <Button title="Open Settings" variant="secondary" onPress={() => Linking.openSettings()} /> : null}</View> : null}
+    {pending ? <><Button title={pending.uploaded ? "Retry saving to room" : "Retry upload and save"} loading={busy} onPress={async () => { if (!acquirePicker(lock.current)) return; setBusy(true); try { await save(pending, getAuthEpoch()); } catch(e:any) { setFailure(e.message); } finally { setBusy(false); releasePicker(lock.current); } }} />
+      <Button title="Discard unsaved photo" variant="ghost" disabled={busy} onPress={() => setDiscard(true)} />
+      {discard ? <><Txt>Discard this pending photo? It will not be attached. An already uploaded file may remain until storage cleanup.</Txt><Button title="Yes, discard photo" variant="danger" disabled={busy} onPress={async () => { try { await cleanup(pending); await persist(null, user?.id); setPending(null); setDiscard(false); setFailure(""); onClose(); } catch { setFailure("Could not discard the draft. Try again."); } }} /><Button title="Keep photo" variant="secondary" onPress={() => setDiscard(false)} /></> : null}</> : <>
+      <Button title="Take photo" testID={`${testID}-take-photo`} icon="camera" loading={busy} onPress={() => Platform.OS === "web" ? runWeb(true) : run("photo")} />
+      {allowVideo ? <Button title="Record video" disabled={busy} variant="secondary" onPress={() => { if (Platform.OS === "web") { runWeb(true, true); return; } Alert.alert("Walkthrough video", "Video may require microphone permission. Only record non-private property areas.", [{ text: "Cancel" }, { text: "Continue", onPress: () => run("video") }]); }} /> : null}
+      <Button title="Choose from library" testID={`${testID}-library`} icon="images" disabled={busy} variant="secondary" onPress={() => Platform.OS === "web" ? runWeb(false) : run("library")} />
+    </>}
+    {Platform.OS === "web" && busy ? <Button title="Camera cancelled? Return to options" variant="ghost" onPress={() => { const previous=lock.current; releasePicker(previous); lock.current={}; setBusy(false); }} /> : null}
+    <Button title="Close" variant="ghost" disabled={busy} onPress={close} />
+  </ScrollView></Sheet>;
 }

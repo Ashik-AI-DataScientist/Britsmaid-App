@@ -3,9 +3,10 @@ import { RefreshControl, SectionList, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { PendingPhoto } from "@/src/components/PendingPhoto";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
-import { Badge, Card, Empty, ErrorState, Header, Icon, IconButton, Loading, Segmented, Txt } from "@/src/ui";
+import { Badge, Button, Card, Empty, ErrorState, Header, Icon, IconButton, Loading, Segmented, Txt } from "@/src/ui";
 import { fmtDate, todayISO } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
@@ -29,6 +30,8 @@ export default function CleaningList() {
       <Header back={!isCleaner} title={isCleaner ? `Hi, ${user?.name?.split(" ")[0]}` : "Cleaning sessions"} subtitle={isCleaner ? "Your checkout cleaning tasks" : "Before & after documentation"}
         right={isCleaner ? <IconButton testID="cleaner-logout-button" name="log-out-outline" onPress={logout} /> : undefined} />
       <View style={{ padding: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface }}>
+        <PendingPhoto />
+        {user?.role === "cleaner" ? <Button title="My training" icon="book-outline" variant="secondary" onPress={() => router.push("/training")} style={{ marginBottom:spacing.sm }} /> : null}
         <Segmented testID="cleaning-tabs" value={tab} onChange={setTab} options={canReview ? [{ value: "awaiting_review", label: "Review" }, { value: "unassigned", label: "Unassigned" }, { value: "open", label: "To do" }, { value: "completed", label: "Done" }] : [{ value: "open", label: "To do" }, { value: "completed", label: "Completed" }]} />
       </View>
       {q.isLoading ? <Loading label="Loading task details..." /> : q.isError ? <ErrorState message="Could not load tasks" onRetry={q.refetch} /> : (

@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
-import { Button, Card, Chip, ConfirmSheet, Header, Icon, Input, Loading, Segmented, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, Input, Loading, Segmented, Txt, useToast } from "@/src/ui";
 import { OTAS, otaColor } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 import { Contact, ContactsEditor } from "@/src/components/Contacts";
@@ -20,6 +20,8 @@ export default function EditProperty() {
   const qc = useQueryClient();
   const { colors } = useTheme();
   const [f, setF] = useState(blank);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
   const [room, setRoom] = useState("");
@@ -41,11 +43,14 @@ export default function EditProperty() {
 
   useEffect(() => {
     if (!id) return;
+    let alive = true;
     api.get(`/properties/${id}`).then((p) => {
+      if (!alive) return;
       setF({ ...blank, ...p, owner_share_percent: String(p.owner_share_percent), base_rate: String(p.base_rate || "") });
       setLoading(false);
-    });
-  }, [id]);
+    }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
+    return () => { alive = false; };
+  }, [id, loadAttempt]);
 
   const set = (k: keyof typeof blank) => (v: any) => setF((x) => ({ ...x, [k]: v }));
 
@@ -70,6 +75,7 @@ export default function EditProperty() {
   };
 
   if (loading) return <Loading />;
+  if (loadError) return <View style={{flex:1}}><Header back title="Property" /><ErrorState message={loadError} onRetry={() => { setLoadError(""); setLoading(true); setLoadAttempt(x=>x+1); }} /></View>;
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title={id ? "Edit property" : "New property"} />

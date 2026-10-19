@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { CaptureSheet, Media } from "@/src/components/CaptureSheet";
 import { MediaThumb } from "@/src/components/MediaThumb";
-import { Button, Card, Chip, ChipRow, Header, IconButton, Input, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ChipRow, ErrorState, Header, IconButton, Input, Txt, useToast } from "@/src/ui";
 import { monthLabel, shiftMonth, thisMonth } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
@@ -42,6 +42,7 @@ export default function NewOwnerReport() {
     }
   };
 
+  if (props.isError) return <View style={{flex:1}}><Header back title="Owner report" /><ErrorState message={(props.error as Error).message} onRetry={props.refetch} /></View>;
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title="Owner report" subtitle="Status update with photos, videos & payout" />
@@ -74,7 +75,7 @@ export default function NewOwnerReport() {
           <Button testID="report-submit-button" title="Create report" icon="send" onPress={submit} loading={saving} />
         </View>
       </KeyboardAwareScrollView>
-      <CaptureSheet visible={capture} onClose={() => setCapture(false)} allowVideo purpose="Capture photos or a walkthrough video so the owner can see the current status of their house." onUploaded={async (m) => { setMedia((x) => [...x, ...m]); }} />
+      <CaptureSheet visible={capture} onClose={() => setCapture(false)} allowVideo successMessage="Added to report draft. Create report to save it." destination={{ key: `report:${pid}:${month}`, label: `Owner report / ${month}` }} purpose="Capture photos or a walkthrough video so the owner can see the current status of their house." onUploaded={async (m, d) => { if(d.key !== `report:${pid}:${month}`) throw new Error("Return to the original property and month to add this attachment."); setMedia((x) => [...x, ...m]); }} />
     </View>
   );
 }

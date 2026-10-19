@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Query, Request
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import Response, HTMLResponse
 from fastapi.concurrency import run_in_threadpool
 from dotenv import load_dotenv
@@ -11,7 +11,8 @@ from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from bson import ObjectId
-import os, logging, uuid, secrets, html, json, asyncio, string
+import os, logging, uuid, secrets, html, json, asyncio, string, hashlib, re
+from zoneinfo import ZoneInfo
 from pymongo.errors import DuplicateKeyError
 import bcrypt, jwt, requests
 
@@ -289,6 +290,8 @@ async def create_user(body: StaffIn, _=Depends(admin_user)):
     pids = await validate_pids(body.property_ids) if body.role != "admin" else []
     doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "phone": body.phone.strip(), "active": True, "created_at": now_iso()}
     r = await db.users.insert_one(doc)
+    if doc.get("role") == "cleaner":
+        await training.onboarding({**doc, "_id": r.inserted_id})
     return out(await db.users.find_one({"_id": r.inserted_id}))
 
 
@@ -328,7 +331,10 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
             update["$inc"] = {"session_version": 1}
             await db.user_sessions.delete_many({"user_id": str(u["_id"])})
         await db.users.update_one({"_id": u["_id"]}, update)
-    return out(await db.users.find_one({"_id": u["_id"]}))
+    updated = await db.users.find_one({"_id": u["_id"]})
+    if changes.get("role") == "cleaner":
+        await training.onboarding(updated)
+    return out(updated)
 
 
 @api.post("/users/{uid}/reset-password")
@@ -352,7 +358,7 @@ async def deactivate_user(uid: str, admin=Depends(admin_user)):
 
 # ---------------------------------------------------------------- Media
 @api.post("/upload")
-async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
+async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form(None), user=Depends(staff_user)):
     data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
@@ -367,12 +373,27 @@ async def upload(file: UploadFile = File(...), user=Depends(staff_user)):
         ext = "mov"
     else:
         raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
-    path = f"{APP_NAME}/uploads/{user['_id']}/{uuid.uuid4()}.{ext}"
+    if request_key and not re.fullmatch(r"[A-Za-z0-9_-]{8,120}", request_key):
+        raise HTTPException(422, "Invalid upload retry reference")
+    digest = hashlib.sha256(data).hexdigest()
+    media_oid = ObjectId(hashlib.sha256(f"{user['_id']}:{request_key}".encode()).hexdigest()[:24]) if request_key else ObjectId()
+    existing = await db.media.find_one({"_id": media_oid})
+    if existing:
+        if existing.get("upload_digest") != digest or existing.get("is_deleted"):
+            raise HTTPException(409, "Upload reference changed; select the original photo or start a new capture")
+        return out(existing)
+    path = f"{APP_NAME}/uploads/{user['_id']}/{media_oid}-{digest[:32]}.{ext}"
     res = await run_in_threadpool(put_object, path, data, ctype)
     doc = {"storage_path": res["path"], "content_type": ctype, "kind": "video" if ctype.startswith("video") else "image",
            "original_name": file.filename, "size": res.get("size"), "owner_id": str(user["_id"]), "created_at": now_iso(), "is_deleted": False}
-    r = await db.media.insert_one(doc)
-    return out(await db.media.find_one({"_id": r.inserted_id}))
+    doc.update(_id=media_oid, upload_digest=digest)
+    try:
+        await db.media.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await db.media.find_one({"_id": media_oid})
+        if existing.get("upload_digest") != digest:
+            raise HTTPException(409, "Upload reference already used for a different photo")
+    return out(await db.media.find_one({"_id": media_oid}))
 
 
 async def stream_media(media_id: str):
@@ -428,7 +449,7 @@ class ContactIn(BaseModel):
 
 
 class PropertyIn(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=180)
     location: str = ""
     owner_name: str = ""
     owner_email: str = ""
@@ -438,11 +459,26 @@ class PropertyIn(BaseModel):
     contacts: List[ContactIn] = []
     owner_share_percent: float = Field(70, ge=0, le=100)
     electricity_mode: Literal["split_half", "owner"] = "owner"
-    base_rate: float = 0
+    base_rate: float = Field(default=0, ge=0, allow_inf_nan=False)
     rooms: List[str] = ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"]
     ical_feeds: List[IcalFeed] = []
     cover_url: str = ""
     notes: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def nonblank_name(cls, value):
+        if not value.strip():
+            raise ValueError("Enter a property name")
+        return value.strip()
+
+    @field_validator("rooms")
+    @classmethod
+    def valid_rooms(cls, values):
+        rooms = [v.strip() for v in values]
+        if len(rooms) > 100 or any(not r or len(r) > 180 for r in rooms) or len({r.casefold() for r in rooms}) != len(rooms):
+            raise ValueError("Use distinct nonempty room names (maximum 100)")
+        return rooms
 
 
 @api.get("/properties")
@@ -469,7 +505,7 @@ def property_view(p, user):
 
 async def property_status(pid: str, day: str):
     occ = await db.bookings.find_one({"property_id": pid, "status": {"$ne": "cancelled"}, "check_in": {"$lte": day}, "check_out": {"$gt": day}})
-    pending = await db.cleaning.find_one({"property_id": pid, "status": {"$ne": "completed"}, "date": {"$lte": day}})
+    pending = await db.cleaning.find_one({"property_id": pid, "status": {"$nin": ["completed", "cancelled"]}, "date": {"$lte": day}})
     return {"occupied": bool(occ), "current_guest": occ.get("guest_name") if occ else None,
             "needs_cleaning": bool(pending), "pending_cleaning_id": str(pending["_id"]) if pending else None}
 
@@ -599,6 +635,9 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     if not previous:
         raise HTTPException(404, "Booking not found")
     validate_dates(body.check_in, body.check_out)
+    active_task = await db.cleaning.find_one({"booking_id": bid, "status": {"$in": ["in_progress", "awaiting_review", "completed"]}})
+    if active_task and body.status == "confirmed" and (previous["property_id"] != body.property_id or previous["check_out"] != body.check_out):
+        raise HTTPException(409, "Cleaning work already exists. Reopen it with an admin reason before changing the property or checkout date.")
     if body.status != "cancelled":
         await check_overlap(body, bid)
     claimed = []
@@ -628,13 +667,13 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
 async def delete_booking(bid: str, _=Depends(admin_user)):
     await release_unused(db, bid)
     await db.bookings.delete_one({"_id": oid(bid)})
-    await db.cleaning.delete_one({"booking_id": bid, "status": "pending"})
+    await db.cleaning.update_many({"booking_id": bid, "status": {"$ne": "completed"}}, {"$set": {"status": "cancelled", "review_notes": "Booking removed"}, "$inc": {"revision": 1}})
     return {"ok": True}
 
 
 def _to_date_str(v) -> str:
     if isinstance(v, datetime):
-        return v.date().isoformat()
+        return (v.astimezone(ZoneInfo("Asia/Kolkata")) if v.tzinfo else v).date().isoformat()
     return v.isoformat()
 
 
@@ -647,7 +686,7 @@ def parse_ical(text: str):
             ci = _to_date_str(ev.get("DTSTART").dt)
             co = _to_date_str(ev.get("DTEND").dt) if ev.get("DTEND") else (date.fromisoformat(ci) + timedelta(days=1)).isoformat()
             events.append({"uid": str(ev.get("UID") or f"{ci}-{co}"), "summary": str(ev.get("SUMMARY") or "OTA Guest"), "check_in": ci, "check_out": co,
-                           "description": str(ev.get("DESCRIPTION") or "")[:500]})
+                           "description": str(ev.get("DESCRIPTION") or "")[:500], "cancelled": str(ev.get("STATUS") or "").upper() == "CANCELLED"})
         except Exception as e:
             logger.warning(f"Skip ical event: {e}")
     return events
@@ -666,25 +705,34 @@ async def sync_property(p: dict) -> list:
             report.append({"ota": f["ota"], "ok": False, "error": str(e)[:200]})
             continue
         added = updated = 0
+        conflicts = 0
+        feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
+        worker = {"_id": "calendar-sync", "role": "admin"}
         for ev in events:
-            existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"]})
+            uid = f"{feed_id}:{ev['uid']}"
+            existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
+            if not existing:
+                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
+            if ev["cancelled"] and not existing:
+                continue
             blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
-            if existing:
-                await db.bookings.update_one({"_id": existing["_id"]}, {"$set": {"check_in": ev["check_in"], "check_out": ev["check_out"]}})
-                updated += 1
-            else:
-                doc = {"property_id": pid, "guest_name": ev["summary"], "guest_phone": "", "guest_email": "", "guests": 1, "ota": f["ota"],
-                       "check_in": ev["check_in"], "check_out": ev["check_out"], "amount": 0, "ota_commission": 0,
-                       "status": "blocked" if blocked else "confirmed", "notes": ev["description"], "source": "ical", "ical_uid": ev["uid"], "created_at": now_iso()}
-                try:
-                    r = await db.bookings.insert_one(doc)
-                except DuplicateKeyError:
-                    continue
-                if not blocked:
-                    await ensure_cleaning(pid, str(r.inserted_id), ev["check_out"])
-                added += 1
+            payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
+                       "check_in": ev["check_in"], "check_out": ev["check_out"],
+                       "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
+            try:
+                body = BookingIn(**payload)
+                if existing:
+                    result = await update_booking(str(existing["_id"]), body, worker)
+                    updated += 1
+                else:
+                    result = await create_booking(body, worker)
+                    added += 1
+                await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
+            except Exception:
+                # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
+                conflicts += 1
         f["last_synced"] = now_iso()
-        report.append({"ota": f["ota"], "ok": True, "added": added, "updated": updated, "events": len(events)})
+        report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
     await issue_tracker.record("Calendar sync " + pid, any(not item["ok"] for item in report))
     return report
@@ -777,6 +825,8 @@ class CleaningIn(BaseModel):
 class RoomMediaIn(BaseModel):
     phase: Literal["before", "after"]
     media_id: str
+    expected_revision: Optional[int] = None
+    room_name: Optional[str] = None
 
 
 class CleaningUpdate(BaseModel):
@@ -795,7 +845,7 @@ async def checked_cleaning(cid, user, writable=False):
     check_pid(user, c["property_id"])
     if user["role"] == "cleaner" and c.get("assigned_to") != str(user["_id"]):
         raise HTTPException(404, "Session not found")
-    if writable and c["status"] in ("completed", "awaiting_review"):
+    if writable and c["status"] in ("completed", "awaiting_review", "cancelled"):
         raise HTTPException(409, "Session is locked for review or completed")
     return c
 
@@ -962,6 +1012,19 @@ async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(sta
     media = await db.media.find_one({"_id": oid(body.media_id), "is_deleted": False})
     if not media or media.get("kind") != "image" or (user["role"] != "admin" and media.get("owner_id") != str(user["_id"])):
         raise HTTPException(422, "Use a photo uploaded by your account")
+    # A retry after a lost acknowledgement is successful, without changing revision.
+    if body.media_id in c["rooms"][idx].get(body.phase, []):
+        return await get_cleaning(cid, user)
+    if body.room_name is not None and body.room_name != c["rooms"][idx]["name"]:
+        raise HTTPException(409, "Room changed; reopen the correct room before saving")
+    if body.expected_revision is not None and body.expected_revision != c.get("revision", 0):
+        raise HTTPException(409, "Task changed; refresh and check the assignment before saving")
+    for session in await db.cleaning.find({"rooms": {"$elemMatch": {"$or": [{"before": body.media_id}, {"after": body.media_id}]}}}).to_list(None):
+        raise HTTPException(409, "This photo is already attached to another room or phase")
+    binding = f"{cid}:{idx}:{body.phase}"
+    claimed = await db.media.update_one({"_id": media["_id"], "$or": [{"attachment_binding": {"$exists": False}}, {"attachment_binding": binding}]}, {"$set": {"attachment_binding": binding}})
+    if not claimed.matched_count:
+        raise HTTPException(409, "This photo belongs to another room or phase; take a new photo")
     photos = list(dict.fromkeys([*c["rooms"][idx].get(body.phase, []), body.media_id]))
     upd = {"$set": {f"rooms.{idx}.{body.phase}": photos, "status": "in_progress"}, "$inc": {"revision": 1}}
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, upd)
@@ -1197,6 +1260,9 @@ async def create_owner_report(body: OwnerReportIn, user=Depends(admin_user)):
     p = await db.properties.find_one({"_id": oid(body.property_id)})
     if not p:
         raise HTTPException(404, "Property not found")
+    for mid in set(body.media_ids):
+        if not ObjectId.is_valid(mid) or not await db.media.find_one({"_id": oid(mid), "is_deleted": False}):
+            raise HTTPException(422, "Choose existing uploaded report attachments")
     snap = await compute_settlement(p, body.month)
     doc = body.model_dump()
     doc.update({"title": body.title or f"{p['name']} — {body.month}", "settlement": snap, "share_token": secrets.token_urlsafe(16),
@@ -1337,6 +1403,14 @@ async def list_invoices(type: Optional[str] = None, _=Depends(admin_user)):
 async def create_invoice(body: InvoiceIn, _=Depends(admin_user)):
     if body.property_id:
         await validate_pids([body.property_id])
+    if not body.bill_to_name.strip():
+        raise HTTPException(422, "Enter the invoice recipient")
+    if body.due_date and body.due_date < body.issue_date:
+        raise HTTPException(422, "Due date cannot be before the issue date")
+    if body.booking_id:
+        booking = await db.bookings.find_one({"_id": oid(body.booking_id)})
+        if not booking or (body.property_id and booking["property_id"] != body.property_id):
+            raise HTTPException(422, "Choose a booking belonging to this property")
     if not body.items:
         raise HTTPException(400, "Add at least one line item")
     ctr = await db.counters.find_one_and_update({"_id": "invoice"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
@@ -1381,7 +1455,7 @@ async def dashboard(_=Depends(admin_user)):
     arrivals = await db.bookings.find({"status": "confirmed", "check_in": today}).to_list(100)
     departures = await db.bookings.find({"status": "confirmed", "check_out": today}).to_list(100)
     occupied = await db.bookings.count_documents({"status": {"$ne": "cancelled"}, "check_in": {"$lte": today}, "check_out": {"$gt": today}})
-    pending_clean = await db.cleaning.find({"status": {"$ne": "completed"}, "date": {"$lte": today}}).sort("date", 1).to_list(50)
+    pending_clean = await db.cleaning.find({"status": {"$nin": ["completed", "cancelled"]}, "date": {"$lte": today}}).sort("date", 1).to_list(50)
     unpaid = await db.invoices.find({"status": "unpaid"}).to_list(1000)
 
     def bk(b):
@@ -1433,6 +1507,9 @@ purge_guest_ids = register_guest_routes(api, db, admin_user, oid, now_iso)
 from operations import IssueTracker
 issue_tracker = IssueTracker(db)
 issue_tracker.register(api, admin_user)
+from training import Training
+training = Training(db, oid, out)
+training.register(api, admin_user, current_user)
 app.include_router(api)
 app.add_middleware(BoundedGuestUploads)
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -1462,6 +1539,17 @@ async def private_guest_responses(request: Request, call_next):
     return response
 
 
+async def training_loop():
+    while True:
+        try:
+            await training.schedule()
+            await issue_tracker.record("Background training scheduler", False)
+        except Exception:
+            logger.error("Training scheduling failed; retrying")
+            await issue_tracker.record("Background training scheduler", True)
+        await asyncio.sleep(60)
+
+
 async def guest_retention_loop():
     while True:
         try:
@@ -1475,6 +1563,7 @@ async def guest_retention_loop():
 
 @app.on_event("startup")
 async def startup():
+    await training.indexes()
     await db.users.create_index("email", unique=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
@@ -1489,6 +1578,7 @@ async def startup():
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())
+    app.state.training_task = asyncio.create_task(training_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
                                   (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
@@ -1548,7 +1638,7 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task")]
+    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "training_task")]
     for task in tasks:
         if task:
             task.cancel()

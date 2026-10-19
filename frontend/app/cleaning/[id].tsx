@@ -4,6 +4,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
+import { CaptureTarget } from "@/src/capture-workflow";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { CaptureSheet } from "@/src/components/CaptureSheet";
@@ -36,17 +37,21 @@ export default function CleaningSession() {
   if (q.isLoading) return <Loading label="Loading task details..." />;
   if (q.isError) return <View style={{ flex: 1 }}><Header back title="Cleaning" /><ErrorState message="Could not load task details" onRetry={q.refetch} /></View>;
   const c = q.data;
-  const done = c.status === "completed" || c.status === "awaiting_review" || user?.role === "owner";
+  const done = c.status === "cancelled" || c.status === "completed" || c.status === "awaiting_review" || user?.role === "owner";
   const refresh = (data: any) => {
     qc.setQueryData(["cleaning-session", id], data);
     qc.invalidateQueries({ queryKey: ["cleaning"] });
     qc.invalidateQueries({ queryKey: ["dashboard"] });
   };
 
-  const addMedia = async (ids: string[]) => {
-    if (!target) return;
+  const addMedia = async (ids: string[], destination: CaptureTarget) => {
+    if (destination.taskId !== id || destination.roomIndex === undefined || !destination.phase) throw new Error("Return to the original task to save this photo.");
     let data = c;
-    for (const mid of ids) data = await api.post(`/cleaning/${id}/rooms/${target.idx}/media`, { phase: target.phase, media_id: mid });
+    for (const mid of ids) data = await api.post(`/cleaning/${destination.taskId}/rooms/${destination.roomIndex}/media`, {
+      phase: destination.phase, media_id: mid, room_name: destination.roomName, expected_revision: destination.revision
+    });
+    // Advance only the revision after an acknowledged batch item; room/task/phase stay fixed.
+    destination.revision = data.revision ?? destination.revision;
     refresh(data);
   };
   const removeMedia = async (idx: number, phase: string, mid: string) => refresh(await api.del(`/cleaning/${id}/rooms/${idx}/media/${phase}/${mid}`));
@@ -64,6 +69,17 @@ export default function CleaningSession() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const saveNotes = async () => {
+    if (submitting || notes === null) return;
+    setSubmitting(true);
+    try {
+      refresh(await api.put(`/cleaning/${id}`, { notes }));
+      setNotes(null);
+      toast("Notes saved to this task");
+    } catch (e: any) { toast(e.message, "error"); }
+    finally { setSubmitting(false); }
   };
 
   const review = async (approved: boolean) => {
@@ -99,8 +115,8 @@ export default function CleaningSession() {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           {list.map((mid, k) => <MediaThumb key={mid} testID={`room-${idx}-${phase}-media-${k}`} id={mid} size={64} onRemove={done ? undefined : () => removeMedia(idx, phase, mid)} />)}
           {!done ? (
-            <Pressable testID={`room-${idx}-${phase}-add`} onPress={() => setTarget({ idx, phase })} style={({ pressed }) => ({ width: 64, height: 64, borderRadius: radius.sm + 2, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.brandTertiary : colors.surfaceSecondary })}>
-              <Icon name="camera-outline" size={22} color={colors.brandPrimary} />
+            <Pressable testID={`room-${idx}-${phase}-add`} accessibilityLabel={`Add ${phase} photo of ${room.name}`} onPress={() => setTarget({ idx, phase })} style={({ pressed }) => ({ width: 82, minHeight: 76, paddingVertical: 8, gap: 4, borderRadius: radius.sm + 2, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.brandTertiary : colors.surfaceSecondary })}>
+              <Icon name="camera-outline" size={22} color={colors.brandPrimary} /><Txt v="caption">Add photo</Txt>
             </Pressable>
           ) : null}
         </View>
@@ -196,7 +212,11 @@ export default function CleaningSession() {
         {!done ? <Card><Txt v="label">Still needed before you send</Txt>{c.rooms.filter((r: any) => !r.before.length || !r.after.length || (r.checked ?? []).length !== (c.checklist_items ?? []).length).map((r: any) => <Txt key={r.name}>{r.name}: {[!r.before.length ? "before photo" : "", !r.after.length ? "after photo" : "", (r.checked ?? []).length !== (c.checklist_items ?? []).length ? "finish checks" : ""].filter(Boolean).join(", ")}</Txt>)}{c.rooms.every((r: any) => r.before.length && r.after.length && (r.checked ?? []).length === (c.checklist_items ?? []).length) ? <Txt>Everything is saved. You can send this for review.</Txt> : null}</Card> : null}
 
         {!done ? (
-          <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
+          <Card style={{ gap: spacing.sm }}>
+            <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline editable={!submitting} value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
+            <Txt v="caption">Save notes before leaving this task. Photos and checklist changes save separately.</Txt>
+            <Button testID="cleaning-save-notes" title="Save notes" variant="secondary" loading={submitting} disabled={notes === null || notes === (c.notes ?? "")} onPress={saveNotes} />
+          </Card>
         ) : c.notes ? (
           <Card><Txt v="label">Notes</Txt><Txt v="body">{c.notes}</Txt></Card>
         ) : null}
@@ -206,7 +226,7 @@ export default function CleaningSession() {
           <Button testID="cleaning-complete-button" icon="checkmark-done" title={c.rooms_done === c.rooms_total ? "Submit for supervisor review" : `Document ${c.rooms_total - c.rooms_done} more room${c.rooms_total - c.rooms_done === 1 ? "" : "s"}`} disabled={!c.rooms_total || c.rooms_done !== c.rooms_total || c.rooms.some((r: any) => (r.checked ?? []).length !== (c.checklist_items ?? []).length)} onPress={complete} loading={submitting} />
         </View>
       ) : null}
-      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m) => addMedia(m.map((x) => x.id))} />
+      <CaptureSheet visible={!!target} onClose={() => setTarget(null)} destination={{ key: `${id}:${target?.idx}:${target?.phase}`, label: target ? `${c.property_name} / ${c.rooms[target.idx]?.name} / ${target.phase} cleaning` : c.property_name, taskId: id, roomIndex: target?.idx, roomName: target ? c.rooms[target.idx]?.name : undefined, phase: target?.phase, revision: c.revision ?? 0 }} onRestore={(d) => { if (d.taskId === id && d.roomIndex !== undefined && d.phase) setTarget({ idx: d.roomIndex, phase: d.phase }); }} purpose={target ? `Take a ${target.phase} photo of ${c.rooms[target.idx]?.name} so the condition is on record.` : ""} onUploaded={(m, d) => addMedia(m.map((x) => x.id), d)} />
     </View>
   );
 }
