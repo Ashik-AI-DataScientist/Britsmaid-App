@@ -236,3 +236,12 @@ async def test_multiple_completed_assignments_produce_one_current_refresher(ctx)
     await server.training.schedule()
     await server.training.schedule()
     assert await ctx['db'].training_assignments.count_documents({'source':'refresher','completed_at':None})==1
+
+
+async def test_cleaner_can_save_notes_before_room_completion(ctx):
+    url=f"/api/cleaning/{ctx['cid']}"
+    r=await ctx['client'].put(url,headers=auth(ctx,'cleaner'),json={'notes':'SAMPLE maintenance: check the tap'})
+    assert r.status_code==200 and r.json()['notes']=='SAMPLE maintenance: check the tap'
+    assert r.json()['status']=='pending'
+    assert (await ctx['client'].put(url,headers=auth(ctx,'cleaner'),json={'status':'completed'})).status_code==400
+    assert (await ctx['client'].get(url,headers=auth(ctx,'cleaner'))).json()['notes']=='SAMPLE maintenance: check the tap'

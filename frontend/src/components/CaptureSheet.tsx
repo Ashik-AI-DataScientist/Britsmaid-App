@@ -67,7 +67,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
         const result = await ImagePicker.getPendingResultAsync();
         if (result && !("code" in result) && !result.canceled && result.assets?.length && !d.assets.length && !d.uploaded) {
           d.assets = await Promise.all(result.assets.map(keepAsset)); await persist(d);
-        } else if (result && "code" in result) setFailure("The camera could not recover its result. Please take the photo again.");
+        } else if (result && "code" in result) { setFailure("The camera could not recover its result. Please take the photo again."); toast("The camera result could not be recovered. Please take the photo again.", "error"); }
       }
       if (!alive) return;
       if (!d.assets.length && !d.uploaded) { await persist(null, user?.id); return; }
@@ -75,7 +75,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       setFailure("A photo is waiting to be saved to its original destination. Check the task, then retry.");
     })().catch(() => { if (alive) setFailure("Could not restore the pending photo. Keep this screen open and try again."); });
     return () => { alive = false; };
-  }, [user?.id, taskId, destination?.key]);
+  }, [user?.id, taskId, destination?.key, toast]);
 
   const save = async (d: CaptureDraft, epoch: number) => {
     setPending(d);
@@ -112,7 +112,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       if (result.canceled || !result.assets?.length) { await persist(null, user?.id); return; }
       d.assets = await Promise.all(result.assets.map(keepAsset));
       await persist(d); await save(d, epoch);
-    } catch (e: any) { if (d?.assets.length || d?.uploaded) setPending(d); setFailure(e.message || "Photo was not saved. Please retry."); }
+    } catch (e: any) { if (d?.assets.length || d?.uploaded) setPending(d); else if (d) await persist(null, user?.id).catch(() => {}); setFailure(e.message || "Photo was not saved. Please retry."); }
     finally { setBusy(false); releasePicker(lock.current); }
   };
   // Web must invoke the picker synchronously in the user's gesture, before any storage/permission await.

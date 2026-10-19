@@ -69,6 +69,17 @@ export default function CleaningSession() {
     }
   };
 
+  const saveNotes = async () => {
+    if (submitting || notes === null) return;
+    setSubmitting(true);
+    try {
+      refresh(await api.put(`/cleaning/${id}`, { notes }));
+      setNotes(null);
+      toast("Notes saved to this task");
+    } catch (e: any) { toast(e.message, "error"); }
+    finally { setSubmitting(false); }
+  };
+
   const review = async (approved: boolean) => {
     setSubmitting(true);
     try { refresh(await api.post(`/cleaning/${id}/review`, { approved, notes: notes ?? "" })); setNotes(null); }
@@ -199,7 +210,11 @@ export default function CleaningSession() {
         {!done ? <Card><Txt v="label">Still needed before you send</Txt>{c.rooms.filter((r: any) => !r.before.length || !r.after.length || (r.checked ?? []).length !== (c.checklist_items ?? []).length).map((r: any) => <Txt key={r.name}>{r.name}: {[!r.before.length ? "before photo" : "", !r.after.length ? "after photo" : "", (r.checked ?? []).length !== (c.checklist_items ?? []).length ? "finish checks" : ""].filter(Boolean).join(", ")}</Txt>)}{c.rooms.every((r: any) => r.before.length && r.after.length && (r.checked ?? []).length === (c.checklist_items ?? []).length) ? <Txt>Everything is saved. You can send this for review.</Txt> : null}</Card> : null}
 
         {!done ? (
-          <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
+          <Card style={{ gap: spacing.sm }}>
+            <Input testID="cleaning-notes-input" label="Notes (damages, missing items, maintenance)" multiline editable={!submitting} value={notes ?? c.notes ?? ""} onChangeText={setNotes} />
+            <Txt v="caption">Save notes before leaving this task. Photos and checklist changes save separately.</Txt>
+            <Button testID="cleaning-save-notes" title="Save notes" variant="secondary" loading={submitting} disabled={notes === null || notes === (c.notes ?? "")} onPress={saveNotes} />
+          </Card>
         ) : c.notes ? (
           <Card><Txt v="label">Notes</Txt><Txt v="body">{c.notes}</Txt></Card>
         ) : null}

@@ -51,6 +51,7 @@ Official references: [Expo APK](https://docs.expo.dev/build-reference/apk/), [in
 ## Phone checklist
 
 - Cleaner: open a pending assigned task, choose Living Room → Before → Take photo. Allow camera permission for that action. Save and verify its thumbnail before taking After. Repeat in a second room; confirm phases and rooms stay separate.
+- Type a synthetic maintenance note and press **Save notes** before completing the task. Return to the task and check that the note remains.
 - Cancel the camera; check there is no new attachment. Rapidly tap capture; only one picker should open. Try library separately.
 - Deny camera once, then permanently deny. Check explanations, Settings and the library fallback. Settings wording depends on the phone.
 - Turn Wi-Fi off after selecting a photo. Confirm a clear error, pending work and retry. Restore Wi-Fi and retry; success must appear only after attachment.
