@@ -1,5 +1,7 @@
 # Britsmaid property management app
 
+- [Free Render and MongoDB test deployment](docs/RENDER_FREE.md)
+
 Expo / React Native frontend, FastAPI backend and MongoDB.
 
 - [Application review, role matrix, edge cases and feature backlog](docs/APP_REVIEW.md)

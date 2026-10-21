@@ -49,7 +49,7 @@ export default function Login() {
           <Input testID="login-password-input" label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="••••••••" onSubmitEditing={submit} />
           {err ? <Txt testID="login-error" v="body" color={colors.error}>{err}</Txt> : null}
           <Button testID="login-submit-button" title="Sign in" icon="log-in-outline" onPress={submit} loading={busy} />
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+          {process.env.EXPO_PUBLIC_GOOGLE_LOGIN_ENABLED !== "false" ? <><View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
             <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
             <Txt v="caption">or</Txt>
             <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
@@ -57,9 +57,9 @@ export default function Login() {
           <Pressable testID="login-google-button" onPress={async () => { setGBusy(true); await googleSignIn(); setGBusy(false); }} style={({ pressed }) => ({ minHeight: 50, borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, transform: [{ scale: pressed ? 0.97 : 1 }] })}>
             {gBusy ? <ActivityIndicator color={colors.brandPrimary} /> : <Icon name="logo-google" size={18} color="#4285F4" />}
             <Txt v="subtitle" style={{ fontSize: 15 }}>Continue with Google</Txt>
-          </Pressable>
+          </Pressable></> : null}
           {authError ? <Txt testID="login-google-error" v="body" color={colors.error}>{authError}</Txt> : null}
-          {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)} · use synthetic data only</Txt> : null}
+          {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)}{Constants.expoConfig.extra.previewSource.testOnly !== false ? " · use synthetic data only" : " · hosted backend"}</Txt> : null}
           <Txt v="caption" style={{ textAlign: "center" }}>Admins manage everything. Cleaning staff see their checkout tasks.</Txt>
         </Animated.View>
       </KeyboardAwareScrollView>

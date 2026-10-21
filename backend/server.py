@@ -1512,7 +1512,9 @@ training = Training(db, oid, out)
 training.register(api, admin_user, current_user)
 app.include_router(api)
 app.add_middleware(BoundedGuestUploads)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_credentials=True,
+    allow_origins=[x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()],
+    allow_methods=["*"], allow_headers=["*"])
 
 
 @app.middleware("http")
@@ -1581,7 +1583,7 @@ async def startup():
     app.state.training_task = asyncio.create_task(training_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
-                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
+                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], os.getenv("CLEANER_NAME", "Priya (Cleaning)"), "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
         if not existing:
             await db.users.insert_one({"email": email.lower(), "name": name, "password_hash": hash_pw(pw), "role": role, "active": True, "created_at": now_iso()})
@@ -1594,7 +1596,7 @@ async def startup():
     owner_email = os.environ["OWNER_EMAIL"].lower()
     if not await db.users.find_one({"email": owner_email}):
         first = await db.properties.find_one({"name": "Villa Azure"}) or await db.properties.find_one({})
-        await db.users.insert_one({"email": owner_email, "name": "Rahul Mehta (Owner)", "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
+        await db.users.insert_one({"email": owner_email, "name": os.getenv("OWNER_NAME", "Rahul Mehta (Owner)"), "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
                                    "property_ids": [str(first["_id"])] if first else [], "active": True, "created_at": now_iso()})
     try:
         init_storage()
