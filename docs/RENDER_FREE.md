@@ -72,5 +72,56 @@ No mocked result proves real database concurrency, backups or physical camera.
 
 Local validation on 21 October 2026: 190 isolated backend tests passed (175
 existing plus 15 hosted tests); 30 frontend regressions, TypeScript and lint
-passed. Linux container build, live Atlas connection, restore and hosted-phone
-smoke checks are separate checks and must not be assumed from those results.
+passed. GitHub Actions run `39592363145` also passed backend/frontend checks,
+web/Android exports and the Linux Docker image build.
+
+## Live test deployment — 21 October 2026
+
+Open https://britsmaid-test.onrender.com/ in a phone or PC browser. This host
+runs independently of the PC, over Wi-Fi or mobile data. The original local
+preview and its PC-address APK remain separate; that APK needs a new hosted
+build before it can use this service.
+
+Render service `britsmaid-test` uses Free Docker compute in Singapore and
+branch `deploy/render-free`. Verified application source is `460dde5`.
+Atlas uses the Mumbai `Britsmaid-Free` FREE cluster and `britsmaid_test`.
+The approved Atlas allowlist contains only `74.220.52.0/24` and
+`74.220.60.0/24`, both shared Render Singapore outbound ranges. They are
+not exclusive to this service; database authentication is still required.
+
+Verified against the live service:
+
+- `/healthz` reports `ok`, `persistent-test` and the expected source commit.
+- All four initial roles sign in. Admin sees Team and the full dashboard;
+  owner sees its property portal; cleaner sees tasks/training; supervisor
+  sees cleaning review, unassigned, to-do and done tabs.
+- Owner and cleaner navigation to `/staff` returns to their role portal.
+  A request to `/api/auth/me` without authorization is rejected.
+- A synthetic property and owner report can be written and loaded again.
+- A public sample React icon can be uploaded, attached to the report and
+  displayed. The report and image still load after a Render service restart;
+  authenticated media responses use `private, no-store`.
+- Existing sign-in survives the restart. No credentials were reset.
+
+Two clearly labelled test records remain for inspection: property
+`TEST — Deployment check` and report `TEST — Hosted image persistence`.
+They contain no real guest/property data. No property access was assigned to
+the initial nonadmin accounts. Use admin's Team screen to assign real properties.
+
+Initial login emails and the privately saved Render environment password keys:
+
+| Role | Email | Password key |
+| --- | --- | --- |
+| Admin | admin@example.com | ADMIN_PASSWORD |
+| Owner | owner@example.com | OWNER_PASSWORD |
+| Cleaner | cleaner@example.com | CLEANER_PASSWORD |
+| Supervisor | supervisor@example.com | SUPERVISOR_PASSWORD |
+
+Use the generated password as saved, without URI encoding. URI encoding is
+only for special characters in the separate Atlas connection password.
+No password or connection string belongs in this document or GitHub.
+
+Physical phone/camera testing, live cross-property data scenarios, external
+calendar/provider integrations, private guest ID storage, backup/restore and
+native hosted APK/iOS testing remain separate checks. The verified browser
+smoke checks do not establish production readiness or replace those checks.
