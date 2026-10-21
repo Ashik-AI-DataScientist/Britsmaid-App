@@ -72,6 +72,10 @@ def install_hosted_routes(application, api_server, media_client):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
+        if request.url.path in ("/", "/index.html", "/install.html", "/manifest.webmanifest"):
+            response.headers["Cache-Control"] = "no-cache"
+        if request.url.path == "/manifest.webmanifest" and response.status_code == 200:
+            response.headers["Content-Type"] = "application/manifest+json"
         return response
 
     @application.get("/healthz", include_in_schema=False)

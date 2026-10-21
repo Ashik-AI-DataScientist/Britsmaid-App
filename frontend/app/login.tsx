@@ -9,6 +9,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { useAuth } from "@/src/auth";
 import { Button, Icon, Input, Txt } from "@/src/ui";
 import { radius, spacing, useTheme } from "@/src/theme";
+import { InstallHelp } from "@/src/components/InstallHelp";
 
 export default function Login() {
   const { user, login, googleSignIn, authError } = useAuth();
@@ -38,7 +39,7 @@ export default function Login() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={{ flexGrow: 1, paddingTop: insets.top + spacing.xxl, paddingBottom: insets.bottom + spacing.xl, paddingHorizontal: spacing.xl, justifyContent: "center" }} keyboardShouldPersistTaps="handled">
         <Animated.View entering={FadeInDown.duration(500)} style={{ alignItems: "center" }}>
-          <Image source={require("../assets/images/logo.jpg")} style={{ width: 180, height: 180 }} contentFit="contain" />
+          <Image source={require("../assets/images/logo.jpg")} alt="Britsmaid logo" style={{ width: 180, height: 180 }} contentFit="contain" />
         </Animated.View>
         <Animated.View entering={FadeInDown.delay(150).duration(500)} style={{ gap: spacing.lg, marginTop: spacing.xl }}>
           <View>
@@ -61,6 +62,7 @@ export default function Login() {
           {authError ? <Txt testID="login-google-error" v="body" color={colors.error}>{authError}</Txt> : null}
           {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)}{Constants.expoConfig.extra.previewSource.testOnly !== false ? " · use synthetic data only" : " · hosted backend"}</Txt> : null}
           <Txt v="caption" style={{ textAlign: "center" }}>Admins manage everything. Cleaning staff see their checkout tasks.</Txt>
+          <InstallHelp />
         </Animated.View>
       </KeyboardAwareScrollView>
     </View>

@@ -38,7 +38,7 @@ jobs:
       - working-directory: frontend
         run: pnpm typecheck && pnpm lint:check && pnpm test:edges
       - working-directory: frontend
-        run: pnpm exec expo export --platform web --output-dir dist
+        run: pnpm export:web
 
       - working-directory: frontend
         run: pnpm exec expo export --platform android --output-dir dist-android

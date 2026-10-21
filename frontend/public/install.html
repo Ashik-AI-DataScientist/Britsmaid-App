@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Add Britsmaid to your phone</title>
+  <meta name="application-name" content="Britsmaid">
+  <meta name="description" content="Add the Britsmaid property management workspace to your Android or iPhone home screen.">
+  <meta name="theme-color" content="#1c3963">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Britsmaid">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/britsmaid-180-v1.png">
+  <link rel="icon" type="image/png" href="/icons/britsmaid-64-v1.png">
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f3f6fa;color:#172b45;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;padding:24px;padding-top:max(24px,env(safe-area-inset-top));padding-bottom:max(24px,env(safe-area-inset-bottom))}main{max-width:720px;margin:auto}header{text-align:center;margin:0 0 28px}header img{width:128px;height:128px;border-radius:24px}h1{font-size:30px;line-height:1.2;margin:16px 0 10px}h2{font-size:21px;margin:0 0 12px}p{margin:10px 0}.intro{color:#50627a;font-size:17px}.card{background:#fff;border:1px solid #dce4ef;border-radius:18px;padding:24px;margin:18px 0;box-shadow:0 4px 18px #172b4505}ol{padding-left:24px;margin:0}li{padding:6px 0}a{color:#1c3963}a.button,button{display:block;width:100%;font:inherit;font-weight:650;text-align:center;min-height:50px;padding:13px 18px;border:0;border-radius:12px;background:#1c3963;color:#fff;text-decoration:none;cursor:pointer;margin-top:14px}button:disabled{opacity:.6;cursor:wait}a:focus-visible,button:focus-visible{outline:3px solid #3786c7;outline-offset:4px}.note{font-size:14px;color:#50627a}footer{text-align:center;font-size:13px;color:#50627a;margin:28px 0 4px}[hidden]{display:none!important}@media(max-width:400px){body{padding-left:16px;padding-right:16px}.card{padding:20px}h1{font-size:27px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/icons/britsmaid-192-v1.png" alt="Britsmaid logo" width="128" height="128">
+    <h1>Your properties.<br>One tap away.</h1>
+    <p class="intro">Add Britsmaid to your home screen, then sign in with the account your administrator gives you.</p>
+    <a class="button" href="/">Open Britsmaid</a>
+    <button id="install" type="button" hidden>Install Britsmaid</button>
+    <p id="status" class="note" role="status" aria-live="polite"></p>
+  </header>
+  <section id="android" class="card" aria-labelledby="android-title">
+    <h2 id="android-title">Android</h2>
+    <ol>
+      <li>Open this link in <strong>Chrome</strong>.</li>
+      <li>Tap the <strong>three-dot menu</strong> beside the address bar.</li>
+      <li>Choose <strong>Add to Home screen</strong> or <strong>Install and create shortcut</strong>, then confirm <strong>Add</strong> or <strong>Install</strong>.</li>
+      <li>Open the <strong>Britsmaid icon</strong> on your home screen and sign in.</li>
+    </ol>
+    <p class="note">The wording varies by phone and browser. If an Install Britsmaid button appears above, you can use that instead.</p>
+  </section>
+  <section id="iphone" class="card" aria-labelledby="iphone-title">
+    <h2 id="iphone-title">iPhone and iPad</h2>
+    <ol>
+      <li>Open this link in <strong>Safari</strong>.</li>
+      <li>Tap <strong>Share</strong> (the square with an upward arrow). In some Safari versions, open <strong>More</strong> first.</li>
+      <li>Scroll to <strong>Add to Home Screen</strong>. Keep the name <strong>Britsmaid</strong>.</li>
+      <li>If offered, turn on <strong>Open as Web App</strong>, then tap <strong>Add</strong>.</li>
+      <li>Open the new <strong>Britsmaid icon</strong> and sign in.</li>
+    </ol>
+  </section>
+  <section class="card" aria-labelledby="help-title">
+    <h2 id="help-title">A few things to know</h2>
+    <p><strong>Already inside WhatsApp or an email app?</strong> Use its menu to open the link in Chrome on Android or Safari on iPhone before adding the icon.</p>
+    <p>Your administrator decides which properties and duties you can access. Adding an icon does not create an account.</p>
+    <p>Internet is required. Your PC can stay switched off. On the current free hosting, the first open after inactivity may take around a minute; wait and refresh once.</p>
+    <p class="note">If you saved an older icon, remove that shortcut and add it again to pick up the Britsmaid branding. Removing the shortcut is different from deleting your account. Save any pending work before changing app or browser storage.</p>
+  </section>
+  <footer>Britsmaid Property Management Kerala Private Limited</footer>
+</main>
+<script>
+(() => {
+  const button = document.getElementById('install');
+  const status = document.getElementById('status');
+  const display = window.matchMedia('(display-mode: standalone)');
+  let pending;
+  const standalone = () => display.matches || navigator.standalone === true;
+  const update = () => {
+    button.hidden = standalone() || !pending;
+    if (standalone()) status.textContent = 'You are already using Britsmaid as a home-screen app. Tap Open Britsmaid to continue.';
+  };
+  window.addEventListener('beforeinstallprompt', event => {
+    event.preventDefault(); pending = event; update();
+  });
+  window.addEventListener('appinstalled', () => {
+    pending = undefined; button.hidden = true;
+    status.textContent = 'Britsmaid was installed. Open its icon from your home screen.';
+  });
+  button.addEventListener('click', async () => {
+    if (!pending || standalone()) return;
+    const prompt = pending; pending = undefined; button.disabled = true;
+    try {
+      await prompt.prompt();
+      const choice = await prompt.userChoice;
+      status.textContent = choice.outcome === 'accepted'
+        ? 'Installation requested. Follow your phone’s confirmation, then open the Britsmaid icon.'
+        : 'You can add Britsmaid later using the steps below.';
+    } catch {
+      status.textContent = 'Use your browser menu and the steps below to add Britsmaid.';
+    } finally { button.disabled = false; update(); }
+  });
+  display.addEventListener('change', update);
+  update();
+})();
+</script>
+</body>
+</html>

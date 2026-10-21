@@ -82,6 +82,36 @@ runs independently of the PC, over Wi-Fi or mobile data. The original local
 preview and its PC-address APK remain separate; that APK needs a new hosted
 build before it can use this service.
 
+### Branded home-screen web app
+
+Share https://britsmaid-test.onrender.com/install.html for Android/iPhone
+installation instructions, or use **Add to Home Screen** below the login form.
+The approved existing Britsmaid logo is packaged as PNG icons, including a
+180px Apple touch icon and Android 192px/512px/maskable icons. The manifest's
+stable identity, scope and launch address are `/`; installed icons open the
+normal role-aware app, not a sample account or the instruction page.
+
+Chrome can show the native installation prompt when the browser offers it.
+Otherwise use its menu. Safari uses Share > Add to Home Screen; enable Open
+as Web App if offered. In-app WhatsApp/email browsers should open the link in
+Chrome/Safari first. Existing old shortcuts may need to be removed and added
+again to pick up the icon/name. Save pending work before clearing any app data.
+
+This is online-only: no service worker or offline/private-data cache is added.
+The free host can still sleep; store publication, push notifications and native
+APK/iOS releases are separate work. A home-screen install does not grant access.
+Installed web and normal browser sessions can require separate sign-in.
+
+For web releases run `pnpm export:web` in `frontend`. Expo's `single` output
+ignores `app/+html.tsx`, so `scripts/prepare-web-install.cjs` adds metadata to
+the exported index. `scripts/verify-web-install.cjs` checks the actual manifest,
+icon dimensions, Apple metadata and install page. CI and the Docker build run
+these steps; a bare Expo export alone does not complete the branding pipeline.
+The ordinary export bundles the official artwork; `scripts/build_web_icons.py`
+reproduces the icon sizes without redrawing the logo. Physical Android/iPhone
+installation and launch acceptance must be recorded separately from the
+controller, source/export and desktop browser checks.
+
 Render service `britsmaid-test` uses Free Docker compute in Singapore and
 branch `deploy/render-free`. Verified application source is `460dde5`.
 Atlas uses the Mumbai `Britsmaid-Free` FREE cluster and `britsmaid_test`.

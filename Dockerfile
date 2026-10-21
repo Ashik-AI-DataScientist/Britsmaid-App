@@ -4,7 +4,7 @@ COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN npm install --global pnpm@11.25.0 && pnpm install --frozen-lockfile --ignore-scripts
 COPY frontend/ ./
 ENV CI=1 EXPO_NO_TELEMETRY=1 EXPO_PUBLIC_GOOGLE_LOGIN_ENABLED=false
-RUN pnpm exec expo export --platform web --output-dir /web
+RUN pnpm exec expo export --platform web --output-dir /web && node scripts/prepare-web-install.cjs /web && node scripts/verify-web-install.cjs /web
 
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TZ=Asia/Kolkata
