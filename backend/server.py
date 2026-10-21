@@ -365,7 +365,12 @@ async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form
     ctype = file.content_type or "application/octet-stream"
     if ctype in ("image/jpeg", "image/png"):
         from guest_ids import sanitise_image
-        data = await run_in_threadpool(sanitise_image, data)
+        try:
+            data = await run_in_threadpool(sanitise_image, data)
+        except HTTPException as exc:
+            if exc.status_code == 422:
+                raise HTTPException(422, "This photo could not be read. Choose a JPEG or PNG up to 20 megapixels; use a lower-resolution camera setting if needed.") from exc
+            raise
         ctype, ext = "image/jpeg", "jpg"
     elif ctype == "video/mp4" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mp4"
@@ -415,6 +420,10 @@ async def get_file(media_id: str, request: Request, token: Optional[str] = None)
     if not media:
         raise HTTPException(404, "File not found")
     if user["role"] != "admin":
+        cover = await db.properties.find_one({"cover_media_id": media_id, "is_deleted": {"$ne": True},
+            "_id": {"$in": [oid(pid) for pid in owner_pids(user)]}})
+        if cover:
+            return await stream_media(media_id)
         cq = scope(user, {"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
         if user["role"] == "cleaner":
             cq["assigned_to"] = str(user["_id"])
@@ -463,6 +472,7 @@ class PropertyIn(BaseModel):
     rooms: List[str] = ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"]
     ical_feeds: List[IcalFeed] = []
     cover_url: str = ""
+    cover_media_id: str = ""
     notes: str = ""
 
     @field_validator("name")
@@ -510,8 +520,23 @@ async def property_status(pid: str, day: str):
             "needs_cleaning": bool(pending), "pending_cleaning_id": str(pending["_id"]) if pending else None}
 
 
+async def validate_property_cover(media_id, user, previous_id=""):
+    if not media_id:
+        return
+    media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
+    if not media or media.get("kind") != "image":
+        raise HTTPException(422, "Choose an uploaded photo for the villa cover")
+    if media_id == previous_id:
+        return
+    if media.get("owner_id") != str(user["_id"]) or media.get("attachment_binding"):
+        raise HTTPException(422, "Upload a new villa cover photo from your account")
+    if await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]}) or await db.owner_reports.find_one({"media_ids": media_id}):
+        raise HTTPException(422, "Upload a separate cover photo instead of a cleaning or report attachment")
+
+
 @api.post("/properties")
 async def create_property(body: PropertyIn, _=Depends(admin_user)):
+    await validate_property_cover(body.cover_media_id, _)
     doc = body.model_dump()
     doc.update({"created_at": now_iso(), "is_deleted": False})
     r = await db.properties.insert_one(doc)
@@ -531,6 +556,10 @@ async def get_property(pid: str, user=Depends(current_user)):
 
 @api.put("/properties/{pid}")
 async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
+    previous = await db.properties.find_one({"_id": oid(pid), "is_deleted": {"$ne": True}})
+    if not previous:
+        raise HTTPException(404, "Property not found")
+    await validate_property_cover(body.cover_media_id, _, previous.get("cover_media_id", ""))
     await db.properties.update_one({"_id": oid(pid)}, {"$set": body.model_dump()})
     return await get_property(pid, _)
 
@@ -1482,7 +1511,7 @@ async def owner_dashboard(user=Depends(finance_user)):
         s = await compute_settlement(p, month)
         upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
         last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
-        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""),
+        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""), "cover_media_id": p.get("cover_media_id", ""),
              "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,

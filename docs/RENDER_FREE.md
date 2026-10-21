@@ -155,3 +155,13 @@ Physical phone/camera testing, live cross-property data scenarios, external
 calendar/provider integrations, private guest ID storage, backup/restore and
 native hosted APK/iOS testing remain separate checks. The verified browser
 smoke checks do not establish production readiness or replace those checks.
+
+## Villa photos and camera choices
+
+An admin can open Villas → a villa → Edit property → Add/Change cover photo. Choose Take photo or Choose from library, then Save changes (or Add property for a new villa). A preview appears before saving. Remove cover photo clears the cover when the property is saved; it does not delete historical files. Existing URL covers still display, but entering a URL is no longer required.
+
+Uploaded covers use the same persistent private ordinary-media store as cleaning photos. Only the media ID is saved with the property; login tokens are not saved in property fields. Admins can manage covers, and assigned users can read them; unrelated accounts cannot. Owner dashboards include the saved cover.
+
+Cleaning and report attachment sheets already have Take photo and Choose from library. Villa covers now use this sheet with one image at a time. The guest ID form also provides a camera and gallery choice, with cancellation recovery and visible submission errors. Guest documents continue to use the private guest-document endpoint, never ordinary media storage; this free deployment still refuses guest ID uploads until its separate encrypted private storage is configured.
+
+A web app requests the rear camera through the browser photo picker. Phone/browser permissions and support determine whether it opens the camera directly or offers a chooser. Verify this on physical Android and iPhone devices; a desktop file chooser is not proof of a working phone camera. JPEG/PNG photos are supported; unsupported or oversized images produce an error rather than being attached.
