@@ -7,10 +7,20 @@ export default function Root({ children }: PropsWithChildren) {
     <html lang="en" style={{ height: "100%" }}>
       <head>
         <meta charSet="utf-8" />
+        <title>Britsmaid</title>
+        <meta name="application-name" content="Britsmaid" />
+        <meta name="description" content="Your Britsmaid property management workspace for owners, cleaners, supervisors and administrators." />
+        <meta name="theme-color" content="#1c3963" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-title" content="Britsmaid" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/icons/britsmaid-180-v1.png" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1, shrink-to-fit=no"
+          content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover"
         />
         {/*
           Disable body scrolling on web to make ScrollView components work correctly.

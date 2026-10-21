@@ -1,6 +1,6 @@
+import { PropertyCover } from "@/src/components/PropertyCover";
 import React, { useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
-import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -70,7 +70,7 @@ export default function PropertyDetail() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={p.isRefetching} onRefresh={() => { p.refetch(); exp.refetch(); bookings.refetch(); }} tintColor={colors.brandPrimary} />}>
         <View style={{ height: 240, backgroundColor: colors.brandTertiary }}>
-          {v.cover_url ? <Image source={{ uri: v.cover_url }} style={{ width: "100%", height: "100%" }} contentFit="cover" /> : null}
+          <PropertyCover property={v} />
           <LinearGradient colors={["transparent", colors.scrim]} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 140 }} />
           <View style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, flexDirection: "row", justifyContent: "space-between" }}>
             <IconButton testID="property-back-button" name="chevron-back" tone="inverse" onPress={() => router.back()} />
