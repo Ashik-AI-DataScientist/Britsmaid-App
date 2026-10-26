@@ -238,9 +238,9 @@ async def test_calendar_feed_failure_and_recovery_create_notice(ctx,monkeypatch)
     p=await ctx['db'].properties.find_one({'_id':ObjectId(ctx['p1'])})
     p['ical_feeds']=[{'ota':'Other','url':'https://example.invalid/calendar'}]
     def fail(*args,**kwargs): raise RuntimeError('simulated network failure')
-    monkeypatch.setattr(server.requests,'get',fail)
+    monkeypatch.setattr(server,'fetch_calendar',fail)
     assert (await server.sync_property(p))[0]['ok'] is False
-    monkeypatch.setattr(server.requests,'get',lambda *a,**kw:Feed())
+    monkeypatch.setattr(server,'fetch_calendar',lambda *a,**kw:Feed.text)
     assert (await server.sync_property(p))[0]['ok'] is True
     issue=await ctx['db'].system_issues.find_one({'route':'Calendar sync '+ctx['p1']})
     assert issue['status']=='recovered'

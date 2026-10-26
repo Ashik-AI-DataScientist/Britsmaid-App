@@ -1,6 +1,9 @@
 """Render entry point: persistent MongoDB, private ordinary files and same-origin web."""
 import os
 import time
+import base64
+import hashlib
+import re
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -50,11 +53,37 @@ class SPAFiles(StaticFiles):
 
 def install_hosted_routes(application, api_server, media_client):
     attempts = defaultdict(deque)
+    web = Path(os.getenv("WEB_BUILD_DIR", "/app/web"))
+    # Permit only the exact bundled inline installation controller, not arbitrary scripts.
+    hashes = []
+    for name in ("index.html", "install.html"):
+        path = web / name
+        if path.is_file():
+            for attributes, script in re.findall(r"<script([^>]*)>(.*?)</script>", path.read_text(encoding="utf-8"), re.S | re.I):
+                if not re.search(r"\bsrc\s*=", attributes, re.I) and script.strip():
+                    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+                    hashes.append("'sha256-" + digest + "'")
+    policy = ("default-src 'self'; script-src 'self' " + " ".join(hashes) + "; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; "
+        "font-src 'self' data:; media-src 'self' blob:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
+
+    def secure_response(request, response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Permissions-Policy"] = "camera=(self), microphone=(self), geolocation=()"
+        response.headers.setdefault("Content-Security-Policy", policy)
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000"
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @application.middleware("http")
     async def hosted_security(request: Request, call_next):
         if request.url.path == "/api/auth/session":
-            return JSONResponse({"detail": "Google sign-in is not configured. Use your assigned email and password."}, status_code=503)
+            return secure_response(request, JSONResponse({"detail": "Google sign-in is not configured. Use your assigned email and password."}, status_code=503))
         if request.url.path == "/api/auth/login" and request.method == "POST":
             key = request.client.host if request.client else "unknown"
             now = time.monotonic()
@@ -62,7 +91,7 @@ def install_hosted_routes(application, api_server, media_client):
             while queue and queue[0] < now - 60:
                 queue.popleft()
             if len(queue) >= 20:
-                return JSONResponse({"detail": "Too many sign-in attempts. Wait one minute and try again."}, status_code=429, headers={"Retry-After": "60"})
+                return secure_response(request, JSONResponse({"detail": "Too many sign-in attempts. Wait one minute and try again."}, status_code=429, headers={"Retry-After": "60"}))
             queue.append(now)
             if len(attempts) > 1000:
                 for old_key in list(attempts):
@@ -76,7 +105,7 @@ def install_hosted_routes(application, api_server, media_client):
             response.headers["Cache-Control"] = "no-cache"
         if request.url.path == "/manifest.webmanifest" and response.status_code == 200:
             response.headers["Content-Type"] = "application/manifest+json"
-        return response
+        return secure_response(request, response)
 
     @application.get("/healthz", include_in_schema=False)
     async def health():

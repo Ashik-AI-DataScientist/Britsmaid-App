@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr, field_validator
 from validation import valid_date, valid_month, month_bounds
 from reservations import claim_nights, release_unused
+from safe_calendar_fetch import fetch_calendar, CalendarFetchError, validate_url
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -129,12 +130,14 @@ DUMMY_HASH = hash_pw("dummy-password-xyz")
 
 def issue_token(user: dict) -> str:
     n = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "jti": uuid.uuid4().hex, "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
 
 
 async def user_from_token(token: Optional[str]):
     if not token:
         raise HTTPException(401, "Not authenticated")
+    if await db.revoked_sessions.find_one({"_id": hashlib.sha256(token.encode()).hexdigest()}):
+        raise HTTPException(401, "Session ended. Please sign in again.")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.InvalidTokenError:
@@ -148,6 +151,12 @@ async def user_from_token(token: Optional[str]):
         if exp < datetime.now(timezone.utc):
             raise HTTPException(401, "Session expired")
         payload = {"sub": sess["user_id"], "sv": sess.get("session_version", 0)}
+    if payload.get("purpose", "access") != "access":
+        raise HTTPException(401, "Invalid token")
+    return await active_token_user(payload)
+
+
+async def active_token_user(payload):
     uid = payload.get("sub")
     if not uid or not ObjectId.is_valid(uid):
         raise HTTPException(401, "Invalid token")
@@ -163,6 +172,17 @@ async def current_user(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else None
     return await user_from_token(token)
+
+
+@api.post("/auth/logout")
+async def end_session(request: Request, user=Depends(current_user)):
+    token = request.headers["Authorization"][7:]
+    # Keep revocation beyond the longest supported access-token lifetime.
+    await db.revoked_sessions.update_one(
+        {"_id": hashlib.sha256(token.encode()).hexdigest()},
+        {"$set": {"expires_at": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS + 1)}}, upsert=True)
+    await db.user_sessions.delete_many({"session_token": token})
+    return {"ok": True}
 
 
 async def admin_user(user=Depends(current_user)):
@@ -409,10 +429,7 @@ async def stream_media(media_id: str):
     return Response(content=data, media_type=safe_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
 
 
-@api.get("/files/{media_id}")
-async def get_file(media_id: str, request: Request, token: Optional[str] = None):
-    auth = request.headers.get("Authorization", "")
-    user = await user_from_token(auth[7:] if auth.lower().startswith("bearer ") else token)
+async def authorize_media(media_id, user):
     media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
     if not media:
         raise HTTPException(404, "File not found")
@@ -420,7 +437,7 @@ async def get_file(media_id: str, request: Request, token: Optional[str] = None)
         cover = await db.properties.find_one({"cover_media_id": media_id, "is_deleted": {"$ne": True},
             "_id": {"$in": [oid(pid) for pid in owner_pids(user)]}})
         if cover:
-            return await stream_media(media_id)
+            return
         cq = scope(user, {"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
         if user["role"] == "cleaner":
             cq["assigned_to"] = str(user["_id"])
@@ -432,6 +449,35 @@ async def get_file(media_id: str, request: Request, token: Optional[str] = None)
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
             if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
                 raise HTTPException(404, "File not found")
+
+
+@api.post("/files/{media_id}/ticket")
+async def media_ticket(media_id: str, request: Request, user=Depends(current_user)):
+    await authorize_media(media_id, user)
+    now = datetime.now(timezone.utc)
+    ticket = jwt.encode({"sub": str(user["_id"]), "sv": user.get("session_version", 0),
+        "purpose": "file", "aud": "britsmaid-media", "media_id": media_id,
+        "session_key": hashlib.sha256(request.headers["Authorization"][7:].encode()).hexdigest(),
+        "iat": now, "exp": now + timedelta(minutes=5)}, JWT_SECRET, algorithm=JWT_ALG)
+    return {"ticket": ticket}
+
+
+@api.get("/files/{media_id}")
+async def get_file(media_id: str, request: Request, ticket: Optional[str] = None):
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        user = await user_from_token(auth[7:])
+    else:
+        try:
+            payload = jwt.decode(ticket or "", JWT_SECRET, algorithms=[JWT_ALG], audience="britsmaid-media")
+            if payload.get("purpose") != "file" or payload.get("media_id") != media_id or not payload.get("session_key"):
+                raise jwt.InvalidTokenError()
+        except jwt.InvalidTokenError:
+            raise HTTPException(401, "Photo link expired. Reopen the photo.") from None
+        if await db.revoked_sessions.find_one({"_id": payload["session_key"]}):
+            raise HTTPException(401, "Session ended. Please sign in again.")
+        user = await active_token_user(payload)
+    await authorize_media(media_id, user)
     return await stream_media(media_id)
 
 # ---------------------------------------------------------------- Properties
@@ -440,7 +486,14 @@ OTAS = ["Airbnb", "Booking.com", "Agoda", "MakeMyTrip", "Expedia", "Vrbo", "Dire
 
 class IcalFeed(BaseModel):
     ota: str
-    url: str
+    url: str = Field(max_length=8192)
+
+    @field_validator("url")
+    @classmethod
+    def public_https_link(cls, value):
+        validate_url(value)
+        return value
+
     last_synced: Optional[str] = None
 
 
@@ -467,7 +520,7 @@ class PropertyIn(BaseModel):
     electricity_mode: Literal["split_half", "owner"] = "owner"
     base_rate: float = Field(default=0, ge=0, allow_inf_nan=False)
     rooms: List[str] = ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"]
-    ical_feeds: List[IcalFeed] = []
+    ical_feeds: List[IcalFeed] = Field(default_factory=list, max_length=32)
     cover_url: str = ""
     cover_media_id: str = ""
     notes: str = ""
@@ -724,11 +777,10 @@ async def sync_property(p: dict) -> list:
     report = []
     for f in feeds:
         try:
-            resp = await run_in_threadpool(lambda: requests.get(f["url"], timeout=30, headers={"User-Agent": "Britsmaid/1.0"}))
-            resp.raise_for_status()
-            events = parse_ical(resp.text)
+            text = await run_in_threadpool(fetch_calendar, f["url"])
+            events = parse_ical(text)
         except Exception as e:
-            report.append({"ota": f["ota"], "ok": False, "error": str(e)[:200]})
+            report.append({"ota": f["ota"], "ok": False, "error": str(e) if isinstance(e, CalendarFetchError) else "Calendar feed could not be read. Check its export link and try again."})
             continue
         added = updated = 0
         conflicts = 0
@@ -1542,6 +1594,8 @@ from calendar_export import register_calendar_exports
 register_calendar_exports(api, db, admin_user, oid, now_iso, OTAS)
 app.include_router(api)
 app.add_middleware(BoundedGuestUploads)
+from request_limits import BoundedAPIBodies
+app.add_middleware(BoundedAPIBodies)
 app.add_middleware(CORSMiddleware, allow_credentials=True,
     allow_origins=[x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()],
     allow_methods=["*"], allow_headers=["*"])
@@ -1606,6 +1660,7 @@ async def startup():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.revoked_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
     await db.calendar_exports.create_index("token", unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})

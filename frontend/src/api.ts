@@ -61,6 +61,18 @@ export async function authenticatedBlob(path: string): Promise<Blob> {
     throw e;
   } finally { clearTimeout(timeout); }
 }
-export const fileUrl = (id: string) => `${BASE}/files/${id}?token=${encodeURIComponent(token ?? "")}`;
+export async function privateFileUrl(id: string): Promise<string> {
+  const result = await api.post<{ ticket: string }>(`/files/${encodeURIComponent(id)}/ticket`);
+  return `${BASE}/files/${encodeURIComponent(id)}?ticket=${encodeURIComponent(result.ticket)}`;
+}
+export async function revokeCurrentSession(): Promise<void> {
+  const session = token;
+  if (!session) return;
+  // Use a direct request: an expired logout response must not trigger recursive sign-out.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try { await fetch(`${BASE}/auth/logout`, { method: "POST", headers: { Authorization: `Bearer ${session}` }, signal: controller.signal }); }
+  finally { clearTimeout(timeout); }
+}
 export const publicReportUrl = (shareToken: string) => `${BASE}/public/reports/${shareToken}`;
 export const LOGO_URL = "https://customer-assets-lqy194kg.emergentagent.net/job_73724556-664b-45a9-8dc1-ea0e2573ffb5/artifacts/7ad33ebc61f9950d_Britsmaid%20Logo.jpg";

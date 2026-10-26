@@ -3,7 +3,7 @@ import { Platform } from "react-native";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { storage } from "@/src/utils/storage";
-import { api, request, setToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
+import { api, request, revokeCurrentSession, setToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { queryClient } from "@/src/query-client";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -48,12 +48,15 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
   }, []);
 
   const logout = useCallback(async () => {
+    // Local sign-out always works offline; online sign-out also revokes server access.
+    const revocation = revokeCurrentSession().catch(() => undefined);
     // Cancel in-flight reads before clearing so old responses cannot populate a new user's cache.
     setToken(null);
     setUser(null);
     await queryClient.cancelQueries();
     queryClient.clear();
     await storage.secureRemove(TOKEN_KEY);
+    await revocation;
   }, []);
 
   useEffect(() => {

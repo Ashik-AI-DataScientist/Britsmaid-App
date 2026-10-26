@@ -96,7 +96,7 @@ async def test_ten_minute_sync_cadence(ctx, monkeypatch, age, expected):
 async def test_import_ignores_our_exported_event_to_avoid_loop(ctx, monkeypatch):
     path = await feed(ctx)
     contents = (await ctx["client"].get(path)).text
-    monkeypatch.setattr(server.requests, "get", lambda *a, **kw: SimpleNamespace(text=contents, raise_for_status=lambda: None))
+    monkeypatch.setattr(server, "fetch_calendar", lambda *a, **kw: contents)
     prop = await ctx["db"].properties.find_one({"_id": ObjectId(ctx["p1"])})
     prop["ical_feeds"] = [{"ota": "Airbnb", "url": "https://example.invalid/feed.ics"}]
     result = await server.sync_property(prop)
@@ -198,7 +198,7 @@ async def test_makemytrip_import_and_retry_use_same_booking(ctx, monkeypatch):
     contents = ('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:synthetic-mmt-1\r\n'
                 f'DTSTART;VALUE=DATE:{start:%Y%m%d}\r\nDTEND;VALUE=DATE:{end:%Y%m%d}\r\n'
                 'SUMMARY:SAMPLE MMT import\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n')
-    monkeypatch.setattr(server.requests, "get", lambda *a, **kw: SimpleNamespace(text=contents, raise_for_status=lambda: None))
+    monkeypatch.setattr(server, "fetch_calendar", lambda *a, **kw: contents)
     prop = await ctx["db"].properties.find_one({"_id": ObjectId(ctx["p1"])})
     prop["ical_feeds"] = [{"ota": "MakeMyTrip", "url": "https://example.invalid/mmt.ics"}]
     assert (await server.sync_property(prop))[0]["added"] == 1
