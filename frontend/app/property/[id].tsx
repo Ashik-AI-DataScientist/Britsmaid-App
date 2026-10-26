@@ -18,7 +18,7 @@ export default function PropertyDetail() {
   const toast = useToast();
   const qc = useQueryClient();
   const { colors } = useTheme();
-  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`) });
+  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`), refetchInterval: 30000 });
   const exp = useQuery({ queryKey: ["expenses", id], queryFn: () => api.get<any[]>(`/expenses?property_id=${id}`) });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`) });
   const [syncing, setSyncing] = useState(false);

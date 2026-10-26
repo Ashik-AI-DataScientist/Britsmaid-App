@@ -88,5 +88,5 @@ async def test_invalid_photo_has_helpful_error_without_writing_storage(ctx, monk
     monkeypatch.setattr(server, "put_object", no_write)
     response = await ctx["client"].post("/api/upload", headers=auth(ctx), files={"file": ("bad.jpg", b"not-an-image", "image/jpeg")})
     assert response.status_code == 422
-    assert "JPEG or PNG" in response.json()["detail"]
+    assert "photo" in response.json()["detail"]
     assert "ID image" not in response.json()["detail"]

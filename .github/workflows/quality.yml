@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
-      - run: python -m pytest backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py backend/tests/test_camera_training_local.py backend/tests/test_hosted_local.py backend/tests/test_property_photos_local.py -q
+      - run: python -m pytest backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py backend/tests/test_camera_training_local.py backend/tests/test_hosted_local.py backend/tests/test_property_photos_local.py backend/tests/test_calendar_photo_release_local.py -q
   frontend:
     runs-on: ubuntu-latest
     steps:

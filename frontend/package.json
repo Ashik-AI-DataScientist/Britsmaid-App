@@ -12,7 +12,7 @@
     "export:web": "expo export --platform web --output-dir dist && node scripts/prepare-web-install.cjs dist && node scripts/verify-web-install.cjs dist",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test:edges": "node -e \"require('./metro.config.js')\" && node tests/edge-audit.cjs && node tests/capture-workflow.cjs && node tests/preview-config.cjs && node tests/web-install.cjs",
+    "test:edges": "node -e \"require('./metro.config.js')\" && node tests/edge-audit.cjs && node tests/capture-workflow.cjs && node tests/preview-config.cjs && node tests/web-install.cjs && node tests/cleaning-status.cjs",
     "lint:check": "eslint . --max-warnings 0"
   },
   "dependencies": {

@@ -357,27 +357,24 @@ async def deactivate_user(uid: str, admin=Depends(admin_user)):
     return {"ok": True}
 
 # ---------------------------------------------------------------- Media
+photo_processing_lock = asyncio.Semaphore(1)
 @api.post("/upload")
 async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form(None), user=Depends(staff_user)):
     data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
     ctype = file.content_type or "application/octet-stream"
-    if ctype in ("image/jpeg", "image/png"):
-        from guest_ids import sanitise_image
-        try:
-            data = await run_in_threadpool(sanitise_image, data)
-        except HTTPException as exc:
-            if exc.status_code == 422:
-                raise HTTPException(422, "This photo could not be read. Choose a JPEG or PNG up to 20 megapixels; use a lower-resolution camera setting if needed.") from exc
-            raise
+    if ctype.startswith("image/") or ctype == "application/octet-stream":
+        from media_images import normalise_photo
+        async with photo_processing_lock:
+            data = await run_in_threadpool(normalise_photo, data)
         ctype, ext = "image/jpeg", "jpg"
     elif ctype == "video/mp4" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mp4"
     elif ctype == "video/quicktime" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mov"
     else:
-        raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
+        raise HTTPException(422, "Choose a supported photo or MP4/MOV video")
     if request_key and not re.fullmatch(r"[A-Za-z0-9_-]{8,120}", request_key):
         raise HTTPException(422, "Invalid upload retry reference")
     digest = hashlib.sha256(data).hexdigest()
@@ -738,6 +735,8 @@ async def sync_property(p: dict) -> list:
         feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
         worker = {"_id": "calendar-sync", "role": "admin"}
         for ev in events:
+            if ev["uid"].endswith("@calendar.britsmaid"):
+                continue  # Do not import our own availability blocks back through an OTA.
             uid = f"{feed_id}:{ev['uid']}"
             existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
             if not existing:
@@ -777,7 +776,7 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
     return {"results": await sync_property(p)}
 
 
-SYNC_INTERVAL_SECONDS = 3600
+SYNC_INTERVAL_SECONDS = 600
 
 
 async def sync_all(trigger: str):
@@ -805,10 +804,10 @@ async def auto_sync_loop():
                 due = (datetime.now(timezone.utc) - datetime.fromisoformat(last["last_run"])).total_seconds() >= SYNC_INTERVAL_SECONDS
             if due:
                 st = await sync_all("auto")
-                logger.info(f"Hourly OTA sync: {st}")
+                logger.info(f"10-minute OTA import: {st}")
         except Exception as e:
             logger.error(f"Auto sync loop error: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(30)
 
 
 @api.get("/sync/status")
@@ -840,7 +839,7 @@ async def calendar(month: str, property_id: Optional[str] = None, user=Depends(f
     scope(user, q)
     scope(user, cq)
     bookings = [out(b) for b in await db.bookings.find(q, {"admin_history": 0} if user["role"] != "admin" else None).to_list(3000)]
-    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0}).to_list(3000)]
+    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0, **({"admin_history": 0} if user["role"] != "admin" else {})}).to_list(3000)]
     return {"bookings": bookings, "cleanings": cleanings}
 
 # ---------------------------------------------------------------- Cleaning
@@ -1539,6 +1538,8 @@ issue_tracker.register(api, admin_user)
 from training import Training
 training = Training(db, oid, out)
 training.register(api, admin_user, current_user)
+from calendar_export import register_calendar_exports
+register_calendar_exports(api, db, admin_user, oid, now_iso, OTAS)
 app.include_router(api)
 app.add_middleware(BoundedGuestUploads)
 app.add_middleware(CORSMiddleware, allow_credentials=True,
@@ -1606,6 +1607,7 @@ async def startup():
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
+    await db.calendar_exports.create_index("token", unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())

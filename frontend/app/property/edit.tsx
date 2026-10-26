@@ -9,6 +9,7 @@ import { Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, Input, Load
 import { OTAS, otaColor } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 import { Contact, ContactsEditor } from "@/src/components/Contacts";
+import { CalendarExport } from "@/src/components/CalendarExport";
 import { CaptureSheet } from "@/src/components/CaptureSheet";
 import { PropertyCover } from "@/src/components/PropertyCover";
 
@@ -156,6 +157,7 @@ export default function EditProperty() {
             setFeedUrl("");
           }} />
         </Card>
+        {id ? <CalendarExport propertyId={id} /> : null}
         <Input testID="property-notes-input" label="Notes" multiline value={f.notes} onChangeText={set("notes")} />
         <Button testID="property-save-button" title={id ? "Save changes" : "Add property"} onPress={save} loading={saving} />
         {id ? <Button testID="property-delete-from-edit" variant="danger" icon="trash-outline" title="Delete property" onPress={() => setDel(true)} /> : null}

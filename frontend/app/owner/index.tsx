@@ -18,7 +18,7 @@ export default function OwnerHome() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const q = useQuery({ queryKey: ["owner-dashboard"], queryFn: () => api.get("/owner/dashboard") });
+  const q = useQuery({ queryKey: ["owner-dashboard"], queryFn: () => api.get("/owner/dashboard"), refetchInterval: 30000 });
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>

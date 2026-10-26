@@ -18,7 +18,7 @@ export default function Dashboard() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard") });
+  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard"), refetchInterval: 30000 });
   const d = q.data;
   const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 

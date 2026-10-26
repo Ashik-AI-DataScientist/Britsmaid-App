@@ -4,6 +4,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
+import { refreshCleaningViews } from "@/src/cleaning-status";
 import { CaptureTarget } from "@/src/capture-workflow";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
@@ -40,8 +41,7 @@ export default function CleaningSession() {
   const done = c.status === "cancelled" || c.status === "completed" || c.status === "awaiting_review" || user?.role === "owner";
   const refresh = (data: any) => {
     qc.setQueryData(["cleaning-session", id], data);
-    qc.invalidateQueries({ queryKey: ["cleaning"] });
-    qc.invalidateQueries({ queryKey: ["dashboard"] });
+    refreshCleaningViews(qc);
   };
 
   const addMedia = async (ids: string[], destination: CaptureTarget) => {

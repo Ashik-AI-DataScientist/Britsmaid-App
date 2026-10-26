@@ -16,7 +16,7 @@ export default function Properties() {
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
   const router = useRouter();
   const { colors } = useTheme();
-  const q = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
+  const q = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties"), refetchInterval: 30000 });
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
