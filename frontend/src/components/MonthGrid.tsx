@@ -1,7 +1,7 @@
 import React from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts, radius, useTheme } from "@/src/theme";
-import { CLEANING_COMPLETE_COLOR } from "@/src/cleaning-status";
+import { CLEANING_COMPLETE_MARKER } from "@/src/cleaning-status";
 import { todayISO } from "@/src/format";
 
 export type DayMark = { bars?: string[]; clean?: "pending" | "completed" | "in_progress" };
@@ -43,7 +43,7 @@ export function MonthGrid({ month, selected, onSelect, marks, min, testID = "mon
                 {(mk?.bars ?? []).slice(0, 3).map((c, j) => (
                   <View key={j} style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c }} />
                 ))}
-                {mk?.clean ? <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: mk.clean === "completed" ? CLEANING_COMPLETE_COLOR : colors.warning }} /> : null}
+                {mk?.clean ? <View style={{ width: 7, height: 7, ...(mk.clean === "completed" ? CLEANING_COMPLETE_MARKER : { borderRadius: 4, backgroundColor: colors.warning }) }} /> : null}
               </View>
             </Pressable>
           );

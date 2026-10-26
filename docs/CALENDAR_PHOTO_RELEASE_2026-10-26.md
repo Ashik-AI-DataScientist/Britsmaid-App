@@ -27,7 +27,7 @@ Photos are oriented correctly, scaled to at most 2400 × 2400 while preserving a
 
 ## Cleaning indicators and freshness
 
-Completed cleaning uses a purple circular dot and a “Cleaning complete” calendar legend. Pending/review work uses a yellow circular dot; Direct bookings retain their green booking marker. If several tasks exist on a day, unfinished work takes precedence. Cancelled tasks do not create a cleaning-due indicator.
+Completed cleaning uses a small white square with a black border and a matching “Cleaning complete” calendar legend. MakeMyTrip uses orange (#F97316) throughout the shared OTA colour palette and appears in the calendar legend alongside all supported OTAs. Pending/review work uses a yellow circular dot; Direct bookings retain their green booking marker. If several tasks exist on a day, unfinished work takes precedence. Cancelled tasks do not create a cleaning-due indicator.
 
 Completing, approving, reopening or reassigning cleaning invalidates the task list, admin dashboard, property list, property detail, owner dashboard and calendar caches. These property/calendar views also refresh every 30 seconds while active, so changes from another device become visible. A different outstanding cleaning task still correctly keeps “Needs cleaning” active; approval of one task does not dismiss other work.
 
@@ -53,4 +53,6 @@ Local automated regression checks include iCal privacy, property scoping, stable
 
 Physical PC/phone selection, external OTA refresh timing and actual Zoho synchronisation are separate acceptance checks. Automated tests use synthetic records, images and mocked storage; they do not change live bookings or cleaning history.
 
-Local result: 225 backend tests passed. TypeScript, lint, frontend request/capture/config/installation/cleaning-status checks and web export passed. A running localhost HTTP preview also passed sign-in, 24 MP image upload, cover save/read, 2400 × 1600 conversion, public availability-only feed output and 10-minute sync status. Visual browser verification was blocked because both browser and Computer Use tools failed to initialise; no physical-device or live-deployment success is claimed by this local result.
+Local result: 227 backend tests passed. TypeScript, lint, frontend request/capture/config/installation/cleaning-status checks and web export passed. A running localhost HTTP preview also passed sign-in, 24 MP image upload, cover save/read, 2400 × 1600 conversion, public availability-only feed output and 10-minute sync status. Visual browser verification was blocked because both browser and Computer Use tools failed to initialise; no physical-device or live-deployment success is claimed by this local result.
+
+MakeMyTrip parity checks also cover manual booking creation, calendar visibility for an assigned owner, commission/net settlement rows, metadata, destination-specific iCal export exclusion, imported bookings and repeated-import deduplication. Booking selection and iCal import/export destinations all use the shared supported-OTA lists. Actual OTA connectivity still requires a valid feed supplied by that platform; this change does not add a direct MakeMyTrip API integration.

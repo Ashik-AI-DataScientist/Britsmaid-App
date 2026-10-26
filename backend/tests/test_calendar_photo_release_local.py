@@ -164,3 +164,45 @@ def test_rotation_and_transparency_are_preserved_without_metadata():
     Image.new("RGBA", (10, 10), (0, 0, 0, 0)).save(stream, "PNG")
     with Image.open(io.BytesIO(normalise_photo(stream.getvalue()))) as result:
         assert min(result.getpixel((0, 0))) > 250
+
+
+@pytest.mark.asyncio
+async def test_makemytrip_booking_calendar_commission_and_export(ctx):
+    start = date.today() + timedelta(days=4)
+    end = start + timedelta(days=2)
+    payload = {"property_id": ctx["p1"], "guest_name": "SAMPLE MMT", "ota": "MakeMyTrip", "check_in": start.isoformat(), "check_out": end.isoformat(), "amount": 2000, "ota_commission": 300}
+    response = await ctx["client"].post("/api/bookings", headers=auth(ctx), json=payload)
+    assert response.status_code == 200, response.text
+    booking = response.json()
+    assert booking["ota"] == "MakeMyTrip" and booking["ota_commission"] == 300
+    month = start.isoformat()[:7]
+    calendar = (await ctx["client"].get(f'/api/calendar?month={month}&property_id={ctx["p1"]}', headers=auth(ctx, "owner"))).json()
+    assert any(b["id"] == booking["id"] and b["ota"] == "MakeMyTrip" for b in calendar["bookings"])
+    # The base fixture's existing booking needs the same required channel field as real records.
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"ota": "Direct"}})
+    settlement = await ctx["client"].get(f'/api/reports/settlement?month={month}&property_id={ctx["p1"]}', headers=auth(ctx, "owner"))
+    assert settlement.status_code == 200, settlement.text
+    row = next(r for r in settlement.json()["by_ota"] if r["ota"] == "MakeMyTrip")
+    assert row["gross"] == 2000 and row["commission"] == 300 and row["net"] == 1700
+    assert "MakeMyTrip" in (await ctx["client"].get('/api/meta', headers=auth(ctx))).json()["otas"]
+    path = await feed(ctx)
+    own_uid = booking["id"] + "@calendar.britsmaid"
+    assert own_uid in (await ctx["client"].get(path)).text
+    assert own_uid not in (await ctx["client"].get(path + '?exclude_ota=MakeMyTrip')).text
+
+
+@pytest.mark.asyncio
+async def test_makemytrip_import_and_retry_use_same_booking(ctx, monkeypatch):
+    start = date.today() + timedelta(days=10)
+    end = start + timedelta(days=2)
+    contents = ('BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:synthetic-mmt-1\r\n'
+                f'DTSTART;VALUE=DATE:{start:%Y%m%d}\r\nDTEND;VALUE=DATE:{end:%Y%m%d}\r\n'
+                'SUMMARY:SAMPLE MMT import\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n')
+    monkeypatch.setattr(server.requests, "get", lambda *a, **kw: SimpleNamespace(text=contents, raise_for_status=lambda: None))
+    prop = await ctx["db"].properties.find_one({"_id": ObjectId(ctx["p1"])})
+    prop["ical_feeds"] = [{"ota": "MakeMyTrip", "url": "https://example.invalid/mmt.ics"}]
+    assert (await server.sync_property(prop))[0]["added"] == 1
+    assert (await server.sync_property(prop))[0]["updated"] == 1
+    rows = await ctx["db"].bookings.find({"ota": "MakeMyTrip"}).to_list(None)
+    assert len(rows) == 1 and rows[0]["source"] == "ical"
+    assert await ctx["db"].cleaning.count_documents({"booking_id": str(rows[0]["_id"])}) == 1

@@ -39,7 +39,7 @@ export const OTA_COLORS: Record<string, string> = {
   Airbnb: "#FF5A5F",
   "Booking.com": "#003580",
   Agoda: "#7B3FA0",
-  MakeMyTrip: "#E7372A",
+  MakeMyTrip: "#F97316",
   Expedia: "#F5B70A",
   Vrbo: "#1E64C8",
   Direct: "#10B981",

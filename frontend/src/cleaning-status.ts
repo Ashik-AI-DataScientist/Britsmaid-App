@@ -1,5 +1,6 @@
-export const CLEANING_COMPLETE_COLOR = "#7C3AED";
-export const CLEANING_COMPLETE_SOFT = "#EDE9FE";
+export const CLEANING_COMPLETE_COLOR = "#000000";
+export const CLEANING_COMPLETE_SOFT = "#FFFFFF";
+export const CLEANING_COMPLETE_MARKER = { backgroundColor: CLEANING_COMPLETE_SOFT, borderColor: CLEANING_COMPLETE_COLOR, borderWidth: 1, borderRadius: 0 };
 export const CLEANING_REFRESH_KEYS = ["cleaning", "dashboard", "properties", "property", "owner-dashboard", "calendar"];
 
 export function refreshCleaningViews(client: { invalidateQueries: (filter: { queryKey: string[] }) => unknown }) {

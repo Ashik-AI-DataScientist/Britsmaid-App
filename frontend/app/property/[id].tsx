@@ -121,7 +121,7 @@ export default function PropertyDetail() {
             </View>
             {(v.ical_feeds ?? []).length === 0 ? (
               <Pressable testID="property-add-ical" onPress={() => router.push(`/property/edit?id=${id}`)}>
-                <Txt v="body" color={colors.brandPrimary}>Add Airbnb / Booking.com / Agoda iCal links →</Txt>
+                <Txt v="body" color={colors.brandPrimary}>Add OTA iCal links, including MakeMyTrip →</Txt>
               </Pressable>
             ) : v.ical_feeds.map((f: any, i: number) => (
               <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>

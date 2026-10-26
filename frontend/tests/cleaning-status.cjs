@@ -17,5 +17,13 @@ assert.equal(cleaningDayStatus([{status:'completed'}, {status:'completed'}]), 'c
 const views = new Map(['cleaning','dashboard','properties','property','owner-dashboard','calendar','finance'].map(key=>[key,false]));
 refreshCleaningViews({invalidateQueries:({queryKey})=>views.set(queryKey[0],true)});
 assert.deepEqual([...views].filter(([,stale])=>!stale).map(([key])=>key), ['finance']);
-assert.equal(CLEANING_COMPLETE_COLOR, '#7C3AED');
+assert.equal(CLEANING_COMPLETE_COLOR, '#000000');
+assert.equal(scope.exports.CLEANING_COMPLETE_MARKER.backgroundColor, '#FFFFFF');
+assert.equal(scope.exports.CLEANING_COMPLETE_MARKER.borderWidth, 1);
+assert.equal(scope.exports.CLEANING_COMPLETE_MARKER.borderRadius, 0);
+const formatScope={exports:{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/format.ts'), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText, formatScope);
+assert(formatScope.exports.OTAS.includes('MakeMyTrip'));
+assert.equal(formatScope.exports.otaColor('MakeMyTrip'), '#F97316');
+assert.notEqual(formatScope.exports.otaColor('MakeMyTrip'), formatScope.exports.otaColor('Agoda'));
 console.log('PASS cleaning: cancelled/mixed tasks, order independence, completion colour and all dependent views refresh');
