@@ -3,7 +3,7 @@ import { Platform } from "react-native";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 import { storage } from "@/src/utils/storage";
-import { api, request, setToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
+import { api, request, revokeCurrentSession, setCookieSession, setToken, setUnauthorizedHandler, TOKEN_KEY } from "@/src/api";
 import { queryClient } from "@/src/query-client";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -19,7 +19,7 @@ type AuthCtx = {
   user: User | null;
   loading: boolean;
   authError: string;
-  login: (email: string, password: string) => Promise<User>;
+  login: (email: string, password: string, mfaCode?: string) => Promise<User>;
   googleSignIn: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -48,12 +48,16 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
   }, []);
 
   const logout = useCallback(async () => {
+    // Local sign-out always works offline; online sign-out also revokes server access.
+    const revocation = revokeCurrentSession().catch(() => undefined);
     // Cancel in-flight reads before clearing so old responses cannot populate a new user's cache.
     setToken(null);
+    setCookieSession(false);
     setUser(null);
     await queryClient.cancelQueries();
     queryClient.clear();
     await storage.secureRemove(TOKEN_KEY);
+    await revocation;
   }, []);
 
   useEffect(() => {
@@ -79,6 +83,14 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
         return;
       }
       // 2) Otherwise restore the stored session
+      if (Platform.OS === "web") {
+        // Discard legacy browser tokens; the new session is HttpOnly.
+        await storage.secureRemove(TOKEN_KEY);
+        setCookieSession(true);
+        try { setUser(await api.get<User>("/auth/me")); } catch { setCookieSession(false); }
+        setLoading(false);
+        return;
+      }
       const t = await storage.secureGet<string | null>(TOKEN_KEY, null);
       if (t) {
         setToken(t);
@@ -98,13 +110,14 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
     return () => sub.remove();
   }, [logout, exchange]);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string, mfaCode = "") => {
     setAuthError("");
-    const res = await request<{ access_token: string; user: User }>("/auth/login", { method: "POST", body: { email, password } });
-    await storage.secureSet(TOKEN_KEY, res.access_token);
+    const res = await request<{ access_token: string; user: User }>("/auth/login", { method: "POST", body: { email, password, mfa_code: mfaCode, browser_session: Platform.OS === "web" } });
+    if (Platform.OS !== "web") await storage.secureSet(TOKEN_KEY, res.access_token);
+    setCookieSession(Platform.OS === "web");
     await queryClient.cancelQueries();
     queryClient.clear();
-    setToken(res.access_token);
+    setToken(Platform.OS === "web" ? null : res.access_token);
     setUser(res.user);
     return res.user;
   };

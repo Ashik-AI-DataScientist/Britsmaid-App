@@ -4,6 +4,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, { FadeInDown } from "react-native-reanimated";
+import { refreshCleaningViews } from "@/src/cleaning-status";
 import { CaptureTarget } from "@/src/capture-workflow";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
@@ -40,8 +41,7 @@ export default function CleaningSession() {
   const done = c.status === "cancelled" || c.status === "completed" || c.status === "awaiting_review" || user?.role === "owner";
   const refresh = (data: any) => {
     qc.setQueryData(["cleaning-session", id], data);
-    qc.invalidateQueries({ queryKey: ["cleaning"] });
-    qc.invalidateQueries({ queryKey: ["dashboard"] });
+    refreshCleaningViews(qc);
   };
 
   const addMedia = async (ids: string[], destination: CaptureTarget) => {
@@ -113,7 +113,7 @@ export default function CleaningSession() {
           <Txt v="caption">({list.length})</Txt>
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-          {list.map((mid, k) => <MediaThumb key={mid} testID={`room-${idx}-${phase}-media-${k}`} id={mid} size={64} onRemove={done ? undefined : () => removeMedia(idx, phase, mid)} />)}
+          {list.map((mid, k) => <MediaThumb key={mid} testID={`room-${idx}-${phase}-media-${k}`} id={mid} expired={c.expired_media_ids?.includes(mid)} size={64} onRemove={done ? undefined : () => removeMedia(idx, phase, mid)} />)}
           {!done ? (
             <Pressable testID={`room-${idx}-${phase}-add`} accessibilityLabel={`Add ${phase} photo of ${room.name}`} onPress={() => setTarget({ idx, phase })} style={({ pressed }) => ({ width: 82, minHeight: 76, paddingVertical: 8, gap: 4, borderRadius: radius.sm + 2, borderWidth: 1.5, borderStyle: "dashed", borderColor: colors.borderStrong, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.brandTertiary : colors.surfaceSecondary })}>
               <Icon name="camera-outline" size={22} color={colors.brandPrimary} /><Txt v="caption">Add photo</Txt>
@@ -154,6 +154,14 @@ export default function CleaningSession() {
               {!adminAssignee ? <Txt>No cleaner selected. Reopen keeps this task unassigned.</Txt> : null}
             </> : null}
             <Input testID="cleaning-admin-note" label="Reason (required)" value={adminNote} onChangeText={setAdminNote} multiline />
+            <Button title={c.photo_hold ? "Release photo retention hold" : "Keep photos for damage or review"} variant="secondary" disabled={submitting || !adminNote.trim()} onPress={async () => {
+              setSubmitting(true);
+              try {
+                await api.put(`/cleaning/${id}/photo-hold`, { hold: !c.photo_hold, note: adminNote });
+                refresh(await api.get(`/cleaning/${id}`));
+                toast(c.photo_hold ? "Photo hold released" : "Photos protected from automatic cleanup");
+              } catch (e: any) { toast(e.message, "error"); } finally { setSubmitting(false); }
+            }} />
             <Button testID="cleaning-admin-save" title="Save with note" disabled={submitting || !adminNote.trim() || (adminAction === "reassign" && !adminAssignee)} onPress={saveAdminAction} />
           </> : null}
           <Button title={showHistory ? "Hide admin history" : "View admin history"} variant="ghost" onPress={() => setShowHistory(!showHistory)} />
@@ -161,7 +169,7 @@ export default function CleaningSession() {
             <Txt>{event.action} · {event.actor_name ?? "Admin"} · {new Date(event.at).toLocaleString()}</Txt>
             <Txt>{event.note}</Txt>
             <Txt v="caption">Previous status: {event.before?.status}</Txt>
-            {(event.before?.rooms ?? []).map((room: any, idx: number) => <View key={idx}><Txt v="caption">{room.name} · {(room.checked ?? []).length} checklist items recorded</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{[...(room.before ?? []), ...(room.after ?? [])].map((mid: string, k: number) => <MediaThumb key={`${mid}-${k}`} id={mid} size={64} />)}</View></View>)}
+            {(event.before?.rooms ?? []).map((room: any, idx: number) => <View key={idx}><Txt v="caption">{room.name} · {(room.checked ?? []).length} checklist items recorded</Txt><View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{[...(room.before ?? []), ...(room.after ?? [])].map((mid: string, k: number) => <MediaThumb key={`${mid}-${k}`} id={mid} expired={c.expired_media_ids?.includes(mid)} size={64} />)}</View></View>)}
           </View>) : <Txt>No admin actions yet.</Txt> : null}
         </Card> : null}
 

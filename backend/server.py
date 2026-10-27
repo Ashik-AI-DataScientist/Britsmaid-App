@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr, field_validator
 from validation import valid_date, valid_month, month_bounds
 from reservations import claim_nights, release_unused
+from safe_calendar_fetch import fetch_calendar, CalendarFetchError, validate_url
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -58,6 +59,9 @@ class BaseDocument(BaseModel):
     def out(self) -> dict:
         d = self.model_dump()
         d.pop("password_hash", None)
+        for key in list(d):
+            if key.startswith("mfa_"):
+                d.pop(key)
         return d
 
 
@@ -80,6 +84,10 @@ STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "britsmaid"
 storage_key = None
+
+
+def delete_object(path):
+    raise HTTPException(503, "Photo deletion storage is not configured")
 
 
 def init_storage():
@@ -118,6 +126,8 @@ def hash_pw(p: str) -> str:
 
 
 def verify_pw(p: str, h: str) -> bool:
+    if len(p.encode()) > 72:
+        return False
     try:
         return bcrypt.checkpw(p.encode(), h.encode())
     except Exception:
@@ -129,12 +139,14 @@ DUMMY_HASH = hash_pw("dummy-password-xyz")
 
 def issue_token(user: dict) -> str:
     n = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "jti": uuid.uuid4().hex, "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
 
 
 async def user_from_token(token: Optional[str]):
     if not token:
         raise HTTPException(401, "Not authenticated")
+    if await db.revoked_sessions.find_one({"_id": hashlib.sha256(token.encode()).hexdigest()}):
+        raise HTTPException(401, "Session ended. Please sign in again.")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.InvalidTokenError:
@@ -148,6 +160,12 @@ async def user_from_token(token: Optional[str]):
         if exp < datetime.now(timezone.utc):
             raise HTTPException(401, "Session expired")
         payload = {"sub": sess["user_id"], "sv": sess.get("session_version", 0)}
+    if payload.get("purpose", "access") != "access":
+        raise HTTPException(401, "Invalid token")
+    return await active_token_user(payload)
+
+
+async def active_token_user(payload):
     uid = payload.get("sub")
     if not uid or not ObjectId.is_valid(uid):
         raise HTTPException(401, "Invalid token")
@@ -160,9 +178,31 @@ async def user_from_token(token: Optional[str]):
 
 
 async def current_user(request: Request):
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.lower().startswith("bearer ") else None
+    token = request_token(request)
+    if token and not request.headers.get("Authorization") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin", "")
+        expected = os.getenv("PUBLIC_APP_URL", str(request.base_url).rstrip("/"))
+        if origin != expected or request.headers.get("sec-fetch-site") == "cross-site":
+            raise HTTPException(403, "Open this action inside Britsmaid and try again.")
     return await user_from_token(token)
+
+
+def request_token(request):
+    auth = request.headers.get("Authorization", "")
+    return auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get("bm_session")
+
+
+@api.post("/auth/logout")
+async def end_session(request: Request, user=Depends(current_user)):
+    token = request_token(request)
+    # Keep revocation beyond the longest supported access-token lifetime.
+    await db.revoked_sessions.update_one(
+        {"_id": hashlib.sha256(token.encode()).hexdigest()},
+        {"$set": {"expires_at": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS + 1)}}, upsert=True)
+    await db.user_sessions.delete_many({"session_token": token})
+    response = Response(content='{"ok":true}', media_type="application/json")
+    response.delete_cookie("bm_session", path="/api", secure=True, httponly=True, samesite="strict")
+    return response
 
 
 async def admin_user(user=Depends(current_user)):
@@ -209,15 +249,24 @@ def scope(user, q: dict, field: str = "property_id"):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    mfa_code: str = Field(default="", max_length=40)
+    browser_session: bool = False
 
 
 class StaffIn(BaseModel):
     name: str
     email: EmailStr
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=12, max_length=72)
     role: Literal["admin", "cleaner", "supervisor", "owner"] = "cleaner"
     property_ids: List[str] = []
     phone: str = ""
+
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
 
 
 class UserUpdate(BaseModel):
@@ -225,7 +274,14 @@ class UserUpdate(BaseModel):
     role: Optional[Literal["admin", "cleaner", "supervisor", "owner"]] = None
     phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
-    password: Optional[str] = Field(default=None, min_length=6)
+    password: Optional[str] = Field(default=None, min_length=12, max_length=72)
+
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
 
 
 async def validate_pids(pids: List[str]) -> List[str]:
@@ -244,6 +300,18 @@ async def login(body: LoginIn):
     ok = verify_pw(body.password, user["password_hash"] if user else DUMMY_HASH)
     if not user or not user.get("active") or not ok:
         raise HTTPException(401, "Incorrect email or password")
+    if user.get("mfa_secret"):
+        if not body.mfa_code:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Enter your authenticator or recovery code", "code": "MFA_REQUIRED"}, status_code=401)
+        if not await admin_mfa.verify(user, body.mfa_code):
+            raise HTTPException(401, "Authenticator/recovery code incorrect or already used")
+    if body.browser_session:
+        from fastapi.responses import JSONResponse
+        token = issue_token(user)
+        response = JSONResponse({"cookie_session": True, "user": out(user)})
+        response.set_cookie("bm_session", token, max_age=TOKEN_DAYS * 86400, path="/api", secure=True, httponly=True, samesite="strict")
+        return response
     return {"access_token": issue_token(user), "token_type": "bearer", "user": out(user)}
 
 
@@ -343,7 +411,7 @@ async def reset_password(uid: str, _=Depends(admin_user)):
     if not u:
         raise HTTPException(404, "User not found")
     alphabet = string.ascii_letters + string.digits
-    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(8))
+    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(16))
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}, "$inc": {"session_version": 1}})
     await db.user_sessions.delete_many({"user_id": str(u["_id"])})
     return {"user": out(u), "temp_password": temp}
@@ -353,26 +421,29 @@ async def reset_password(uid: str, _=Depends(admin_user)):
 async def deactivate_user(uid: str, admin=Depends(admin_user)):
     if str(admin["_id"]) == uid:
         raise HTTPException(400, "You cannot remove yourself")
-    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}})
+    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}, "$inc": {"session_version": 1}})
+    await db.user_sessions.delete_many({"user_id": uid})
     return {"ok": True}
 
 # ---------------------------------------------------------------- Media
+photo_processing_lock = asyncio.Semaphore(1)
 @api.post("/upload")
 async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form(None), user=Depends(staff_user)):
     data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
     ctype = file.content_type or "application/octet-stream"
-    if ctype in ("image/jpeg", "image/png"):
-        from guest_ids import sanitise_image
-        data = await run_in_threadpool(sanitise_image, data)
+    if ctype.startswith("image/") or ctype == "application/octet-stream":
+        from media_images import normalise_photo
+        async with photo_processing_lock:
+            data = await run_in_threadpool(normalise_photo, data)
         ctype, ext = "image/jpeg", "jpg"
     elif ctype == "video/mp4" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mp4"
     elif ctype == "video/quicktime" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mov"
     else:
-        raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
+        raise HTTPException(422, "Choose a supported photo or MP4/MOV video")
     if request_key and not re.fullmatch(r"[A-Za-z0-9_-]{8,120}", request_key):
         raise HTTPException(422, "Invalid upload retry reference")
     digest = hashlib.sha256(data).hexdigest()
@@ -407,14 +478,15 @@ async def stream_media(media_id: str):
     return Response(content=data, media_type=safe_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
 
 
-@api.get("/files/{media_id}")
-async def get_file(media_id: str, request: Request, token: Optional[str] = None):
-    auth = request.headers.get("Authorization", "")
-    user = await user_from_token(auth[7:] if auth.lower().startswith("bearer ") else token)
+async def authorize_media(media_id, user):
     media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
     if not media:
         raise HTTPException(404, "File not found")
     if user["role"] != "admin":
+        cover = await db.properties.find_one({"cover_media_id": media_id, "is_deleted": {"$ne": True},
+            "_id": {"$in": [oid(pid) for pid in owner_pids(user)]}})
+        if cover:
+            return
         cq = scope(user, {"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
         if user["role"] == "cleaner":
             cq["assigned_to"] = str(user["_id"])
@@ -426,6 +498,35 @@ async def get_file(media_id: str, request: Request, token: Optional[str] = None)
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
             if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
                 raise HTTPException(404, "File not found")
+
+
+@api.post("/files/{media_id}/ticket")
+async def media_ticket(media_id: str, request: Request, user=Depends(current_user)):
+    await authorize_media(media_id, user)
+    now = datetime.now(timezone.utc)
+    ticket = jwt.encode({"sub": str(user["_id"]), "sv": user.get("session_version", 0),
+        "purpose": "file", "aud": "britsmaid-media", "media_id": media_id,
+        "session_key": hashlib.sha256(request_token(request).encode()).hexdigest(),
+        "iat": now, "exp": now + timedelta(minutes=5)}, JWT_SECRET, algorithm=JWT_ALG)
+    return {"ticket": ticket}
+
+
+@api.get("/files/{media_id}")
+async def get_file(media_id: str, request: Request, ticket: Optional[str] = None):
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        user = await user_from_token(auth[7:])
+    else:
+        try:
+            payload = jwt.decode(ticket or "", JWT_SECRET, algorithms=[JWT_ALG], audience="britsmaid-media")
+            if payload.get("purpose") != "file" or payload.get("media_id") != media_id or not payload.get("session_key"):
+                raise jwt.InvalidTokenError()
+        except jwt.InvalidTokenError:
+            raise HTTPException(401, "Photo link expired. Reopen the photo.") from None
+        if await db.revoked_sessions.find_one({"_id": payload["session_key"]}):
+            raise HTTPException(401, "Session ended. Please sign in again.")
+        user = await active_token_user(payload)
+    await authorize_media(media_id, user)
     return await stream_media(media_id)
 
 # ---------------------------------------------------------------- Properties
@@ -434,7 +535,14 @@ OTAS = ["Airbnb", "Booking.com", "Agoda", "MakeMyTrip", "Expedia", "Vrbo", "Dire
 
 class IcalFeed(BaseModel):
     ota: str
-    url: str
+    url: str = Field(max_length=8192)
+
+    @field_validator("url")
+    @classmethod
+    def public_https_link(cls, value):
+        validate_url(value)
+        return value
+
     last_synced: Optional[str] = None
 
 
@@ -461,8 +569,9 @@ class PropertyIn(BaseModel):
     electricity_mode: Literal["split_half", "owner"] = "owner"
     base_rate: float = Field(default=0, ge=0, allow_inf_nan=False)
     rooms: List[str] = ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"]
-    ical_feeds: List[IcalFeed] = []
+    ical_feeds: List[IcalFeed] = Field(default_factory=list, max_length=32)
     cover_url: str = ""
+    cover_media_id: str = ""
     notes: str = ""
 
     @field_validator("name")
@@ -510,8 +619,23 @@ async def property_status(pid: str, day: str):
             "needs_cleaning": bool(pending), "pending_cleaning_id": str(pending["_id"]) if pending else None}
 
 
+async def validate_property_cover(media_id, user, previous_id=""):
+    if not media_id:
+        return
+    media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
+    if not media or media.get("kind") != "image":
+        raise HTTPException(422, "Choose an uploaded photo for the villa cover")
+    if media_id == previous_id:
+        return
+    if media.get("owner_id") != str(user["_id"]) or media.get("attachment_binding"):
+        raise HTTPException(422, "Upload a new villa cover photo from your account")
+    if await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]}) or await db.owner_reports.find_one({"media_ids": media_id}):
+        raise HTTPException(422, "Upload a separate cover photo instead of a cleaning or report attachment")
+
+
 @api.post("/properties")
 async def create_property(body: PropertyIn, _=Depends(admin_user)):
+    await validate_property_cover(body.cover_media_id, _)
     doc = body.model_dump()
     doc.update({"created_at": now_iso(), "is_deleted": False})
     r = await db.properties.insert_one(doc)
@@ -531,6 +655,10 @@ async def get_property(pid: str, user=Depends(current_user)):
 
 @api.put("/properties/{pid}")
 async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
+    previous = await db.properties.find_one({"_id": oid(pid), "is_deleted": {"$ne": True}})
+    if not previous:
+        raise HTTPException(404, "Property not found")
+    await validate_property_cover(body.cover_media_id, _, previous.get("cover_media_id", ""))
     await db.properties.update_one({"_id": oid(pid)}, {"$set": body.model_dump()})
     return await get_property(pid, _)
 
@@ -698,41 +826,44 @@ async def sync_property(p: dict) -> list:
     report = []
     for f in feeds:
         try:
-            resp = await run_in_threadpool(lambda: requests.get(f["url"], timeout=30, headers={"User-Agent": "Britsmaid/1.0"}))
-            resp.raise_for_status()
-            events = parse_ical(resp.text)
+            text = await run_in_threadpool(fetch_calendar, f["url"])
+            events = parse_ical(text)
         except Exception as e:
-            report.append({"ota": f["ota"], "ok": False, "error": str(e)[:200]})
+            report.append({"ota": f["ota"], "ok": False, "error": str(e) if isinstance(e, CalendarFetchError) else "Calendar feed could not be read. Check its export link and try again."})
             continue
-        added = updated = 0
-        conflicts = 0
-        feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
-        worker = {"_id": "calendar-sync", "role": "admin"}
-        for ev in events:
-            uid = f"{feed_id}:{ev['uid']}"
-            existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
-            if not existing:
-                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
-            if ev["cancelled"] and not existing:
-                continue
-            blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
-            payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
-                       "check_in": ev["check_in"], "check_out": ev["check_out"],
-                       "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
-            try:
-                body = BookingIn(**payload)
-                if existing:
-                    result = await update_booking(str(existing["_id"]), body, worker)
-                    updated += 1
-                else:
-                    result = await create_booking(body, worker)
-                    added += 1
-                await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
-            except Exception:
-                # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
-                conflicts += 1
-        f["last_synced"] = now_iso()
-        report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
+        from service_lease import business_lease
+        async with business_lease(db, seconds=300):
+            added = updated = 0
+            conflicts = 0
+            feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
+            worker = {"_id": "calendar-sync", "role": "admin"}
+            for ev in events:
+                if ev["uid"].endswith("@calendar.britsmaid"):
+                    continue  # Do not import our own availability blocks back through an OTA.
+                uid = f"{feed_id}:{ev['uid']}"
+                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
+                if not existing:
+                    existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
+                if ev["cancelled"] and not existing:
+                    continue
+                blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
+                payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
+                           "check_in": ev["check_in"], "check_out": ev["check_out"],
+                           "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
+                try:
+                    body = BookingIn(**payload)
+                    if existing:
+                        result = await update_booking(str(existing["_id"]), body, worker)
+                        updated += 1
+                    else:
+                        result = await create_booking(body, worker)
+                        added += 1
+                    await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
+                except Exception:
+                    # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
+                    conflicts += 1
+            f["last_synced"] = now_iso()
+            report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
     await issue_tracker.record("Calendar sync " + pid, any(not item["ok"] for item in report))
     return report
@@ -748,10 +879,14 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
     return {"results": await sync_property(p)}
 
 
-SYNC_INTERVAL_SECONDS = 3600
+SYNC_INTERVAL_SECONDS = 600
 
 
-async def sync_all(trigger: str):
+async def sync_all(*args, **kwargs):
+    return await _sync_all_unlocked(*args, **kwargs)
+
+
+async def _sync_all_unlocked(trigger: str):
     props = await db.properties.find({"is_deleted": {"$ne": True}, "ical_feeds.0": {"$exists": True}}).to_list(500)
     added = errors = 0
     for p in props:
@@ -776,10 +911,10 @@ async def auto_sync_loop():
                 due = (datetime.now(timezone.utc) - datetime.fromisoformat(last["last_run"])).total_seconds() >= SYNC_INTERVAL_SECONDS
             if due:
                 st = await sync_all("auto")
-                logger.info(f"Hourly OTA sync: {st}")
+                logger.info(f"10-minute OTA import: {st}")
         except Exception as e:
             logger.error(f"Auto sync loop error: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(30)
 
 
 @api.get("/sync/status")
@@ -811,7 +946,7 @@ async def calendar(month: str, property_id: Optional[str] = None, user=Depends(f
     scope(user, q)
     scope(user, cq)
     bookings = [out(b) for b in await db.bookings.find(q, {"admin_history": 0} if user["role"] != "admin" else None).to_list(3000)]
-    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0}).to_list(3000)]
+    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0, **({"admin_history": 0} if user["role"] != "admin" else {})}).to_list(3000)]
     return {"bookings": bookings, "cleanings": cleanings}
 
 # ---------------------------------------------------------------- Cleaning
@@ -910,7 +1045,7 @@ async def cleaning_admin_action(cid: str, body: CleaningAdminAction, user=Depend
     else:
         # Preserve old evidence in history; rework must collect fresh evidence.
         changes["rooms"] = [{"name": r["name"], "before": [], "after": [], "checked": []} for r in c.get("rooms", [])]
-        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by")}
+        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by", "photos_ready_at")}
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, update)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
@@ -949,6 +1084,9 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
 
 async def enrich_cleaning(c: dict):
     o = out(c)
+    ids = [oid(mid) for mid in cleaning_retention.evidence_ids(c) if ObjectId.is_valid(mid)]
+    expired = await db.media.find({"_id": {"$in": ids}, "is_deleted": True, "expiry_reason": {"$in": ["older_cleaning_set", "cleaning-photo-45-days-v1"]}}, {"_id": 1}).to_list(None)
+    o["expired_media_ids"] = sorted(set(o.get("expired_media_ids", [])) | {str(row["_id"]) for row in expired})
     p = await db.properties.find_one({"_id": ObjectId(o["property_id"])}, {"name": 1, "location": 1})
     o["property_name"] = p["name"] if p else "Unknown"
     if o.get("assigned_to") and ObjectId.is_valid(o["assigned_to"]):
@@ -1030,6 +1168,7 @@ async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(sta
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, upd)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
+    await cleaning_retention.mark_ready(c["_id"])
     return await get_cleaning(cid, user)
 
 
@@ -1482,7 +1621,7 @@ async def owner_dashboard(user=Depends(finance_user)):
         s = await compute_settlement(p, month)
         upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
         last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
-        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""),
+        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""), "cover_media_id": p.get("cover_media_id", ""),
              "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
@@ -1510,9 +1649,38 @@ issue_tracker.register(api, admin_user)
 from training import Training
 training = Training(db, oid, out)
 training.register(api, admin_user, current_user)
+from calendar_export import register_calendar_exports
+register_calendar_exports(api, db, admin_user, oid, now_iso, OTAS)
+from cleaning_retention import CleaningRetention
+cleaning_retention = CleaningRetention(db, lambda path: delete_object(path), now_iso)
+cleaning_retention.register(api, admin_user)
+from backups import Backups
+backup_service = Backups(db, None, lambda path: get_object(path))
+backup_service.register(api, admin_user)
+from media_migration import MediaMigration
+media_migration = MediaMigration(db)
+media_migration.register(api, admin_user)
+
+
+@api.get("/system/readiness")
+async def service_readiness(user=Depends(admin_user)):
+    last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+    return {"media_provider": os.getenv("MEDIA_PROVIDER", "mongo"), "last_backup": last.get("created_at") if last else None,
+        "backup_configured": backup_service.store is not None, "external_monitor_configured": os.getenv("EXTERNAL_MONITOR_ENABLED", "false").lower() == "true",
+        "app_environment": os.getenv("APP_ENV", "pilot"), "public_app_url": os.getenv("PUBLIC_APP_URL", ""),
+        "admins_without_mfa": await db.users.count_documents({"role": "admin", "active": True, "mfa_secret": {"$exists": False}})}
+from admin_mfa import AdminMFA
+admin_mfa = AdminMFA(db, JWT_SECRET, verify_pw)
+admin_mfa.register(api, admin_user, issue_token)
 app.include_router(api)
+from media_reference_guard import MediaReferenceGuard
+app.add_middleware(MediaReferenceGuard, db=db, authenticate=current_user)
 app.add_middleware(BoundedGuestUploads)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+from request_limits import BoundedAPIBodies
+app.add_middleware(BoundedAPIBodies)
+app.add_middleware(CORSMiddleware, allow_credentials=True,
+    allow_origins=[x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()],
+    allow_methods=["*"], allow_headers=["*"])
 
 
 @app.middleware("http")
@@ -1542,7 +1710,9 @@ async def private_guest_responses(request: Request, call_next):
 async def training_loop():
     while True:
         try:
-            await training.schedule()
+            from service_lease import business_lease
+            async with business_lease(db):
+                await training.schedule()
             await issue_tracker.record("Background training scheduler", False)
         except Exception:
             logger.error("Training scheduling failed; retrying")
@@ -1553,7 +1723,9 @@ async def training_loop():
 async def guest_retention_loop():
     while True:
         try:
-            await purge_guest_ids({"_id": "retention-worker"})
+            from service_lease import business_lease
+            async with business_lease(db):
+                await purge_guest_ids({"_id": "retention-worker"})
             await issue_tracker.record("Background guest ID cleanup", False)
         except Exception:
             logger.error("Guest ID retention purge failed; retrying next hour")
@@ -1561,9 +1733,54 @@ async def guest_retention_loop():
         await asyncio.sleep(3600)
 
 
+async def cleaning_retention_loop():
+    while True:
+        try:
+            await cleaning_retention.run("scheduled-cleanup", "Expire eligible cleaning photos after 45 days; per-property admin opt-in")
+            await issue_tracker.record("Cleaning photo retention", False)
+        except Exception:
+            await issue_tracker.record("Cleaning photo retention", True)
+        await asyncio.sleep(3600)
+
+
+async def backup_loop():
+    while True:
+        try:
+            if backup_service.store:
+                last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+                requested = await db.settings.find_one({"_id": "backup_requested", "requested": True})
+                hour = datetime.now(ZoneInfo("Asia/Kolkata")).hour
+                due = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 20 * 3600
+                overdue = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 26 * 3600
+                if requested or overdue or (hour == 2 and due):
+                    await backup_service.run()
+                    await db.settings.update_one({"_id": "backup_requested"}, {"$set": {"requested": False}}, upsert=True)
+                    await issue_tracker.record("Encrypted backup verification", False)
+        except Exception:
+            await issue_tracker.record("Encrypted backup verification", True)
+        await asyncio.sleep(60)
+
+
+async def media_migration_loop():
+    while True:
+        try:
+            requested = await db.settings.find_one({"_id": "media_migration", "requested": True})
+            if requested:
+                from service_lease import business_lease
+                async with business_lease(db, seconds=300):
+                    moved = await media_migration.batch()
+                if not moved:
+                    await db.settings.update_one({"_id": "media_migration"}, {"$set": {"requested": False}})
+                await issue_tracker.record("Private photo migration", False)
+        except Exception:
+            await issue_tracker.record("Private photo migration", True)
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup():
     await training.indexes()
+    await db.login_attempts.create_index("expires_at", expireAfterSeconds=0)
     await db.users.create_index("email", unique=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
@@ -1574,14 +1791,19 @@ async def startup():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.revoked_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
+    await db.calendar_exports.create_index("token", unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())
+    app.state.cleaning_retention_task = asyncio.create_task(cleaning_retention_loop())
+    app.state.backup_task = asyncio.create_task(backup_loop())
+    app.state.media_migration_task = asyncio.create_task(media_migration_loop())
     app.state.training_task = asyncio.create_task(training_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
-                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
+                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], os.getenv("CLEANER_NAME", "Priya (Cleaning)"), "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
         if not existing:
             await db.users.insert_one({"email": email.lower(), "name": name, "password_hash": hash_pw(pw), "role": role, "active": True, "created_at": now_iso()})
@@ -1594,7 +1816,7 @@ async def startup():
     owner_email = os.environ["OWNER_EMAIL"].lower()
     if not await db.users.find_one({"email": owner_email}):
         first = await db.properties.find_one({"name": "Villa Azure"}) or await db.properties.find_one({})
-        await db.users.insert_one({"email": owner_email, "name": "Rahul Mehta (Owner)", "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
+        await db.users.insert_one({"email": owner_email, "name": os.getenv("OWNER_NAME", "Rahul Mehta (Owner)"), "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
                                    "property_ids": [str(first["_id"])] if first else [], "active": True, "created_at": now_iso()})
     try:
         init_storage()
@@ -1638,7 +1860,7 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "training_task")]
+    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "cleaning_retention_task", "training_task", "backup_task", "media_migration_task")]
     for task in tasks:
         if task:
             task.cancel()

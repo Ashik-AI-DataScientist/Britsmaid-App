@@ -22,7 +22,7 @@ export default function OwnerVilla() {
   const [tab, setTab] = useState<Tab>("earnings");
   const [month, setMonth] = useState(thisMonth());
   const [busy, setBusy] = useState(false);
-  const prop = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`) });
+  const prop = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`), refetchInterval: 30000 });
   const s = useQuery({ queryKey: ["settlement", id, month], queryFn: () => api.get(`/reports/settlement?property_id=${id}&month=${month}`), enabled: tab === "earnings" });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`), enabled: tab === "stays" });
   const reports = useQuery({ queryKey: ["owner-reports", id], queryFn: () => api.get<any[]>(`/owner-reports?property_id=${id}`), enabled: tab === "updates" });

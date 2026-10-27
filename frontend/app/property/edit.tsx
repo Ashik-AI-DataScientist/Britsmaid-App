@@ -9,6 +9,9 @@ import { Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, Input, Load
 import { OTAS, otaColor } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 import { Contact, ContactsEditor } from "@/src/components/Contacts";
+import { CalendarExport } from "@/src/components/CalendarExport";
+import { CaptureSheet } from "@/src/components/CaptureSheet";
+import { PropertyCover } from "@/src/components/PropertyCover";
 
 const blank = { name: "", location: "", owner_name: "", owner_email: "", owner_phone: "", owner_alt_phone: "", owner_address: "", contacts: [] as Contact[], owner_share_percent: "70", electricity_mode: "owner" as "owner" | "split_half", base_rate: "", rooms: ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"], ical_feeds: [] as { ota: string; url: string; last_synced?: string | null }[], cover_url: "", notes: "" };
 
@@ -28,6 +31,8 @@ export default function EditProperty() {
   const [feedOta, setFeedOta] = useState("Airbnb");
   const [feedUrl, setFeedUrl] = useState("");
   const [del, setDel] = useState(false);
+  const [captureCover, setCaptureCover] = useState(false);
+  const [coverId, setCoverId] = useState("");
   const remove = async () => {
     try {
       await api.del(`/properties/${id}`);
@@ -47,6 +52,7 @@ export default function EditProperty() {
     api.get(`/properties/${id}`).then((p) => {
       if (!alive) return;
       setF({ ...blank, ...p, owner_share_percent: String(p.owner_share_percent), base_rate: String(p.base_rate || "") });
+      setCoverId(p.cover_media_id || "");
       setLoading(false);
     }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
     return () => { alive = false; };
@@ -60,7 +66,7 @@ export default function EditProperty() {
     if (isNaN(pct) || pct < 0 || pct > 100) return toast("Owner share must be 0–100%", "error");
     if (!f.rooms.length) return toast("Add at least one room", "error");
     setSaving(true);
-    const body = { ...f, owner_share_percent: pct, base_rate: Number(f.base_rate) || 0 };
+    const body = { ...f, cover_media_id: coverId, owner_share_percent: pct, base_rate: Number(f.base_rate) || 0 };
     try {
       const res = id ? await api.put(`/properties/${id}`, body) : await api.post("/properties", body);
       qc.invalidateQueries();
@@ -85,7 +91,11 @@ export default function EditProperty() {
           <Input testID="property-name-input" label="Name" value={f.name} onChangeText={set("name")} placeholder="Villa Azure" />
           <Input testID="property-location-input" label="Location" value={f.location} onChangeText={set("location")} placeholder="Candolim, Goa" />
           <Input testID="property-rate-input" label="Base nightly rate ₹" keyboardType="numeric" value={f.base_rate} onChangeText={set("base_rate")} />
-          <Input testID="property-cover-input" label="Cover image URL (optional)" value={f.cover_url} onChangeText={set("cover_url")} autoCapitalize="none" />
+          <Txt v="label">Villa cover photo (optional)</Txt>
+          {coverId || f.cover_url ? <View style={{ height: 180, overflow: "hidden", borderRadius: 12 }}><PropertyCover property={{ cover_media_id: coverId, cover_url: f.cover_url }} /></View> : <Txt v="caption">Choose a photo of this villa, or take one with your camera.</Txt>}
+          <Button testID="property-cover-add" title={coverId || f.cover_url ? "Change cover photo" : "Add cover photo"} icon="camera" disabled={saving} onPress={() => setCaptureCover(true)} />
+          {coverId || f.cover_url ? <Button title="Remove cover photo" variant="ghost" disabled={saving} onPress={() => { setCoverId(""); set("cover_url")(""); }} /> : null}
+          <Txt v="caption">After choosing your photo, tap {id ? "Save changes" : "Add property"} below to save it.</Txt>
         </Card>
         <Card style={{ gap: spacing.md }}>
           <Txt v="label">Owner & revenue sharing</Txt>
@@ -147,10 +157,15 @@ export default function EditProperty() {
             setFeedUrl("");
           }} />
         </Card>
+        {id ? <CalendarExport propertyId={id} /> : null}
         <Input testID="property-notes-input" label="Notes" multiline value={f.notes} onChangeText={set("notes")} />
         <Button testID="property-save-button" title={id ? "Save changes" : "Add property"} onPress={save} loading={saving} />
         {id ? <Button testID="property-delete-from-edit" variant="danger" icon="trash-outline" title="Delete property" onPress={() => setDel(true)} /> : null}
       </KeyboardAwareScrollView>
+      <CaptureSheet visible={captureCover} onClose={() => setCaptureCover(false)} singleSelection testID="property-cover-picker" destination={{ key: `property-cover:${id || "new"}`, label: "Villa cover photo" }} purpose="Take a villa photo or choose one from your gallery." successMessage="Cover photo ready. Save the property below to keep it." onUploaded={async (media, target) => {
+        if (target.key !== `property-cover:${id || "new"}` || media.length !== 1 || media[0].kind !== "image") throw new Error("Return to the original villa and choose one photo.");
+        setCoverId(media[0].id); set("cover_url")("");
+      }} />
       <ConfirmSheet visible={del} title="Delete property?" message={`${f.name} will be removed from all lists. Past bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
     </View>
   );

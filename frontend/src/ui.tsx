@@ -12,7 +12,7 @@ export const Icon = Ionicons;
 
 // ---------------------------------------------------------------- Text
 type TxtVariant = "display" | "title" | "subtitle" | "body" | "caption" | "label" | "mono";
-export function Txt({ v = "body", style, color, children, ...rest }: { v?: TxtVariant; style?: StyleProp<TextStyle>; color?: string; children?: React.ReactNode; numberOfLines?: number; testID?: string }) {
+export function Txt({ v = "body", style, color, children, ...rest }: { v?: TxtVariant; style?: StyleProp<TextStyle>; color?: string; children?: React.ReactNode; numberOfLines?: number; testID?: string; selectable?: boolean }) {
   const { colors } = useTheme();
   const base: Record<TxtVariant, TextStyle> = {
     display: { fontFamily: fonts.display, fontSize: 30, color: colors.onSurface, letterSpacing: -0.5 },

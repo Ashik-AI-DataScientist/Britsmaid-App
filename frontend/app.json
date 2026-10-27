@@ -30,7 +30,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./public/icons/britsmaid-64-v1.png"
     },
     "plugins": [
       "expo-router",

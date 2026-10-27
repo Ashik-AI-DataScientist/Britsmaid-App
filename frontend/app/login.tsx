@@ -9,6 +9,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { useAuth } from "@/src/auth";
 import { Button, Icon, Input, Txt } from "@/src/ui";
 import { radius, spacing, useTheme } from "@/src/theme";
+import { InstallHelp } from "@/src/components/InstallHelp";
 
 export default function Login() {
   const { user, login, googleSignIn, authError } = useAuth();
@@ -17,6 +18,8 @@ export default function Login() {
   const { colors } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   if (user) return <Redirect href="/" />;
@@ -26,8 +29,9 @@ export default function Login() {
     if (!email || !password) return setErr("Enter your email and password");
     setBusy(true);
     try {
-      await login(email.trim(), password);
+      await login(email.trim(), password, mfaCode);
     } catch (e: any) {
+      if (e.code === "MFA_REQUIRED") setMfaRequired(true);
       setErr(e.message);
     } finally {
       setBusy(false);
@@ -38,7 +42,7 @@ export default function Login() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={{ flexGrow: 1, paddingTop: insets.top + spacing.xxl, paddingBottom: insets.bottom + spacing.xl, paddingHorizontal: spacing.xl, justifyContent: "center" }} keyboardShouldPersistTaps="handled">
         <Animated.View entering={FadeInDown.duration(500)} style={{ alignItems: "center" }}>
-          <Image source={require("../assets/images/logo.jpg")} style={{ width: 180, height: 180 }} contentFit="contain" />
+          <Image source={require("../assets/images/logo.jpg")} alt="Britsmaid logo" style={{ width: 180, height: 180 }} contentFit="contain" />
         </Animated.View>
         <Animated.View entering={FadeInDown.delay(150).duration(500)} style={{ gap: spacing.lg, marginTop: spacing.xl }}>
           <View>
@@ -47,9 +51,10 @@ export default function Login() {
           </View>
           <Input testID="login-email-input" label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@britsmaid.com" autoComplete="email" />
           <Input testID="login-password-input" label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="••••••••" onSubmitEditing={submit} />
+          {mfaRequired ? <Input label="Authenticator or recovery code" value={mfaCode} onChangeText={setMfaCode} autoCapitalize="none" onSubmitEditing={submit} /> : null}
           {err ? <Txt testID="login-error" v="body" color={colors.error}>{err}</Txt> : null}
           <Button testID="login-submit-button" title="Sign in" icon="log-in-outline" onPress={submit} loading={busy} />
-          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+          {process.env.EXPO_PUBLIC_GOOGLE_LOGIN_ENABLED !== "false" ? <><View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
             <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
             <Txt v="caption">or</Txt>
             <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
@@ -57,10 +62,11 @@ export default function Login() {
           <Pressable testID="login-google-button" onPress={async () => { setGBusy(true); await googleSignIn(); setGBusy(false); }} style={({ pressed }) => ({ minHeight: 50, borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderStrong, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, transform: [{ scale: pressed ? 0.97 : 1 }] })}>
             {gBusy ? <ActivityIndicator color={colors.brandPrimary} /> : <Icon name="logo-google" size={18} color="#4285F4" />}
             <Txt v="subtitle" style={{ fontSize: 15 }}>Continue with Google</Txt>
-          </Pressable>
+          </Pressable></> : null}
           {authError ? <Txt testID="login-google-error" v="body" color={colors.error}>{authError}</Txt> : null}
-          {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)} · use synthetic data only</Txt> : null}
+          {Constants.expoConfig?.extra?.previewSource?.commit ? <Txt v="caption" testID="preview-source">Test preview · source {String(Constants.expoConfig.extra.previewSource.commit).slice(0, 12)}{Constants.expoConfig.extra.previewSource.testOnly !== false ? " · use synthetic data only" : " · hosted backend"}</Txt> : null}
           <Txt v="caption" style={{ textAlign: "center" }}>Admins manage everything. Cleaning staff see their checkout tasks.</Txt>
+          <InstallHelp />
         </Animated.View>
       </KeyboardAwareScrollView>
     </View>

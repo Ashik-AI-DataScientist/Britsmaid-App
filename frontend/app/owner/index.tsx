@@ -1,3 +1,4 @@
+import { PropertyCover } from "@/src/components/PropertyCover";
 import React from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { Image } from "expo-image";
@@ -17,7 +18,7 @@ export default function OwnerHome() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const q = useQuery({ queryKey: ["owner-dashboard"], queryFn: () => api.get("/owner/dashboard") });
+  const q = useQuery({ queryKey: ["owner-dashboard"], queryFn: () => api.get("/owner/dashboard"), refetchInterval: 30000 });
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
@@ -43,7 +44,7 @@ export default function OwnerHome() {
             <Animated.View key={v.id} entering={FadeInDown.delay(80 + i * 60)}>
               <Card testID={`owner-villa-${v.id}`} onPress={() => router.push(`/owner/${v.id}`)} style={{ padding: 0, overflow: "hidden" }}>
                 <View style={{ height: 150, backgroundColor: colors.brandTertiary }}>
-                  {v.cover_url ? <Image source={{ uri: v.cover_url }} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={200} /> : null}
+                  <PropertyCover property={v} />
                   <LinearGradient colors={["transparent", colors.scrim]} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 100 }} />
                   <View style={{ position: "absolute", left: spacing.lg, bottom: spacing.md }}>
                     <Txt v="title" color={colors.onSurfaceInverse}>{v.name}</Txt>

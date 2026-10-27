@@ -1,6 +1,7 @@
 import React from "react";
 import { Pressable, Text, View } from "react-native";
 import { fonts, radius, useTheme } from "@/src/theme";
+import { CLEANING_COMPLETE_MARKER } from "@/src/cleaning-status";
 import { todayISO } from "@/src/format";
 
 export type DayMark = { bars?: string[]; clean?: "pending" | "completed" | "in_progress" };
@@ -34,7 +35,7 @@ export function MonthGrid({ month, selected, onSelect, marks, min, testID = "mon
           const mk = marks?.[d];
           const isToday = d === today;
           return (
-            <Pressable key={i} testID={`${testID}-day-${d}`} disabled={disabled} onPress={() => onSelect(d)} style={{ width: `${100 / 7}%`, height: 52, alignItems: "center", paddingTop: 4, opacity: disabled ? 0.3 : 1 }}>
+            <Pressable accessibilityLabel={d + (mk?.clean === "completed" ? ", cleaning complete" : mk?.clean ? ", cleaning due" : "")} key={i} testID={`${testID}-day-${d}`} disabled={disabled} onPress={() => onSelect(d)} style={{ width: `${100 / 7}%`, height: 52, alignItems: "center", paddingTop: 4, opacity: disabled ? 0.3 : 1 }}>
               <View style={{ width: 34, height: 34, borderRadius: radius.pill, alignItems: "center", justifyContent: "center", backgroundColor: on ? colors.brandPrimary : isToday ? colors.brandTertiary : "transparent" }}>
                 <Text style={{ fontFamily: fonts.displayMedium, fontSize: 14, color: on ? colors.onBrandPrimary : colors.onSurface }}>{Number(d.slice(8))}</Text>
               </View>
@@ -42,7 +43,7 @@ export function MonthGrid({ month, selected, onSelect, marks, min, testID = "mon
                 {(mk?.bars ?? []).slice(0, 3).map((c, j) => (
                   <View key={j} style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c }} />
                 ))}
-                {mk?.clean ? <View style={{ width: 6, height: 6, borderRadius: 1, backgroundColor: mk.clean === "completed" ? colors.success : colors.warning }} /> : null}
+                {mk?.clean ? <View style={{ width: 7, height: 7, ...(mk.clean === "completed" ? CLEANING_COMPLETE_MARKER : { borderRadius: 4, backgroundColor: colors.warning }) }} /> : null}
               </View>
             </Pressable>
           );

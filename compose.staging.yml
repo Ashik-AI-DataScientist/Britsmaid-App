@@ -1,0 +1,42 @@
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - staging-database:/data/db
+    networks: [staging]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    build: .
+    env_file: .env.staging.local
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: britsmaid_staging
+      APP_ENV: staging
+      MEDIA_PROVIDER: mongo
+      SEED_DEMO_DATA: "false"
+      ADMIN_EMAIL: staging-admin@example.com
+      OWNER_EMAIL: staging-owner@example.com
+      CLEANER_EMAIL: staging-cleaner@example.com
+      SUPERVISOR_EMAIL: staging-supervisor@example.com
+    ports:
+      - "127.0.0.1:8783:10000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks: [staging]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10000/healthz', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      start_period: 20s
+      retries: 20
+networks:
+  staging:
+volumes:
+  staging-database:

@@ -1,6 +1,6 @@
+import { PropertyCover } from "@/src/components/PropertyCover";
 import React, { useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
-import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +18,7 @@ export default function PropertyDetail() {
   const toast = useToast();
   const qc = useQueryClient();
   const { colors } = useTheme();
-  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`) });
+  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`), refetchInterval: 30000 });
   const exp = useQuery({ queryKey: ["expenses", id], queryFn: () => api.get<any[]>(`/expenses?property_id=${id}`) });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`) });
   const [syncing, setSyncing] = useState(false);
@@ -70,7 +70,7 @@ export default function PropertyDetail() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={p.isRefetching} onRefresh={() => { p.refetch(); exp.refetch(); bookings.refetch(); }} tintColor={colors.brandPrimary} />}>
         <View style={{ height: 240, backgroundColor: colors.brandTertiary }}>
-          {v.cover_url ? <Image source={{ uri: v.cover_url }} style={{ width: "100%", height: "100%" }} contentFit="cover" /> : null}
+          <PropertyCover property={v} />
           <LinearGradient colors={["transparent", colors.scrim]} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 140 }} />
           <View style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, flexDirection: "row", justifyContent: "space-between" }}>
             <IconButton testID="property-back-button" name="chevron-back" tone="inverse" onPress={() => router.back()} />
@@ -121,7 +121,7 @@ export default function PropertyDetail() {
             </View>
             {(v.ical_feeds ?? []).length === 0 ? (
               <Pressable testID="property-add-ical" onPress={() => router.push(`/property/edit?id=${id}`)}>
-                <Txt v="body" color={colors.brandPrimary}>Add Airbnb / Booking.com / Agoda iCal links →</Txt>
+                <Txt v="body" color={colors.brandPrimary}>Add OTA iCal links, including MakeMyTrip →</Txt>
               </Pressable>
             ) : v.ical_feeds.map((f: any, i: number) => (
               <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>

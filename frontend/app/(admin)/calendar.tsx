@@ -5,9 +5,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
+import { CLEANING_COMPLETE_COLOR, CLEANING_COMPLETE_SOFT, CLEANING_COMPLETE_MARKER, cleaningDayStatus } from "@/src/cleaning-status";
 import { MonthGrid, DayMark } from "@/src/components/MonthGrid";
 import { Badge, Card, Chip, ChipRow, ErrorState, Icon, IconButton, Loading, Txt, useToast } from "@/src/ui";
-import { fmtDate, fmtShort, inr, monthLabel, otaColor, shiftMonth, thisMonth, todayISO, addDays } from "@/src/format";
+import { OTAS, fmtDate, fmtShort, inr, monthLabel, otaColor, shiftMonth, thisMonth, todayISO, addDays } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
 export default function CalendarScreen() {
@@ -20,8 +21,8 @@ export default function CalendarScreen() {
   const [day, setDay] = useState(todayISO());
   const [pid, setPid] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
-  const cal = useQuery({ queryKey: ["calendar", month, pid], queryFn: () => api.get(`/calendar?month=${month}${pid ? `&property_id=${pid}` : ""}`) });
+  const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties"), refetchInterval: 30000 });
+  const cal = useQuery({ queryKey: ["calendar", month, pid], queryFn: () => api.get(`/calendar?month=${month}${pid ? `&property_id=${pid}` : ""}`), refetchInterval: 30000 });
   const pmap = useMemo(() => Object.fromEntries((props.data ?? []).map((p) => [p.id, p])), [props.data]);
   const syncStatus = useQuery({ queryKey: ["sync-status"], queryFn: () => api.get("/sync/status"), refetchInterval: 60000 });
 
@@ -33,16 +34,16 @@ export default function CalendarScreen() {
         (m[d] ??= { bars: [] }).bars!.push(b.status === "blocked" ? colors.muted : otaColor(b.ota));
       }
     }
-    for (const c of cal.data?.cleanings ?? []) {
-      const cur = (m[c.date] ??= {});
-      cur.clean = cur.clean === "pending" ? "pending" : c.status === "completed" ? "completed" : "pending";
+    const cleanings = cal.data?.cleanings ?? [];
+    for (const day of new Set<string>(cleanings.map((c: any) => c.date))) {
+      (m[day] ??= {}).clean = cleaningDayStatus(cleanings.filter((c: any) => c.date === day));
     }
     return m;
   }, [cal.data, month, colors.muted]);
 
   const dayBookings = (cal.data?.bookings ?? []).filter((b: any) => b.check_in <= day && b.check_out > day);
   const dayOut = (cal.data?.bookings ?? []).filter((b: any) => b.check_out === day);
-  const dayClean = (cal.data?.cleanings ?? []).filter((c: any) => c.date === day);
+  const dayClean = (cal.data?.cleanings ?? []).filter((c: any) => c.date === day && c.status !== "cancelled");
   const freeVillas = (props.data ?? []).filter((p) => (!pid || p.id === pid) && !dayBookings.some((b: any) => b.property_id === p.id));
 
   const syncAll = async () => {
@@ -66,7 +67,7 @@ export default function CalendarScreen() {
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.lg, gap: spacing.sm }}>
           <View style={{ flex: 1 }}>
             <Txt v="title">Calendar</Txt>
-            <Txt v="caption" testID="calendar-sync-status">Auto-sync with OTAs every hour{mins !== null ? ` · last ${mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}` : ""}</Txt>
+            <Txt v="caption" testID="calendar-sync-status">OTA imports every 10 minutes while the service is running{mins !== null ? ` · last ${mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`}` : ""}</Txt>
           </View>
           <IconButton testID="calendar-sync-button" name={syncing ? "hourglass-outline" : "sync"} tone="brand" onPress={syncAll} />
           <IconButton testID="calendar-add-booking-button" name="add" tone="brand" onPress={() => router.push(`/booking/new?date=${day}${pid ? `&property_id=${pid}` : ""}`)} />
@@ -91,15 +92,19 @@ export default function CalendarScreen() {
             <MonthGrid month={month} selected={day} onSelect={setDay} marks={marks} />
           )}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.md, marginTop: spacing.sm, paddingHorizontal: spacing.xs }}>
-            {["Airbnb", "Booking.com", "Agoda", "Direct"].map((o) => (
+            {OTAS.map((o) => (
               <View key={o} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                 <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: otaColor(o) }} />
                 <Txt v="caption">{o}</Txt>
               </View>
             ))}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 1, backgroundColor: colors.warning }} />
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.warning }} />
               <Txt v="caption">Cleaning due</Txt>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <View style={{ width: 8, height: 8, ...CLEANING_COMPLETE_MARKER }} />
+              <Txt v="caption">Cleaning complete</Txt>
             </View>
           </View>
         </Card>
@@ -126,11 +131,11 @@ export default function CalendarScreen() {
         ))}
         {dayClean.map((c: any) => (
           <Card key={c.id} testID={`calendar-cleaning-${c.id}`} onPress={() => router.push(`/cleaning/${c.id}`)} style={{ flexDirection: "row", gap: spacing.md, alignItems: "center" }}>
-            <View style={{ width: 36, height: 36, borderRadius: radius.pill, alignItems: "center", justifyContent: "center", backgroundColor: c.status === "completed" ? colors.successSoft : colors.warningSoft }}>
-              <Icon name={c.status === "completed" ? "checkmark-done" : "sparkles"} size={18} color={c.status === "completed" ? colors.success : colors.warning} />
+            <View style={{ width: 36, height: 36, borderRadius: radius.pill, alignItems: "center", justifyContent: "center", borderWidth: c.status === "completed" ? 1 : 0, borderColor: CLEANING_COMPLETE_COLOR, backgroundColor: c.status === "completed" ? CLEANING_COMPLETE_SOFT : colors.warningSoft }}>
+              <Icon name={c.status === "completed" ? "checkmark-done" : "sparkles"} size={18} color={c.status === "completed" ? CLEANING_COMPLETE_COLOR : colors.warning} />
             </View>
             <Txt v="body" style={{ flex: 1 }}>Cleaning · {pmap[c.property_id]?.name}</Txt>
-            <Badge label={c.status === "completed" ? "Cleaned" : c.status === "in_progress" ? "In progress" : "Pending"} tone={c.status === "completed" ? "success" : "warning"} />
+            {c.status === "completed" ? <View style={{ backgroundColor: CLEANING_COMPLETE_SOFT, borderWidth: 1, borderColor: CLEANING_COMPLETE_COLOR, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 4 }}><Txt v="caption" color={CLEANING_COMPLETE_COLOR}>Cleaning complete</Txt></View> : <Badge label={c.status === "in_progress" ? "In progress" : c.status === "awaiting_review" ? "Awaiting review" : "Pending"} tone="warning" />}
           </Card>
         ))}
         <Card>
