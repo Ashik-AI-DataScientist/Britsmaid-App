@@ -1,5 +1,7 @@
 # Britsmaid: free-service production preparation
 
+**Current cleaning-photo policy:** see [45-day per-property retention](CLEANING_PHOTO_RETENTION_45_DAYS.md). It supersedes the two-set retention and seven-day recovery descriptions below, which document the earlier rollout. All new property controls default to Off.
+
 Work branch: `production/free-services`, based on deployed `0c979a7`.
 
 ## User decisions and deferred work

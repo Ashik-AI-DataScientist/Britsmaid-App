@@ -169,5 +169,6 @@ def create_app():
         cipher(os.environ["BACKUP_ENCRYPTION_KEY"], b"validation-salt")
         server.backup_service.store = BackupStore(storage_client[os.environ["DB_NAME"]])
     server.cleaning_retention.verify_backup = server.backup_service.verify_media
+    server.cleaning_retention.expire_backup = server.backup_service.expire_media
     install_hosted_routes(server.app, server, storage_client)
     return server.app

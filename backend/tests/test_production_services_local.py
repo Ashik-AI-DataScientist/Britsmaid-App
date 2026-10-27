@@ -14,6 +14,23 @@ from test_role_security_local import ctx, auth, server
 from private_media import PrivateMediaStore
 from backup_crypto import seal, unseal, CHUNK
 from backups import Backups
+from cleaning_retention import POLICY
+
+
+@pytest.fixture(autouse=True)
+def synthetic_retention_cloud(monkeypatch):
+    async def verify(mid):
+        return True
+    async def expire(mid):
+        return None
+    monkeypatch.setattr(server.cleaning_retention, "verify_backup", verify)
+    monkeypatch.setattr(server.cleaning_retention, "expire_backup", expire)
+
+
+async def enable_retention(ctx, pid=None, enabled=True):
+    pid = pid or ctx["p1"]
+    await ctx["db"].settings.update_one({"_id": "cleaning_photo_retention:" + pid}, {"$set": {
+        "property_id": pid, "policy": POLICY, "enabled": enabled}}, upsert=True)
 
 
 class ObjectClient:
@@ -103,14 +120,15 @@ async def cleaning_sets(ctx, count=3):
         tasks.append(row)
         for mid, phase in [(before, "before"), (after, "after")]:
             await ctx["db"].media.insert_one({"_id": mid, "kind": "image", "is_deleted": False, "size": 20,
-                "attachment_binding": f"{cid}:0:{phase}", "storage_path": "mongo:" + str(mid)})
+                "attachment_binding": f"{cid}:0:{phase}", "storage_path": "r2:synthetic/" + str(mid),
+                "created_at": (datetime.now(timezone.utc) - timedelta(days=46 if i == 0 else i)).isoformat()})
             await ctx["db"].backup_objects.insert_one({"_id": str(mid), "media_id": str(mid), "verified": True})
             media.append(mid)
     return tasks, media
 
 
 @pytest.mark.asyncio
-async def test_third_set_expires_first_photos_only_and_is_idempotent(ctx, monkeypatch):
+async def test_45_day_expiry_preserves_cleaning_records_and_is_idempotent(ctx, monkeypatch):
     tasks, media = await cleaning_sets(ctx)
     removed = []
     monkeypatch.setattr(server, "delete_object", lambda path: removed.append(path))
@@ -118,7 +136,7 @@ async def test_third_set_expires_first_photos_only_and_is_idempotent(ctx, monkey
     await ctx["db"].invoices.insert_one({"invoice_number": "SAMPLE", "amount": 100})
     assert len(await server.cleaning_retention.plan()) == 2
     assert (await server.cleaning_retention.run("test", "preview"))["deleted"] == 0
-    await ctx["db"].settings.insert_one({"_id": "cleaning_photo_retention", "enabled": True})
+    await enable_retention(ctx)
     result = await server.cleaning_retention.run("test", "Synthetic policy")
     assert result["deleted"] == 2 and len(removed) == 2
     assert (await server.cleaning_retention.run("test", "Retry"))["deleted"] == 0
@@ -130,7 +148,7 @@ async def test_third_set_expires_first_photos_only_and_is_idempotent(ctx, monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("protection", ["hold", "report", "cover", "other_property", "no_backup", "incomplete_third", "reopened"])
+@pytest.mark.parametrize("protection", ["hold", "report", "cover", "other_property", "no_backup", "recent", "reopened"])
 async def test_retention_preserves_protected_evidence(ctx, protection):
     tasks, media = await cleaning_sets(ctx)
     if protection == "hold":
@@ -140,14 +158,14 @@ async def test_retention_preserves_protected_evidence(ctx, protection):
     elif protection == "cover":
         await ctx["db"].properties.update_one({"_id": ObjectId(ctx["p1"])}, {"$set": {"cover_media_id": str(media[0])}})
     elif protection == "other_property":
-        await ctx["db"].cleaning.update_one({"_id": tasks[2]["_id"]}, {"$set": {"property_id": ctx["p2"]}})
-    elif protection == "incomplete_third":
-        await ctx["db"].cleaning.update_one({"_id": tasks[2]["_id"]}, {"$set": {"rooms.0.after": []}})
+        await ctx["db"].cleaning.insert_one({"property_id": ctx["p2"], "rooms": tasks[0]["rooms"]})
+    elif protection == "recent":
+        await ctx["db"].media.update_many({"_id": {"$in": media[:2]}}, {"$set": {"created_at": datetime.now(timezone.utc).isoformat()}})
     elif protection == "reopened":
         await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"status": "pending"}})
     elif protection == "no_backup":
         await ctx["db"].backup_objects.delete_many({})
-        await ctx["db"].settings.insert_one({"_id": "cleaning_photo_retention", "enabled": True})
+        await enable_retention(ctx)
         assert (await server.cleaning_retention.run("test", "No backup"))["deleted"] == 0
         return
     assert len(await server.cleaning_retention.plan()) == (1 if protection == "cover" else 0)
@@ -156,7 +174,7 @@ async def test_retention_preserves_protected_evidence(ctx, protection):
 @pytest.mark.asyncio
 async def test_failed_deletion_keeps_metadata_for_retry(ctx, monkeypatch):
     tasks, media = await cleaning_sets(ctx)
-    await ctx["db"].settings.insert_one({"_id": "cleaning_photo_retention", "enabled": True})
+    await enable_retention(ctx)
     def fail(path):
         raise RuntimeError("Synthetic unavailable storage")
     monkeypatch.setattr(server, "delete_object", fail)
@@ -262,7 +280,7 @@ async def test_serialized_api_writes_return_retry_without_duplicate_booking(ctx,
 @pytest.mark.asyncio
 async def test_partial_photo_deletion_retries_remaining_photo(ctx, monkeypatch):
     tasks, media = await cleaning_sets(ctx)
-    await ctx["db"].settings.insert_one({"_id": "cleaning_photo_retention", "enabled": True})
+    await enable_retention(ctx)
     calls = []
     def sometimes(path):
         calls.append(path)
@@ -278,10 +296,10 @@ async def test_partial_photo_deletion_retries_remaining_photo(ctx, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_missing_newer_photo_never_expires_old_evidence(ctx):
+async def test_age_policy_is_independent_of_newer_set_count(ctx):
     tasks, media = await cleaning_sets(ctx)
     await ctx["db"].media.update_one({"_id": media[-1]}, {"$set": {"is_deleted": True}})
-    assert await server.cleaning_retention.plan() == []
+    assert len(await server.cleaning_retention.plan()) == 2
 
 
 def test_cloud_photo_integrity_failure_is_reported(objects):
@@ -376,9 +394,9 @@ async def test_photo_recovery_verifies_bytes_and_refuses_reuse(ctx, objects):
 @pytest.mark.asyncio
 async def test_retention_configuration_requires_a_note_and_does_not_delete(ctx):
     await cleaning_sets(ctx)
-    result = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"enabled": True, "note": " "})
+    result = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"property_id": ctx["p1"], "enabled": True, "note": " "})
     assert result.status_code == 422
-    result = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"enabled": True, "note": "Synthetic policy approval"})
+    result = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"property_id": ctx["p1"], "enabled": True, "note": "Synthetic policy approval"})
     assert result.status_code == 200 and result.json()["enabled"]
     assert await ctx["db"].media.count_documents({"is_deleted": False}) == 6
 
@@ -405,3 +423,175 @@ async def test_cleanup_revalidates_cloud_recovery_bytes_before_deletion(ctx, mon
     await ctx["db"].backup_objects.update_one({"media_id": mid}, {"$set": {"sha256": "wrong"}})
     with pytest.raises(RuntimeError, match="retained"):
         await service.verify_media(mid)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age,eligible", [(0, False), (44, False), (44.99999, False), (45, True), (46, True)])
+async def test_photo_45_day_boundary_from_own_upload(ctx, monkeypatch, age, eligible):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    now = datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(server.cleaning_retention, "now_iso", lambda: now.isoformat())
+    uploaded = now - timedelta(days=age)
+    await ctx["db"].media.update_many({}, {"$set": {"created_at": uploaded.isoformat()}})
+    assert len(await server.cleaning_retention.plan()) == (2 if eligible else 0)
+    # Completion time and the absence of a third log cannot change photo age.
+    await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"completed_at": now.isoformat()}})
+    assert len(await server.cleaning_retention.plan()) == (2 if eligible else 0)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamp", [None, "unknown", "2020-01-01T00:00:00", "2999-01-01T00:00:00+00:00"])
+async def test_unknown_naive_or_future_photo_dates_are_protected(ctx, stamp):
+    await cleaning_sets(ctx, count=1)
+    await ctx["db"].media.update_many({}, {"$set": {"created_at": stamp}})
+    assert await server.cleaning_retention.plan() == []
+
+@pytest.mark.asyncio
+async def test_timezones_and_mixed_before_after_upload_dates(ctx, monkeypatch):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    now = datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(server.cleaning_retention, "now_iso", lambda: now.isoformat())
+    india = timezone(timedelta(hours=5, minutes=30))
+    await ctx["db"].media.update_one({"_id": media[0]}, {"$set": {"created_at": (now - timedelta(days=45)).astimezone(india).isoformat()}})
+    await ctx["db"].media.update_one({"_id": media[1]}, {"$set": {"created_at": now.isoformat()}})
+    assert [c["media_id"] for c in await server.cleaning_retention.plan()] == [str(media[0])]
+
+@pytest.mark.asyncio
+async def test_every_property_defaults_off_and_legacy_global_opt_in_is_ignored(ctx, monkeypatch):
+    await cleaning_sets(ctx, count=1)
+    await ctx["db"].settings.insert_one({"_id": "cleaning_photo_retention", "enabled": True})
+    monkeypatch.setattr(server, "delete_object", lambda p: pytest.fail("Default-off must not delete"))
+    response = await ctx["client"].get("/api/system/photo-retention", headers=auth(ctx))
+    assert response.status_code == 200 and response.json()["retention_days"] == 45
+    assert all(not p["enabled"] for p in response.json()["properties"])
+    assert (await server.cleaning_retention.run("test", "Default off"))["deleted"] == 0
+    # Old clients cannot accidentally enable the new policy globally.
+    assert (await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"enabled": True, "note": "Old client"})).status_code == 422
+
+@pytest.mark.asyncio
+async def test_admin_property_opt_in_and_off_are_isolated_and_audited(ctx, monkeypatch):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"property_id": ctx["p2"]}})
+    await enable_retention(ctx, ctx["p1"])
+    monkeypatch.setattr(server, "delete_object", lambda p: pytest.fail("Wrong property must not delete"))
+    assert (await server.cleaning_retention.run("test", "Other property"))["deleted"] == 0
+    response = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"property_id": ctx["p1"], "enabled": False, "note": "Owner review"})
+    assert response.status_code == 200
+    assert not await server.cleaning_retention.enabled(ctx["p1"])
+    assert await ctx["db"].media_retention_audit.find_one({"event": "policy_changed", "note": "Owner review", "enabled": False})
+    assert not await server.cleaning_retention.enabled(ctx["p2"])
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "cleaner", "supervisor", "other_owner"])
+async def test_non_admin_cannot_change_property_retention_or_holds(ctx, role):
+    assert (await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx, role), json={"property_id": ctx["p1"], "enabled": True, "note": "Unauthorized"})).status_code == 403
+    assert (await ctx["client"].put(f'/api/cleaning/{ctx["cid"]}/photo-hold', headers=auth(ctx, role), json={"hold": False, "note": "Unauthorized"})).status_code == 403
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pid,status", [("bad", 422), ("000000000000000000000000", 404)])
+async def test_retention_rejects_invalid_or_missing_properties(ctx, pid, status):
+    response = await ctx["client"].put("/api/system/photo-retention", headers=auth(ctx), json={"property_id": pid, "enabled": True, "note": "Synthetic"})
+    assert response.status_code == status
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protection", ["mongo", "rollback", "damage_record", "damage_purpose", "damage_notes", "room_damage", "media_hold", "training", "invoice", "expense"])
+async def test_non_cleaning_or_legacy_evidence_is_never_expired(ctx, protection):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    ids = [str(m) for m in media]
+    if protection == "mongo":
+        await ctx["db"].media.update_many({}, {"$set": {"storage_path": "mongo:" + str(ObjectId())}})
+    elif protection == "rollback":
+        await ctx["db"].media.update_many({}, {"$set": {"legacy_storage_path": "mongo:" + str(ObjectId())}})
+    elif protection == "damage_record":
+        await ctx["db"].damage_records.insert_one({"media_ids": ids, "description": "Preserve damage evidence"})
+    elif protection == "damage_purpose":
+        await ctx["db"].media.update_many({}, {"$set": {"purpose": "damage"}})
+    elif protection == "damage_notes":
+        await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"notes": "Damage found; keep evidence"}})
+    elif protection == "room_damage":
+        await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"rooms.0.damage_notes": "Broken item"}})
+    elif protection == "media_hold":
+        await ctx["db"].media.update_many({}, {"$set": {"photo_hold": True}})
+    elif protection == "training":
+        await ctx["db"].training_lessons.insert_one({"published": {"media_ids": ids}})
+    elif protection in ("invoice", "expense"):
+        await ctx["db"]["invoices" if protection == "invoice" else "expenses"].insert_one({"media_ids": ids})
+    assert await server.cleaning_retention.plan() == []
+
+@pytest.mark.asyncio
+async def test_switching_off_during_verification_stops_deletion(ctx, monkeypatch):
+    await cleaning_sets(ctx, count=1)
+    await enable_retention(ctx)
+    async def verify(mid):
+        await enable_retention(ctx, enabled=False)
+        return True
+    monkeypatch.setattr(server.cleaning_retention, "verify_backup", verify)
+    monkeypatch.setattr(server, "delete_object", lambda p: pytest.fail("Paused property must not delete"))
+    assert (await server.cleaning_retention.run("test", "Pause race"))["deleted"] == 0
+
+@pytest.mark.asyncio
+async def test_cloud_recovery_removal_retries_and_respects_property_pause(ctx, monkeypatch):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    await enable_retention(ctx)
+    calls = []
+    monkeypatch.setattr(server, "delete_object", lambda p: calls.append(p))
+    attempts = []
+    async def expire(mid):
+        attempts.append(mid)
+        if len(attempts) == 1:
+            raise RuntimeError("Synthetic recovery bucket interruption")
+    monkeypatch.setattr(server.cleaning_retention, "expire_backup", expire)
+    with pytest.raises(RuntimeError):
+        await server.cleaning_retention.run("test", "Recovery deletion retry")
+    assert await ctx["db"].media.count_documents({"is_deleted": True}) == 1
+    await enable_retention(ctx, enabled=False)
+    assert (await server.cleaning_retention.run("test", "Paused"))["deleted"] == 0
+    assert len(attempts) == 1
+    await enable_retention(ctx)
+    await server.cleaning_retention.run("test", "Resume")
+    assert len(calls) == 2  # No live file is deleted twice.
+    assert await ctx["db"].media.count_documents({"recovery_purged_at": {"$exists": True}}) == 2
+
+@pytest.mark.asyncio
+async def test_only_expired_cleaning_recovery_copy_can_be_removed(ctx):
+    store = MemoryBackups()
+    service = Backups(ctx["db"], store, lambda p: (b"sample", "image/jpeg"))
+    mid, cover = ObjectId(), ObjectId()
+    await ctx["db"].media.insert_many([
+        {"_id": mid, "is_deleted": True, "expiry_reason": POLICY, "created_at": (datetime.now(timezone.utc) - timedelta(days=46)).isoformat()},
+        {"_id": cover, "is_deleted": False, "purpose": "cover"}])
+    for item in (mid, cover):
+        key = "media/" + str(item) + ".bmbak"
+        store.objects[key] = b"synthetic encrypted bytes"
+        await ctx["db"].backup_objects.insert_one({"_id": key, "media_id": str(item), "verified": True})
+    await service.expire_media(str(mid))
+    assert "media/" + str(mid) + ".bmbak" not in store.objects
+    with pytest.raises(RuntimeError):
+        await service.expire_media(str(cover))
+    assert "media/" + str(cover) + ".bmbak" in store.objects
+
+@pytest.mark.asyncio
+async def test_expiry_fails_closed_without_cloud_backup_callbacks(ctx, monkeypatch):
+    await cleaning_sets(ctx, count=1)
+    await enable_retention(ctx)
+    monkeypatch.setattr(server.cleaning_retention, "verify_backup", None)
+    monkeypatch.setattr(server, "delete_object", lambda p: pytest.fail("No verified recovery adapter"))
+    result = await server.cleaning_retention.run("test", "Missing adapter")
+    assert result["deleted"] == 0 and "required" in result["reason"]
+
+@pytest.mark.asyncio
+async def test_recovery_copy_cannot_be_expired_before_45_days(ctx):
+    service = Backups(ctx["db"], MemoryBackups(), lambda p: (b"sample", "image/jpeg"))
+    mid = ObjectId()
+    await ctx["db"].media.insert_one({"_id": mid, "is_deleted": True, "expiry_reason": POLICY, "created_at": datetime.now(timezone.utc).isoformat()})
+    with pytest.raises(RuntimeError):
+        await service.expire_media(str(mid))
+
+@pytest.mark.asyncio
+async def test_hold_protects_recovery_copy_after_interrupted_expiry(ctx, monkeypatch):
+    tasks, media = await cleaning_sets(ctx, count=1)
+    await enable_retention(ctx)
+    await ctx["db"].media.update_many({"_id": {"$in": media}}, {"$set": {"is_deleted": True, "expiry_reason": POLICY, "property_id": ctx["p1"]}})
+    await ctx["db"].cleaning.update_one({"_id": tasks[0]["_id"]}, {"$set": {"photo_hold": True}})
+    async def fail(mid):
+        pytest.fail("Held recovery must be preserved")
+    monkeypatch.setattr(server.cleaning_retention, "expire_backup", fail)
+    assert (await server.cleaning_retention.run("test", "Evidence hold"))["deleted"] == 0

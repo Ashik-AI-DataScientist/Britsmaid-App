@@ -1085,7 +1085,7 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
 async def enrich_cleaning(c: dict):
     o = out(c)
     ids = [oid(mid) for mid in cleaning_retention.evidence_ids(c) if ObjectId.is_valid(mid)]
-    expired = await db.media.find({"_id": {"$in": ids}, "is_deleted": True, "expiry_reason": "older_cleaning_set"}, {"_id": 1}).to_list(None)
+    expired = await db.media.find({"_id": {"$in": ids}, "is_deleted": True, "expiry_reason": {"$in": ["older_cleaning_set", "cleaning-photo-45-days-v1"]}}, {"_id": 1}).to_list(None)
     o["expired_media_ids"] = sorted(set(o.get("expired_media_ids", [])) | {str(row["_id"]) for row in expired})
     p = await db.properties.find_one({"_id": ObjectId(o["property_id"])}, {"name": 1, "location": 1})
     o["property_name"] = p["name"] if p else "Unknown"
@@ -1736,7 +1736,7 @@ async def guest_retention_loop():
 async def cleaning_retention_loop():
     while True:
         try:
-            await cleaning_retention.run("scheduled-cleanup", "Keep latest two complete cleaning photo sets")
+            await cleaning_retention.run("scheduled-cleanup", "Expire eligible cleaning photos after 45 days; per-property admin opt-in")
             await issue_tracker.record("Cleaning photo retention", False)
         except Exception:
             await issue_tracker.record("Cleaning photo retention", True)

@@ -17,8 +17,8 @@ export default function Settings() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [confirmCleanup, setConfirmCleanup] = useState(false);
-  const retention = useQuery({ queryKey: ["photo-retention"], queryFn: () => api.get("/system/photo-retention"), enabled: user?.role === "admin" });
+  const [confirmProperty, setConfirmProperty] = useState("");
+  const retention = useQuery({ queryKey: ["photo-retention"], queryFn: () => api.get<{ retention_days: number; properties: {property_id: string; name: string; enabled: boolean; eligible_files: number}[] }>("/system/photo-retention"), enabled: user?.role === "admin" });
   const mfa = useQuery({ queryKey: ["admin-mfa"], queryFn: () => api.get("/auth/mfa"), enabled: user?.role === "admin" });
   const services = useQuery({ queryKey: ["service-readiness"], queryFn: () => api.get("/system/readiness"), enabled: user?.role === "admin" });
   const act = async (fn: () => Promise<void>) => {
@@ -39,27 +39,36 @@ export default function Settings() {
         <Button title="Refresh service status" onPress={() => services.refetch()} />
       </Card>
       <Card style={{ gap: spacing.md }}><Txt v="subtitle">Cleaning photo retention</Txt>
-        <Txt>Keep the two newest complete before-and-after sets per property. Older completed cleaning photos become eligible for removal. Cleaning records, invoices, covers, report photos and photos on hold are preserved.</Txt>
-        <Txt>Automatic cleanup: {retention.data?.enabled ? "On" : "Off"}. Eligible photos: {retention.data?.eligible_files ?? "…"}.</Txt>
+        <Txt>Each cleaning photo stays for at least 45 days from its own upload time. Automatic deletion starts only when an admin turns it on for that property.</Txt>
+        <Txt>Only before-and-after photos in completed cleaning logs can expire. Cleaning history, covers, damage evidence, reports, invoices and other records are kept. A photo hold protects a cleaning log.</Txt>
+        <Txt>Deletion is permanent and includes the photo’s backup copy. Some older photos stay protected until their storage review is complete. Cleanup can run later than the expiry date, never earlier.</Txt>
         {retention.isError ? <ErrorState message="Could not preview photo cleanup" onRetry={retention.refetch} /> : null}
-        <Input label="Reason for changing cleanup" value={note} onChangeText={setNote} multiline />
+        <Input label="Reason for changing a property’s cleanup setting" value={note} onChangeText={setNote} multiline />
         <Button title="Refresh cleanup preview" onPress={() => retention.refetch()} />
-        <Button title={retention.data?.enabled ? "Pause automatic cleanup" : "Enable automatic cleanup"} loading={busy} onPress={() => act(async () => {
-          if (!note.trim()) throw new Error("Add a reason first. Enabling cleanup permits permanent deletion of eligible photos.");
-          await api.put("/system/photo-retention", { enabled: !retention.data?.enabled, note });
-          await retention.refetch();
-        })} />
-        {retention.data?.enabled ? <Button title={confirmCleanup ? "Confirm permanent removal of eligible photos" : "Clean eligible photos now"} variant="danger" loading={busy} onPress={() => {
-          if (!confirmCleanup) { setConfirmCleanup(true); return; }
-          act(async () => {
-            if (!note.trim()) throw new Error("Add a reason before cleanup");
-            const result = await api.post("/system/photo-retention/run", { note });
-            setMessage(result.reason || `${result.deleted} older photos removed. ${result.pending_backup ?? 0} kept while awaiting verified backups.`);
-            setConfirmCleanup(false); await retention.refetch();
-          });
-        }} /> : null}
+        {retention.isPending ? <Txt>Loading property controls…</Txt> : null}
+        {retention.data?.properties.map(prop => <View key={prop.property_id} style={{ gap: spacing.sm, paddingVertical: spacing.sm }}>
+          <Txt v="subtitle">{prop.name}</Txt>
+          <Txt>Automatic deletion: {prop.enabled ? "On" : "Off"}. Eligible cleaning photos: {prop.eligible_files}.</Txt>
+          <Button title={prop.enabled ? `Turn off deletion for ${prop.name}` : `Turn on deletion for ${prop.name}`} variant="secondary" loading={busy} onPress={() => {
+            if (!prop.enabled) { setConfirmProperty(prop.property_id); return; }
+            act(async () => {
+              if (!note.trim()) throw new Error("Add a reason before changing this property’s setting.");
+              await api.put("/system/photo-retention", { property_id: prop.property_id, enabled: false, note });
+              setConfirmProperty(""); setMessage(`Automatic deletion is off for ${prop.name}.`); await retention.refetch();
+            });
+          }} />
+          {confirmProperty === prop.property_id && !prop.enabled ? <>
+            <Txt>Allow permanent deletion of this property’s eligible cleaning photos and their recovery copies after 45 days? {prop.eligible_files} photos are eligible now. This cannot restore photos already deleted.</Txt>
+            <Button title={`Confirm 45-day deletion for ${prop.name}`} variant="danger" loading={busy} onPress={() => act(async () => {
+              if (!note.trim()) throw new Error("Add a reason before enabling permanent photo deletion.");
+              await api.put("/system/photo-retention", { property_id: prop.property_id, enabled: true, note });
+              setConfirmProperty(""); setMessage(`45-day cleaning-photo deletion is on for ${prop.name}.`); await retention.refetch();
+            })} />
+            <Button title="Keep deletion off" variant="ghost" onPress={() => setConfirmProperty("")} />
+          </> : null}
+        </View>)}
         <Button title="Copy existing photos to private cloud storage" loading={busy} onPress={() => act(async () => { await api.post("/system/media/migrate"); setMessage("Photo copy queued. Originals are kept while cloud copies are verified."); })} />
-        <Txt>Enabling cleanup permits permanent deletion. Review the eligible count first. Set a hold from the cleaning admin controls when evidence must be retained.</Txt>
+        <Txt>All properties start with deletion off. Use the cleaning admin controls to hold photos for damage, disputes or owner review.</Txt>
       </Card>
       <Card style={{ gap: spacing.md }}><Txt v="subtitle">Your administrator authenticator</Txt>
         <Txt>{mfa.data?.enabled ? `Enabled. ${mfa.data.recovery_codes_remaining} recovery codes remain.` : "Not enabled. Add an authenticator to protect your admin account."}</Txt>

@@ -154,7 +154,7 @@ export default function CleaningSession() {
               {!adminAssignee ? <Txt>No cleaner selected. Reopen keeps this task unassigned.</Txt> : null}
             </> : null}
             <Input testID="cleaning-admin-note" label="Reason (required)" value={adminNote} onChangeText={setAdminNote} multiline />
-            <Button title={c.photo_hold ? "Release photo retention hold" : "Keep these photos for a dispute"} variant="secondary" disabled={submitting || !adminNote.trim()} onPress={async () => {
+            <Button title={c.photo_hold ? "Release photo retention hold" : "Keep photos for damage or review"} variant="secondary" disabled={submitting || !adminNote.trim()} onPress={async () => {
               setSubmitting(true);
               try {
                 await api.put(`/cleaning/${id}/photo-hold`, { hold: !c.photo_hold, note: adminNote });

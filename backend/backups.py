@@ -10,7 +10,7 @@ import io
 import os
 import secrets
 import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from bson import json_util
 from fastapi import Depends, HTTPException
@@ -24,6 +24,19 @@ EXCLUDED = {"user_sessions", "revoked_sessions", "maintenance_locks", "media_usa
 class Backups:
     def __init__(self, db, store, get_media):
         self.db, self.store, self.get_media = db, store, get_media
+
+    async def expire_media(self, mid):
+        """Only the cleaning expiry worker authorizes removal of its recovery copy."""
+        from bson import ObjectId
+        from cleaning_retention import POLICY, RETENTION_DAYS, aware_stamp
+        media = await self.db.media.find_one({"_id": ObjectId(mid), "is_deleted": True, "expiry_reason": POLICY})
+        uploaded = aware_stamp((media or {}).get("created_at"))
+        if not media or not self.store or uploaded is None or (datetime.now(timezone.utc) - uploaded).total_seconds() < RETENTION_DAYS * 86400:
+            raise RuntimeError("Cleaning recovery removal is not ready")
+        key = "media/" + mid + ".bmbak"
+        # Provider deletion is idempotent, including a lost acknowledgement/retry.
+        await run_in_threadpool(self.store.delete, key)
+        await self.db.backup_objects.delete_many({"media_id": mid})
 
     async def verify_media(self, mid):
         row = await self.db.backup_objects.find_one({"media_id": mid, "verified": True, "sha256": {"$exists": True}})
@@ -109,17 +122,12 @@ class Backups:
                 await self.db.backup_objects.update_one({"_id": key}, {"$set": {"verified": True,
                     "media_id": mid, "sha256": hashlib.sha256(data).hexdigest(), "at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
         await self.db.backup_runs.update_one({"_id": identity}, {"$set": {"media_verified": True}})
-        # Keep seven recovery snapshots; expired cleaning media gets a seven-day recovery window.
+        # Keep seven database snapshots. Photo expiry is controlled separately by
+        # the 45-day worker, which respects each property's opt-in and holds.
         snapshots = await self.db.backup_runs.find({"database_verified": True, "media_verified": True}).sort("created_at", -1).to_list(None)
         for old in snapshots[7:]:
             await run_in_threadpool(self.store.delete, old["key"])
             await self.db.backup_runs.delete_one({"_id": old["_id"]})
-        cutoff = (now - timedelta(days=7)).isoformat()
-        async for media in self.db.media.find({"is_deleted": True, "expiry_reason": "older_cleaning_set", "expired_at": {"$lt": cutoff}}):
-            key = "media/" + str(media["_id"]) + ".bmbak"
-            if await self.db.backup_objects.find_one({"_id": key}):
-                await run_in_threadpool(self.store.delete, key)
-                await self.db.backup_objects.delete_one({"_id": key})
         return {"backup": identity, "verified": True}
 
     def register(self, api, admin_user):
