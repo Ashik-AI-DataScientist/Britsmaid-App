@@ -595,3 +595,13 @@ async def test_hold_protects_recovery_copy_after_interrupted_expiry(ctx, monkeyp
         pytest.fail("Held recovery must be preserved")
     monkeypatch.setattr(server.cleaning_retention, "expire_backup", fail)
     assert (await server.cleaning_retention.run("test", "Evidence hold"))["deleted"] == 0
+
+@pytest.mark.asyncio
+async def test_admin_can_place_and_release_a_cleaning_hold_with_a_note(ctx):
+    path = f'/api/cleaning/{ctx["cid"]}/photo-hold'
+    response = await ctx["client"].put(path, headers=auth(ctx), json={"hold": True, "note": "Owner damage review"})
+    assert response.status_code == 200, response.text
+    assert (await ctx["db"].cleaning.find_one({"_id": ObjectId(ctx["cid"])}))["photo_hold"] is True
+    response = await ctx["client"].put(path, headers=auth(ctx), json={"hold": False, "note": "Review complete"})
+    assert response.status_code == 200 and response.json()["hold"] is False
+    assert (await ctx["client"].put(path, headers=auth(ctx), json={"hold": False, "note": " "})).status_code == 422
