@@ -7,7 +7,7 @@ import { getAuthEpoch, request } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { spacing } from "@/src/theme";
-import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
+import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker, webCaptureBlob } from "@/src/capture-workflow";
 export type Media = { id: string; kind: "image" | "video"; content_type: string };
 async function uploadAsset(a: CaptureAsset): Promise<Media> {
   const expectedAuthEpoch = getAuthEpoch();
@@ -18,7 +18,7 @@ async function uploadAsset(a: CaptureAsset): Promise<Media> {
   const form = new FormData();
   if (a.uploadKey) form.append("request_key", a.uploadKey);
   if (Platform.OS === "web") {
-    const blob = await (await fetch(a.uri)).blob();
+    const blob = webCaptureBlob(a);
     form.append("file", blob, name);
   } else form.append("file", { uri: a.uri, name, type } as any);
   return request<Media>("/upload", { method: "POST", form, expectedAuthEpoch });
