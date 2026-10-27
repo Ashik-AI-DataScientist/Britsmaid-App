@@ -11,8 +11,9 @@ export function useMediaUrl(id?: string, src?: string) {
     enabled: !!user && !!id && !src,
     staleTime: 60000,
     gcTime: 0,
-    refetchInterval: 120000,
+    refetchOnWindowFocus: true,
     retry: 1,
   });
-  return { uri: src || (user ? query.data : undefined), error: query.isError, retry: query.refetch };
+  return { uri: src || (user ? query.data : undefined), error: query.isError,
+    retry: async () => { if (id && !src) return query.refetch(); } };
 }

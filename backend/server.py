@@ -59,6 +59,9 @@ class BaseDocument(BaseModel):
     def out(self) -> dict:
         d = self.model_dump()
         d.pop("password_hash", None)
+        for key in list(d):
+            if key.startswith("mfa_"):
+                d.pop(key)
         return d
 
 
@@ -81,6 +84,10 @@ STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "britsmaid"
 storage_key = None
+
+
+def delete_object(path):
+    raise HTTPException(503, "Photo deletion storage is not configured")
 
 
 def init_storage():
@@ -119,6 +126,8 @@ def hash_pw(p: str) -> str:
 
 
 def verify_pw(p: str, h: str) -> bool:
+    if len(p.encode()) > 72:
+        return False
     try:
         return bcrypt.checkpw(p.encode(), h.encode())
     except Exception:
@@ -169,20 +178,31 @@ async def active_token_user(payload):
 
 
 async def current_user(request: Request):
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.lower().startswith("bearer ") else None
+    token = request_token(request)
+    if token and not request.headers.get("Authorization") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin", "")
+        expected = os.getenv("PUBLIC_APP_URL", str(request.base_url).rstrip("/"))
+        if origin != expected or request.headers.get("sec-fetch-site") == "cross-site":
+            raise HTTPException(403, "Open this action inside Britsmaid and try again.")
     return await user_from_token(token)
+
+
+def request_token(request):
+    auth = request.headers.get("Authorization", "")
+    return auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get("bm_session")
 
 
 @api.post("/auth/logout")
 async def end_session(request: Request, user=Depends(current_user)):
-    token = request.headers["Authorization"][7:]
+    token = request_token(request)
     # Keep revocation beyond the longest supported access-token lifetime.
     await db.revoked_sessions.update_one(
         {"_id": hashlib.sha256(token.encode()).hexdigest()},
         {"$set": {"expires_at": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS + 1)}}, upsert=True)
     await db.user_sessions.delete_many({"session_token": token})
-    return {"ok": True}
+    response = Response(content='{"ok":true}', media_type="application/json")
+    response.delete_cookie("bm_session", path="/api", secure=True, httponly=True, samesite="strict")
+    return response
 
 
 async def admin_user(user=Depends(current_user)):
@@ -229,15 +249,24 @@ def scope(user, q: dict, field: str = "property_id"):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    mfa_code: str = Field(default="", max_length=40)
+    browser_session: bool = False
 
 
 class StaffIn(BaseModel):
     name: str
     email: EmailStr
-    password: str = Field(min_length=6)
+    password: str = Field(min_length=12, max_length=72)
     role: Literal["admin", "cleaner", "supervisor", "owner"] = "cleaner"
     property_ids: List[str] = []
     phone: str = ""
+
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
 
 
 class UserUpdate(BaseModel):
@@ -245,7 +274,14 @@ class UserUpdate(BaseModel):
     role: Optional[Literal["admin", "cleaner", "supervisor", "owner"]] = None
     phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
-    password: Optional[str] = Field(default=None, min_length=6)
+    password: Optional[str] = Field(default=None, min_length=12, max_length=72)
+
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
 
 
 async def validate_pids(pids: List[str]) -> List[str]:
@@ -264,6 +300,18 @@ async def login(body: LoginIn):
     ok = verify_pw(body.password, user["password_hash"] if user else DUMMY_HASH)
     if not user or not user.get("active") or not ok:
         raise HTTPException(401, "Incorrect email or password")
+    if user.get("mfa_secret"):
+        if not body.mfa_code:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Enter your authenticator or recovery code", "code": "MFA_REQUIRED"}, status_code=401)
+        if not await admin_mfa.verify(user, body.mfa_code):
+            raise HTTPException(401, "Authenticator/recovery code incorrect or already used")
+    if body.browser_session:
+        from fastapi.responses import JSONResponse
+        token = issue_token(user)
+        response = JSONResponse({"cookie_session": True, "user": out(user)})
+        response.set_cookie("bm_session", token, max_age=TOKEN_DAYS * 86400, path="/api", secure=True, httponly=True, samesite="strict")
+        return response
     return {"access_token": issue_token(user), "token_type": "bearer", "user": out(user)}
 
 
@@ -363,7 +411,7 @@ async def reset_password(uid: str, _=Depends(admin_user)):
     if not u:
         raise HTTPException(404, "User not found")
     alphabet = string.ascii_letters + string.digits
-    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(8))
+    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(16))
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}, "$inc": {"session_version": 1}})
     await db.user_sessions.delete_many({"user_id": str(u["_id"])})
     return {"user": out(u), "temp_password": temp}
@@ -373,7 +421,8 @@ async def reset_password(uid: str, _=Depends(admin_user)):
 async def deactivate_user(uid: str, admin=Depends(admin_user)):
     if str(admin["_id"]) == uid:
         raise HTTPException(400, "You cannot remove yourself")
-    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}})
+    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}, "$inc": {"session_version": 1}})
+    await db.user_sessions.delete_many({"user_id": uid})
     return {"ok": True}
 
 # ---------------------------------------------------------------- Media
@@ -457,7 +506,7 @@ async def media_ticket(media_id: str, request: Request, user=Depends(current_use
     now = datetime.now(timezone.utc)
     ticket = jwt.encode({"sub": str(user["_id"]), "sv": user.get("session_version", 0),
         "purpose": "file", "aud": "britsmaid-media", "media_id": media_id,
-        "session_key": hashlib.sha256(request.headers["Authorization"][7:].encode()).hexdigest(),
+        "session_key": hashlib.sha256(request_token(request).encode()).hexdigest(),
         "iat": now, "exp": now + timedelta(minutes=5)}, JWT_SECRET, algorithm=JWT_ALG)
     return {"ticket": ticket}
 
@@ -782,37 +831,39 @@ async def sync_property(p: dict) -> list:
         except Exception as e:
             report.append({"ota": f["ota"], "ok": False, "error": str(e) if isinstance(e, CalendarFetchError) else "Calendar feed could not be read. Check its export link and try again."})
             continue
-        added = updated = 0
-        conflicts = 0
-        feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
-        worker = {"_id": "calendar-sync", "role": "admin"}
-        for ev in events:
-            if ev["uid"].endswith("@calendar.britsmaid"):
-                continue  # Do not import our own availability blocks back through an OTA.
-            uid = f"{feed_id}:{ev['uid']}"
-            existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
-            if not existing:
-                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
-            if ev["cancelled"] and not existing:
-                continue
-            blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
-            payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
-                       "check_in": ev["check_in"], "check_out": ev["check_out"],
-                       "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
-            try:
-                body = BookingIn(**payload)
-                if existing:
-                    result = await update_booking(str(existing["_id"]), body, worker)
-                    updated += 1
-                else:
-                    result = await create_booking(body, worker)
-                    added += 1
-                await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
-            except Exception:
-                # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
-                conflicts += 1
-        f["last_synced"] = now_iso()
-        report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
+        from service_lease import business_lease
+        async with business_lease(db, seconds=300):
+            added = updated = 0
+            conflicts = 0
+            feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
+            worker = {"_id": "calendar-sync", "role": "admin"}
+            for ev in events:
+                if ev["uid"].endswith("@calendar.britsmaid"):
+                    continue  # Do not import our own availability blocks back through an OTA.
+                uid = f"{feed_id}:{ev['uid']}"
+                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
+                if not existing:
+                    existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
+                if ev["cancelled"] and not existing:
+                    continue
+                blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
+                payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
+                           "check_in": ev["check_in"], "check_out": ev["check_out"],
+                           "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
+                try:
+                    body = BookingIn(**payload)
+                    if existing:
+                        result = await update_booking(str(existing["_id"]), body, worker)
+                        updated += 1
+                    else:
+                        result = await create_booking(body, worker)
+                        added += 1
+                    await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
+                except Exception:
+                    # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
+                    conflicts += 1
+            f["last_synced"] = now_iso()
+            report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
     await issue_tracker.record("Calendar sync " + pid, any(not item["ok"] for item in report))
     return report
@@ -831,7 +882,11 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
 SYNC_INTERVAL_SECONDS = 600
 
 
-async def sync_all(trigger: str):
+async def sync_all(*args, **kwargs):
+    return await _sync_all_unlocked(*args, **kwargs)
+
+
+async def _sync_all_unlocked(trigger: str):
     props = await db.properties.find({"is_deleted": {"$ne": True}, "ical_feeds.0": {"$exists": True}}).to_list(500)
     added = errors = 0
     for p in props:
@@ -990,7 +1045,7 @@ async def cleaning_admin_action(cid: str, body: CleaningAdminAction, user=Depend
     else:
         # Preserve old evidence in history; rework must collect fresh evidence.
         changes["rooms"] = [{"name": r["name"], "before": [], "after": [], "checked": []} for r in c.get("rooms", [])]
-        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by")}
+        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by", "photos_ready_at")}
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, update)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
@@ -1029,6 +1084,9 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
 
 async def enrich_cleaning(c: dict):
     o = out(c)
+    ids = [oid(mid) for mid in cleaning_retention.evidence_ids(c) if ObjectId.is_valid(mid)]
+    expired = await db.media.find({"_id": {"$in": ids}, "is_deleted": True, "expiry_reason": "older_cleaning_set"}, {"_id": 1}).to_list(None)
+    o["expired_media_ids"] = sorted(set(o.get("expired_media_ids", [])) | {str(row["_id"]) for row in expired})
     p = await db.properties.find_one({"_id": ObjectId(o["property_id"])}, {"name": 1, "location": 1})
     o["property_name"] = p["name"] if p else "Unknown"
     if o.get("assigned_to") and ObjectId.is_valid(o["assigned_to"]):
@@ -1110,6 +1168,7 @@ async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(sta
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, upd)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
+    await cleaning_retention.mark_ready(c["_id"])
     return await get_cleaning(cid, user)
 
 
@@ -1592,7 +1651,30 @@ training = Training(db, oid, out)
 training.register(api, admin_user, current_user)
 from calendar_export import register_calendar_exports
 register_calendar_exports(api, db, admin_user, oid, now_iso, OTAS)
+from cleaning_retention import CleaningRetention
+cleaning_retention = CleaningRetention(db, lambda path: delete_object(path), now_iso)
+cleaning_retention.register(api, admin_user)
+from backups import Backups
+backup_service = Backups(db, None, lambda path: get_object(path))
+backup_service.register(api, admin_user)
+from media_migration import MediaMigration
+media_migration = MediaMigration(db)
+media_migration.register(api, admin_user)
+
+
+@api.get("/system/readiness")
+async def service_readiness(user=Depends(admin_user)):
+    last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+    return {"media_provider": os.getenv("MEDIA_PROVIDER", "mongo"), "last_backup": last.get("created_at") if last else None,
+        "backup_configured": backup_service.store is not None, "external_monitor_configured": os.getenv("EXTERNAL_MONITOR_ENABLED", "false").lower() == "true",
+        "app_environment": os.getenv("APP_ENV", "pilot"), "public_app_url": os.getenv("PUBLIC_APP_URL", ""),
+        "admins_without_mfa": await db.users.count_documents({"role": "admin", "active": True, "mfa_secret": {"$exists": False}})}
+from admin_mfa import AdminMFA
+admin_mfa = AdminMFA(db, JWT_SECRET, verify_pw)
+admin_mfa.register(api, admin_user, issue_token)
 app.include_router(api)
+from media_reference_guard import MediaReferenceGuard
+app.add_middleware(MediaReferenceGuard, db=db, authenticate=current_user)
 app.add_middleware(BoundedGuestUploads)
 from request_limits import BoundedAPIBodies
 app.add_middleware(BoundedAPIBodies)
@@ -1628,7 +1710,9 @@ async def private_guest_responses(request: Request, call_next):
 async def training_loop():
     while True:
         try:
-            await training.schedule()
+            from service_lease import business_lease
+            async with business_lease(db):
+                await training.schedule()
             await issue_tracker.record("Background training scheduler", False)
         except Exception:
             logger.error("Training scheduling failed; retrying")
@@ -1639,7 +1723,9 @@ async def training_loop():
 async def guest_retention_loop():
     while True:
         try:
-            await purge_guest_ids({"_id": "retention-worker"})
+            from service_lease import business_lease
+            async with business_lease(db):
+                await purge_guest_ids({"_id": "retention-worker"})
             await issue_tracker.record("Background guest ID cleanup", False)
         except Exception:
             logger.error("Guest ID retention purge failed; retrying next hour")
@@ -1647,9 +1733,54 @@ async def guest_retention_loop():
         await asyncio.sleep(3600)
 
 
+async def cleaning_retention_loop():
+    while True:
+        try:
+            await cleaning_retention.run("scheduled-cleanup", "Keep latest two complete cleaning photo sets")
+            await issue_tracker.record("Cleaning photo retention", False)
+        except Exception:
+            await issue_tracker.record("Cleaning photo retention", True)
+        await asyncio.sleep(3600)
+
+
+async def backup_loop():
+    while True:
+        try:
+            if backup_service.store:
+                last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+                requested = await db.settings.find_one({"_id": "backup_requested", "requested": True})
+                hour = datetime.now(ZoneInfo("Asia/Kolkata")).hour
+                due = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 20 * 3600
+                overdue = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 26 * 3600
+                if requested or overdue or (hour == 2 and due):
+                    await backup_service.run()
+                    await db.settings.update_one({"_id": "backup_requested"}, {"$set": {"requested": False}}, upsert=True)
+                    await issue_tracker.record("Encrypted backup verification", False)
+        except Exception:
+            await issue_tracker.record("Encrypted backup verification", True)
+        await asyncio.sleep(60)
+
+
+async def media_migration_loop():
+    while True:
+        try:
+            requested = await db.settings.find_one({"_id": "media_migration", "requested": True})
+            if requested:
+                from service_lease import business_lease
+                async with business_lease(db, seconds=300):
+                    moved = await media_migration.batch()
+                if not moved:
+                    await db.settings.update_one({"_id": "media_migration"}, {"$set": {"requested": False}})
+                await issue_tracker.record("Private photo migration", False)
+        except Exception:
+            await issue_tracker.record("Private photo migration", True)
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup():
     await training.indexes()
+    await db.login_attempts.create_index("expires_at", expireAfterSeconds=0)
     await db.users.create_index("email", unique=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
@@ -1666,6 +1797,9 @@ async def startup():
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())
+    app.state.cleaning_retention_task = asyncio.create_task(cleaning_retention_loop())
+    app.state.backup_task = asyncio.create_task(backup_loop())
+    app.state.media_migration_task = asyncio.create_task(media_migration_loop())
     app.state.training_task = asyncio.create_task(training_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
@@ -1726,7 +1860,7 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "training_task")]
+    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "cleaning_retention_task", "training_task", "backup_task", "media_migration_task")]
     for task in tasks:
         if task:
             task.cancel()

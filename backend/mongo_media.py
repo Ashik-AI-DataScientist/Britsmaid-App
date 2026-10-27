@@ -37,7 +37,7 @@ class MongoMediaStore:
             used = self.db.app_media.chunks.count_documents({}) * chunk_bytes
             needed = ((len(data) + chunk_bytes - 1) // chunk_bytes) * chunk_bytes
             if used + needed > self.budget:
-                raise HTTPException(507, "Test photo storage is full. Ask the admin to review storage before adding more.")
+                raise HTTPException(507, "Photo storage allowance reached. Ask the admin to review storage before adding more.")
             self.bucket.upload_from_stream_with_id(file_id, path, data, metadata={
                 "content_type": content_type, "sha256": digest,
             })
@@ -54,3 +54,11 @@ class MongoMediaStore:
                 stream.close()
         except NoFile:
             raise HTTPException(404, "File not found") from None
+
+    def delete(self, path):
+        if not path.startswith("mongo:") or not ObjectId.is_valid(path[6:]):
+            raise HTTPException(422, "Invalid ordinary media reference")
+        try:
+            self.bucket.delete(ObjectId(path[6:]))
+        except NoFile:
+            pass

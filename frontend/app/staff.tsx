@@ -32,7 +32,7 @@ export default function Staff() {
     if (!edit) return;
     if (!edit.name.trim()) return toast("Name is required", "error");
     if (edit.role === "owner" && !edit.property_ids.length) return toast("Assign at least one villa", "error");
-    if (edit.password && edit.password.length < 6) return toast("Password must be at least 6 characters", "error");
+    if (edit.password && edit.password.length < 12) return toast("Password must be at least 12 characters", "error");
     try {
       await api.put(`/users/${edit.id}`, {
         name: edit.name.trim(),
@@ -50,7 +50,7 @@ export default function Staff() {
   };
 
   const add = async () => {
-    if (!f.name || !f.email || f.password.length < 6) return toast("Name, email and a 6+ char password are required", "error");
+    if (!f.name || !f.email || f.password.length < 12) return toast("Name, email and a 12+ character password are required", "error");
     if (f.role === "owner" && !f.property_ids.length) return toast("Select the villa(s) this owner can see", "error");
     setBusy(true);
     try {

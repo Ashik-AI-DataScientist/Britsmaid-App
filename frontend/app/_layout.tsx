@@ -27,7 +27,7 @@ function AuthGate() {
     if (user && !onLogin && !isGuest) {
       const area = segments[0] as string;
       if ((user.role === "cleaner" || user.role === "supervisor") && area && area !== "cleaning" && !(user.role === "cleaner" && area === "training")) router.replace("/cleaning");
-      if (user.role === "owner" && ["(admin)", "staff", "guests", "booking", "invoice", "issues", "training"].includes(area)) router.replace("/owner");
+      if (user.role === "owner" && ["(admin)", "staff", "guests", "booking", "invoice", "issues", "settings", "training"].includes(area)) router.replace("/owner");
     }
   }, [user, loading, segments, router]);
   if (loading) return <Loading label="Signing you in..." />;

@@ -4,7 +4,6 @@ import time
 import base64
 import hashlib
 import re
-from collections import defaultdict, deque
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -27,6 +26,11 @@ def validate_hosted_settings():
         raise RuntimeError("Hosted accounts must start without demonstration data")
     if os.getenv("GOOGLE_ADMIN_EMAILS"):
         raise RuntimeError("Automatic Google admin provisioning is disabled for this deployment")
+    if os.getenv("APP_ENV") == "staging" and "staging" not in os.environ["DB_NAME"].lower():
+        raise RuntimeError("Staging requires a separate staging database")
+    public_url = os.getenv("PUBLIC_APP_URL", "")
+    if public_url and not re.fullmatch(r"https://[a-z0-9.-]+", public_url):
+        raise RuntimeError("PUBLIC_APP_URL must be an HTTPS origin without a trailing slash")
     os.environ.setdefault("ADMIN_EMAIL", "admin@example.com")
     os.environ.setdefault("OWNER_EMAIL", "owner@example.com")
     os.environ.setdefault("CLEANER_EMAIL", "cleaner@example.com")
@@ -52,7 +56,6 @@ class SPAFiles(StaticFiles):
 
 
 def install_hosted_routes(application, api_server, media_client):
-    attempts = defaultdict(deque)
     web = Path(os.getenv("WEB_BUILD_DIR", "/app/web"))
     # Permit only the exact bundled inline installation controller, not arbitrary scripts.
     hashes = []
@@ -85,18 +88,15 @@ def install_hosted_routes(application, api_server, media_client):
         if request.url.path == "/api/auth/session":
             return secure_response(request, JSONResponse({"detail": "Google sign-in is not configured. Use your assigned email and password."}, status_code=503))
         if request.url.path == "/api/auth/login" and request.method == "POST":
-            key = request.client.host if request.client else "unknown"
-            now = time.monotonic()
-            queue = attempts[key]
-            while queue and queue[0] < now - 60:
-                queue.popleft()
-            if len(queue) >= 20:
+            peer = request.client.host if request.client else "unknown"
+            window = int(time.time()) // 60
+            key = hashlib.sha256((os.environ.get("JWT_SECRET", "local") + peer).encode()).hexdigest() + ":" + str(window)
+            from datetime import datetime, timezone, timedelta
+            await api_server.db.login_attempts.update_one({"_id": key}, {"$setOnInsert": {
+                "count": 0, "expires_at": datetime.now(timezone.utc) + timedelta(minutes=3)}}, upsert=True)
+            result = await api_server.db.login_attempts.update_one({"_id": key, "count": {"$lt": 20}}, {"$inc": {"count": 1}})
+            if not result.matched_count:
                 return secure_response(request, JSONResponse({"detail": "Too many sign-in attempts. Wait one minute and try again."}, status_code=429, headers={"Retry-After": "60"}))
-            queue.append(now)
-            if len(attempts) > 1000:
-                for old_key in list(attempts):
-                    if not attempts[old_key] or attempts[old_key][-1] < now - 60:
-                        del attempts[old_key]
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -113,7 +113,15 @@ def install_hosted_routes(application, api_server, media_client):
             await api_server.db.command("ping")
         except Exception:
             return JSONResponse({"status": "unavailable"}, status_code=503)
-        return {"status": "ok", "mode": "persistent-test", "source": os.getenv("RENDER_GIT_COMMIT", "")}
+        return {"status": "ok", "mode": os.getenv("APP_ENV", "pilot"), "source": os.getenv("RENDER_GIT_COMMIT", "")}
+
+    @application.get("/healthz/backup", include_in_schema=False)
+    async def backup_health():
+        from datetime import datetime, timezone
+        last = await api_server.db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+        if not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() > 26 * 3600:
+            return JSONResponse({"status": "backup-needs-attention"}, status_code=503)
+        return {"status": "ok"}
 
     @application.on_event("startup")
     async def supervisor_account():
@@ -142,9 +150,24 @@ def create_app():
     from mongo_media import MongoMediaStore
     storage_client = MongoClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=10000,
                                  maxPoolSize=5, appname="BritsmaidMedia")
-    store = MongoMediaStore(storage_client[os.environ["DB_NAME"]])
+    legacy = MongoMediaStore(storage_client[os.environ["DB_NAME"]])
+    if os.getenv("MEDIA_PROVIDER", "mongo") == "r2":
+        from private_media import PrivateMediaStore
+        store = PrivateMediaStore(storage_client[os.environ["DB_NAME"]], legacy)
+        server.media_migration.store = store
+    elif os.getenv("MEDIA_PROVIDER", "mongo") == "mongo":
+        store = legacy
+    else:
+        raise RuntimeError("Unsupported MEDIA_PROVIDER; refusing storage fallback")
     server.init_storage = store.ready
     server.put_object = store.put
     server.get_object = store.get
+    server.delete_object = store.delete
+    if os.getenv("BACKUP_BUCKET"):
+        from backup_store import BackupStore
+        from backup_crypto import cipher
+        cipher(os.environ["BACKUP_ENCRYPTION_KEY"], b"validation-salt")
+        server.backup_service.store = BackupStore(storage_client[os.environ["DB_NAME"]])
+    server.cleaning_retention.verify_backup = server.backup_service.verify_media
     install_hosted_routes(server.app, server, storage_client)
     return server.app

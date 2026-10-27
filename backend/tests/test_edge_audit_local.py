@@ -178,7 +178,17 @@ async def test_concurrent_overlapping_bookings_are_not_both_accepted(ctx,monkeyp
     monkeypatch.setattr(server,'check_overlap',racing_check)
     today=datetime.now(guest_ids.INDIA_TZ).date()+timedelta(days=10)
     body={'property_id':ctx['p1'],'guest_name':'Concurrent guest','check_in':today.isoformat(),'check_out':(today+timedelta(days=2)).isoformat()}
-    results=await asyncio.gather(*(ctx['client'].post('/api/bookings',headers=auth(ctx),json=body) for _ in range(2)))
+    # Exercise the atomic booking invariant below the new serialized API write guard.
+    # Both checks intentionally race; the night-claim index must still reject one.
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    async def direct_booking():
+        try:
+            await server.create_booking(server.BookingIn(**body), ctx['users']['admin'])
+            return SimpleNamespace(status_code=200)
+        except HTTPException as exc:
+            return SimpleNamespace(status_code=exc.status_code)
+    results=await asyncio.gather(direct_booking(), direct_booking())
     assert sorted(r.status_code for r in results) == [200,409], f'Concurrent booking responses: {[r.status_code for r in results]}'
 
 @pytest.mark.asyncio

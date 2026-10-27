@@ -18,6 +18,8 @@ export default function Login() {
   const { colors } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [mfaCode, setMfaCode] = useState("");
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   if (user) return <Redirect href="/" />;
@@ -27,8 +29,9 @@ export default function Login() {
     if (!email || !password) return setErr("Enter your email and password");
     setBusy(true);
     try {
-      await login(email.trim(), password);
+      await login(email.trim(), password, mfaCode);
     } catch (e: any) {
+      if (e.code === "MFA_REQUIRED") setMfaRequired(true);
       setErr(e.message);
     } finally {
       setBusy(false);
@@ -48,6 +51,7 @@ export default function Login() {
           </View>
           <Input testID="login-email-input" label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@britsmaid.com" autoComplete="email" />
           <Input testID="login-password-input" label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="••••••••" onSubmitEditing={submit} />
+          {mfaRequired ? <Input label="Authenticator or recovery code" value={mfaCode} onChangeText={setMfaCode} autoCapitalize="none" onSubmitEditing={submit} /> : null}
           {err ? <Txt testID="login-error" v="body" color={colors.error}>{err}</Txt> : null}
           <Button testID="login-submit-button" title="Sign in" icon="log-in-outline" onPress={submit} loading={busy} />
           {process.env.EXPO_PUBLIC_GOOGLE_LOGIN_ENABLED !== "false" ? <><View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
