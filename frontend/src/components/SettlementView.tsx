@@ -19,6 +19,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
     ...(s.pre_split_deductions ? [{ key: "deductions", label: "Deductions before split", value: s.pre_split_deductions, color: colors.warning, note: "Explained property costs deducted before calculating either share. Expand deduction details below." }] : []),
   ];
   const total = segments.reduce((a, b) => a + b.value, 0) || 1;
+  const canChartSplit = s.gross > 0 && segments.every(g => g.value >= 0);
   const trend: any[] = s.trend ?? [];
   const maxT = Math.max(1, ...trend.map((t) => t.gross));
   const selT = trend.find((t) => t.month === trendSel);
@@ -41,18 +42,18 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
       <Card testID="split-card">
         <Txt v="subtitle">Revenue split</Txt>
         <Txt v="caption">Tap a segment to see how it is calculated</Txt>
-        <View style={{ flexDirection: "row", height: 28, borderRadius: radius.sm, overflow: "hidden", marginTop: spacing.md, backgroundColor: colors.surfaceSecondary }}>
+        {canChartSplit ? <View style={{ flexDirection: "row", height: 28, borderRadius: radius.sm, overflow: "hidden", marginTop: spacing.md, backgroundColor: colors.surfaceSecondary }}>
           {segments.map((g) => (
             <Pressable key={g.key} testID={`split-segment-${g.key}`} onPress={() => setSeg(seg === g.key ? null : g.key)} style={{ flex: Math.max(g.value, 0) / total, backgroundColor: g.color, opacity: seg && seg !== g.key ? 0.35 : 1 }} />
           ))}
-        </View>
+        </View> : <Txt v="caption" style={{ marginTop: spacing.md }}>{segments.some(g => g.value < 0) ? "Costs exceed revenue this month. The amounts and calculation below show the balance." : "No booking revenue to chart this month."}</Txt>}
         <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
           {segments.map((g) => (
             <Pressable key={g.key} testID={`split-legend-${g.key}`} onPress={() => setSeg(seg === g.key ? null : g.key)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, opacity: seg && seg !== g.key ? 0.5 : 1 }}>
               <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: g.color }} />
               <Txt v="body" style={{ flex: 1 }}>{g.label}</Txt>
               <Txt v="mono">{inr(g.value)}</Txt>
-              <Txt v="caption" style={{ width: 44, textAlign: "right" }}>{Math.round((g.value / total) * 100)}%</Txt>
+              <Txt v="caption" style={{ width: 44, textAlign: "right" }}>{canChartSplit ? `${Math.round((g.value / total) * 100)}%` : "—"}</Txt>
             </Pressable>
           ))}
         </View>

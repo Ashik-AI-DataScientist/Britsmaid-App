@@ -149,3 +149,18 @@ async def test_booking_review_admin_only_and_preserves_earlier_values(ctx):
     assert rows.json()[0]["amount"] == 1000
     for role in ("owner", "cleaner", "supervisor"):
         assert (await ctx["client"].get('/api/system/booking-integrity', headers=auth(ctx, role))).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gross,cost,owner,britsmaid", [(0, 1000, -700, -300), (1000, 1000, 0, 0), (1000, 1001, -0.7, -0.3)])
+async def test_deductions_with_no_revenue_break_even_and_loss(ctx, gross, cost, owner, britsmaid):
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"amount": gross, "ota": "Direct"}})
+    month = date.today().isoformat()[:7]
+    response = await ctx["client"].post('/api/expenses', headers=auth(ctx), json={
+        "property_id": ctx["p1"], "month": month, "type": "pre_split", "amount": cost,
+        "title": "Property cost", "notes": "Recorded even when this month has no revenue"})
+    assert response.status_code == 200
+    statement = (await ctx["client"].get(f'/api/reports/settlement?property_id={ctx["p1"]}&month={month}', headers=auth(ctx, "owner"))).json()
+    assert statement["owner_payout"] == owner
+    assert statement["britsmaid_net"] == britsmaid
+    assert round(owner + britsmaid, 2) == gross - cost
