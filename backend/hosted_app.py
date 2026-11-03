@@ -5,9 +5,10 @@ import base64
 import hashlib
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pymongo import MongoClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
@@ -31,6 +32,9 @@ def validate_hosted_settings():
     public_url = os.getenv("PUBLIC_APP_URL", "")
     if public_url and not re.fullmatch(r"https://[a-z0-9.-]+", public_url):
         raise RuntimeError("PUBLIC_APP_URL must be an HTTPS origin without a trailing slash")
+    legacy = os.getenv("LEGACY_APP_ORIGIN", "")
+    if legacy and (not public_url or not re.fullmatch(r"https://[a-z0-9.-]+", legacy) or legacy == public_url):
+        raise RuntimeError("LEGACY_APP_ORIGIN requires a different, valid PUBLIC_APP_URL HTTPS origin")
     os.environ.setdefault("ADMIN_EMAIL", "admin@example.com")
     os.environ.setdefault("OWNER_EMAIL", "owner@example.com")
     os.environ.setdefault("CLEANER_EMAIL", "cleaner@example.com")
@@ -85,6 +89,18 @@ def install_hosted_routes(application, api_server, media_client):
 
     @application.middleware("http")
     async def hosted_security(request: Request, call_next):
+        public_url, legacy = os.getenv("PUBLIC_APP_URL", ""), os.getenv("LEGACY_APP_ORIGIN", "")
+        if (public_url and legacy and public_url != legacy and request.method in ("GET", "HEAD")
+                and request.headers.get("host", "").lower() == urlsplit(legacy).netloc.lower()
+                and request.url.path != "/api" and not request.url.path.startswith("/api/")
+                and not request.url.path.startswith("/healthz")):
+            # Keep old OTA feeds, API clients and health checks working. Website
+            # links move to the branded origin without moving cookies or records.
+            path = request.scope.get("raw_path", b"/").decode("ascii")
+            query = request.scope.get("query_string", b"").decode("ascii")
+            response = RedirectResponse(public_url + path + ("?" + query if query else ""), status_code=307)
+            response.headers["Cache-Control"] = "no-store"
+            return secure_response(request, response)
         if request.url.path == "/api/auth/session":
             return secure_response(request, JSONResponse({"detail": "Google sign-in is not configured. Use your assigned email and password."}, status_code=503))
         if request.url.path == "/api/auth/login" and request.method == "POST":
