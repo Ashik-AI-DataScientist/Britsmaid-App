@@ -4,12 +4,12 @@ import { api } from "@/src/api";
 import { Button, Input, Sheet, Txt, useToast } from "@/src/ui";
 import { radius, spacing, useTheme } from "@/src/theme";
 
-export type Invitee = { id: string; name: string; email: string; phone?: string; role: string; password?: string | null };
+export type Invitee = { id: string; name: string; email?: string; username?: string; phone?: string; role: string; password?: string | null };
 
 const ROLE_LABEL: Record<string, string> = { owner: "villa owner", cleaner: "cleaning staff", supervisor: "cleaning supervisor", admin: "admin" };
 
 export function inviteMessage(u: Invitee, password: string) {
-  return `Hi ${u.name.replace(/\s*\(Owner\)/, "")}, welcome to Britsmaid!\n\nYour ${ROLE_LABEL[u.role] ?? ""} login is ready:\nEmail: ${u.email}\nPassword: ${password}\n\nOpen the Britsmaid app and sign in with these details${u.role === "owner" ? " to see your villa earnings, stays, payouts and reports" : ""}. If this is your Google email you can also tap "Continue with Google".\n\n— Team Britsmaid`;
+  return `Hi ${u.name.replace(/\s*\(Owner\)/, "")}, welcome to Britsmaid!\n\nYour ${ROLE_LABEL[u.role] ?? ""} login is ready:\nLogin: ${u.email || u.username || u.phone}\nPassword: ${password}\n\nOpen the Britsmaid app and sign in with these details${u.role === "owner" ? " to see your villa earnings, stays, payouts and reports" : ""}.\n\n— Team Britsmaid`;
 }
 
 export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onClose: () => void }) {
@@ -51,7 +51,7 @@ export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onC
       <View style={{ gap: spacing.md }}>
         {!pw ? (
           <>
-            <Txt v="body">A new temporary password will be created for {invitee.email}. Their old password will stop working.</Txt>
+            <Txt v="body">A new temporary password will be created for {invitee.email || invitee.username || invitee.phone}. Their old password will stop working.</Txt>
             <Input testID="invite-phone-input" label="WhatsApp number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} placeholder="+91 98xxxxxxxx" />
             <Button testID="invite-generate-button" icon="key-outline" title="Create password & prepare invite" onPress={reset} loading={busy} />
           </>
@@ -62,7 +62,7 @@ export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onC
             </View>
             {!invitee.password ? null : <Input testID="invite-phone-input" label="WhatsApp number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} placeholder="+91 98xxxxxxxx" />}
             <Button testID="invite-whatsapp-button" icon="logo-whatsapp" title={digits ? "Send on WhatsApp" : "Open WhatsApp"} onPress={wa} />
-            <Button testID="invite-email-button" variant="secondary" icon="mail-outline" title="Send by email" onPress={mail} />
+            {invitee.email ? <Button testID="invite-email-button" variant="secondary" icon="mail-outline" title="Send by email" onPress={mail} /> : null}
             <Button testID="invite-share-button" variant="ghost" icon="share-outline" title="Share another way" onPress={() => Share.share({ message: msg })} />
           </>
         )}

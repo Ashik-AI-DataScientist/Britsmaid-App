@@ -48,10 +48,23 @@ def main():
     for role in ("owner", "cleaner", "supervisor"):
         member = next(row for row in users if row["email"] == os.environ[role.upper() + "_EMAIL"])
         call("/api/users/" + member["id"], "PUT", {"property_ids": [first["id"]]}, admin)
+        # Access changes revoke old sessions; sign in again with the revised scope.
+        call("/api/auth/me", token=tokens[role.upper()], expected=401)
+        tokens[role.upper()] = call("/api/auth/login", "POST", {
+            "email": os.environ[role.upper() + "_EMAIL"], "password": os.environ[role.upper() + "_PASSWORD"]})["access_token"]
         assert [row["id"] for row in call("/api/properties", token=tokens[role.upper()])] == [first["id"]]
         call("/api/properties/" + second["id"], token=tokens[role.upper()], expected=404)
     call("/api/bookings", token=tokens["CLEANER"], expected=403)
     call("/api/users", token=tokens["SUPERVISOR"], expected=403)
+    login_body = {"name": "SYNTHETIC phone-only owner", "username": "synthetic.owner", "phone": "+919876543210",
+        "password": os.environ["OWNER_PASSWORD"], "role": "owner", "property_ids": [first["id"]]}
+    call("/api/users", "POST", login_body, admin)
+    for identifier in ("SYNTHETIC.OWNER", "9876543210"):
+        alias_token = call("/api/auth/login", "POST", {"email": identifier, "password": login_body["password"]})["access_token"]
+        assert [row["id"] for row in call("/api/properties", token=alias_token)] == [first["id"]]
+        call("/api/properties/" + second["id"], token=alias_token, expected=404)
+    call("/api/users", "POST", {**login_body, "username": "synthetic.other"}, admin, expected=409)
+    call("/api/users", "POST", {**login_body, "username": "synthetic.other", "phone": ""}, admin)
     image = io.BytesIO()
     Image.new("RGB", (16, 16), "teal").save(image, "PNG")
     boundary = "BritsmaidSyntheticBoundary"

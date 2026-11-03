@@ -26,7 +26,7 @@ export default function Login() {
 
   const submit = async () => {
     setErr("");
-    if (!email || !password) return setErr("Enter your email and password");
+    if (!email || !password) return setErr("Enter your email, phone or username and password");
     setBusy(true);
     try {
       await login(email.trim(), password, mfaCode);
@@ -49,7 +49,7 @@ export default function Login() {
             <Txt v="display">Welcome back</Txt>
             <Txt v="body">Manage villas, bookings, cleaning and owner payouts.</Txt>
           </View>
-          <Input testID="login-email-input" label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@britsmaid.com" autoComplete="email" />
+          <Input testID="login-email-input" label="Email, phone or username" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="default" placeholder="Your assigned login" autoComplete="username" />
           <Input testID="login-password-input" label="Password" value={password} onChangeText={setPassword} secureTextEntry placeholder="••••••••" onSubmitEditing={submit} />
           {mfaRequired ? <Input label="Authenticator or recovery code" value={mfaCode} onChangeText={setMfaCode} autoCapitalize="none" onSubmitEditing={submit} /> : null}
           {err ? <Txt testID="login-error" v="body" color={colors.error}>{err}</Txt> : null}

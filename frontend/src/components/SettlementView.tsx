@@ -8,13 +8,15 @@ import { fonts, radius, spacing, useTheme } from "@/src/theme";
 export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m: string) => void }) {
   const { colors } = useTheme();
   const [seg, setSeg] = useState<string | null>(null);
+  const [openDeductions, setOpenDeductions] = useState(false);
   const [openOta, setOpenOta] = useState<string | null>(null);
   const [trendSel, setTrendSel] = useState<string>(s.month);
 
   const segments = [
-    { key: "owner", label: "Owner share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of net revenue goes to the owner.` },
+    { key: "owner", label: "Owner share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of revenue after OTA commission and deductions before split goes to the owner.` },
     { key: "bm", label: "Britsmaid share", value: s.britsmaid_share, color: colors.brandSecondary, note: `${s.britsmaid_share_percent}% of net revenue retained for management.` },
     { key: "ota", label: "OTA commission", value: s.ota_commission, color: colors.borderStrong, note: "Charged by booking platforms before the split." },
+    ...(s.pre_split_deductions ? [{ key: "deductions", label: "Deductions before split", value: s.pre_split_deductions, color: colors.warning, note: "Explained property costs deducted before calculating either share. Expand deduction details below." }] : []),
   ];
   const total = segments.reduce((a, b) => a + b.value, 0) || 1;
   const trend: any[] = s.trend ?? [];
@@ -92,10 +94,25 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         <Txt v="subtitle" style={{ marginBottom: spacing.xs }}>How the payout is calculated</Txt>
         <Row label="Gross booking revenue" value={inr(s.gross)} />
         <Row label="OTA commissions" value={`-${inr(s.ota_commission)}`} />
+        {s.pre_split_deductions ? <Row label="Deductions before split" value={`-${inr(s.pre_split_deductions)}`} /> : null}
         <Row label="Net revenue" value={inr(s.net_revenue)} />
         <Row label={`Owner share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
         <Row label={s.electricity_mode === "split_half" ? `Electricity · owner 50% of ${inr(s.electricity_total)}` : "Electricity · managed by owner"} value={s.electricity_mode === "split_half" ? `-${inr(s.owner_electricity)}` : "—"} />
-        {s.other_deductions ? <Row label="Other deductions" value={`-${inr(s.other_deductions)}`} /> : null}
+        {(s.deduction_items?.length || s.other_deductions) ? <>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: openDeductions }} testID="statement-deductions-toggle" onPress={() => setOpenDeductions(!openDeductions)} style={{ flexDirection: "row", alignItems: "center", paddingVertical: spacing.md, gap: spacing.sm }}>
+            <Txt style={{ flex: 1 }}>Other deductions · details</Txt>
+            <Txt v="mono">{inr((s.other_deductions || 0) + (s.pre_split_deductions || 0))}</Txt>
+            <Icon name={openDeductions ? "chevron-up" : "chevron-down"} size={18} />
+          </Pressable>
+          {openDeductions ? <View testID="statement-deductions-details" style={{ gap: spacing.md, paddingBottom: spacing.md }}>
+            {(s.deduction_items ?? []).map((item: any) => <View key={item.id}>
+              <Row label={item.title || "Owner deduction"} value={`-${inr(item.amount)}`} />
+              <Txt v="caption">{item.type === "pre_split" ? "Taken before owner / Britsmaid split" : "Taken from owner payout only"}</Txt>
+              <Txt>{item.notes || "No note was recorded for this older expense."}</Txt>
+            </View>)}
+          </View> : null}
+          {s.other_deductions ? <Row label="Owner-only deductions" value={`-${inr(s.other_deductions)}`} /> : null}
+        </> : null}
         <Row strong label="Owner payout" value={inr(s.owner_payout)} testID="breakdown-owner-payout" />
         <View style={{ marginTop: spacing.md, flexDirection: "row", justifyContent: "space-between" }}>
           <Txt v="caption">Britsmaid net (after {inr(s.britsmaid_electricity)} electricity)</Txt>

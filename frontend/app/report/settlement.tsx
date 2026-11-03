@@ -3,17 +3,19 @@ import { RefreshControl, ScrollView, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useAuth } from "@/src/auth";
 import { api } from "@/src/api";
 import { SettlementView } from "@/src/components/SettlementView";
 import { PayoutStatusCard } from "@/src/components/Payout";
 import { settlementHtml, sharePdf } from "@/src/pdf";
-import { Button, ErrorState, Header, IconButton, Loading, Txt, useToast } from "@/src/ui";
+import { Button, Card, ErrorState, Header, IconButton, Loading, Txt, useToast } from "@/src/ui";
 import { monthLabel, shiftMonth, thisMonth } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
 
 export default function Settlement() {
   const { property_id } = useLocalSearchParams<{ property_id: string }>();
+  const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const toast = useToast();
@@ -43,6 +45,9 @@ export default function Settlement() {
       </View>
       {q.isLoading ? <Loading label="Generating report..." /> : q.isError ? <ErrorState message="Failed to fetch report" onRetry={q.refetch} /> : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 96 }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>
+          {user?.role === "admin" ? <Card style={{ marginBottom: spacing.md }}>
+            <Button testID="statement-add-deduction" variant="secondary" title="Add deduction before split" onPress={() => router.push(`/property/${property_id}?deduction=pre_split&month=${month}`)} />
+          </Card> : null}
           <SettlementView s={q.data} onMonthPress={setMonth} />
           <View style={{ marginTop: spacing.md }}>
             <PayoutStatusCard key={`${q.data.month}-${q.data.payout?.id ?? "none"}`} s={q.data} canMark onChange={q.refetch} />

@@ -20,7 +20,7 @@ export default function BookingForm() {
   const { colors } = useTheme();
   const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
   const start = params.date || todayISO();
-  const [f, setF] = useState({ property_id: params.property_id || "", guest_name: "", guest_phone: "", guest_email: "", guests: "2", ota: "Direct", check_in: start, check_out: addDays(start, 1), amount: "", ota_commission: "", status: "confirmed", notes: "", source: "manual" });
+  const [f, setF] = useState({ property_id: params.property_id || "", guest_name: "", guest_phone: "", guest_email: "", guests: "2", ota: "Direct", check_in: start, check_out: addDays(start, 1), amount: "", ota_commission: "", status: "confirmed", notes: "", source: "manual", revision: 0, calendar_review_required: false, calendar_observation: null as any });
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(!!id);
@@ -32,7 +32,7 @@ export default function BookingForm() {
     let alive = true;
     api.get(`/bookings/${id}`).then((b) => {
       if (!alive) return;
-      setF({ ...b, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
+      setF({ ...b, revision: b.revision || 0, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
       setLoading(false);
     }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
     return () => { alive=false; };
@@ -78,6 +78,11 @@ export default function BookingForm() {
         </ChipRow>
       </View>
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }}>
+        {f.calendar_review_required ? <Card testID="booking-calendar-conflict" style={{ gap: spacing.sm }}>
+          <Txt v="subtitle">Calendar information needs review</Txt>
+          <Txt>An external calendar reported different booking details. Your saved booking and amount have been kept. Check the OTA before changing this booking.</Txt>
+          <Txt v="caption">Reported: {f.calendar_observation?.status} · {f.calendar_observation?.guest_name} · {f.calendar_observation?.check_in} → {f.calendar_observation?.check_out}</Txt>
+        </Card> : null}
         <Card style={{ gap: spacing.md }}>
           <View style={{ flexDirection: "row", gap: spacing.md }}>
             <DateField testID="booking-checkin" label="Check-in" value={f.check_in} onChange={(d) => setF((x) => ({ ...x, check_in: d, check_out: x.check_out <= d ? addDays(d, 1) : x.check_out }))} />

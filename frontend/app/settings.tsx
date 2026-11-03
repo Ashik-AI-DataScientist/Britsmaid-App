@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { Platform, ScrollView, View } from "react-native";
+import { useRouter } from "expo-router";
+import { inr } from "@/src/format";
 import { useQuery } from "@tanstack/react-query";
 import { api, setToken, TOKEN_KEY } from "@/src/api";
 import { storage } from "@/src/utils/storage";
@@ -9,6 +11,8 @@ import { spacing } from "@/src/theme";
 
 export default function Settings() {
   const { user } = useAuth();
+  const router = useRouter();
+  const integrity = useQuery({ queryKey: ["booking-integrity"], queryFn: () => api.get<any[]>("/system/booking-integrity"), enabled: user?.role === "admin" });
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [setup, setSetup] = useState("");
@@ -30,6 +34,16 @@ export default function Settings() {
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: spacing.lg, paddingBottom: 80, gap: spacing.lg }}>
       {error ? <ErrorState message={error} onRetry={() => setError("")} /> : null}
       {message ? <Card><Txt>{message}</Txt></Card> : null}
+      <Card style={{ gap: spacing.md }}><Txt v="subtitle">Booking checks</Txt>
+        <Txt>Calendar imports cannot overwrite entered booking amounts or admin-edited bookings. Review differences here.</Txt>
+        {integrity.isError ? <ErrorState message="Could not check bookings" onRetry={integrity.refetch} /> : null}
+        {integrity.data?.length === 0 ? <Txt>No booking differences need review.</Txt> : null}
+        {(integrity.data ?? []).map((b: any) => <View key={b.id} style={{ gap: spacing.sm }}>
+          <Txt>{b.property_name} · {b.check_in} · {inr(b.amount)}</Txt>
+          <Txt v="caption">{b.reason}</Txt>
+          <Button title="Review saved booking" variant="secondary" onPress={() => router.push(`/booking/new?id=${b.id}`)} />
+        </View>)}
+      </Card>
       <Card style={{ gap: spacing.md }}><Txt v="subtitle">Services and backups</Txt>
         {services.isError ? <ErrorState message="Could not check services" onRetry={services.refetch} /> : null}
         <Txt>Photo storage: {services.data?.media_provider ?? "Checking…"}</Txt>

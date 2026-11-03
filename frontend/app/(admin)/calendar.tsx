@@ -99,7 +99,7 @@ export default function CalendarScreen() {
               </View>
             ))}
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.warning }} />
+              <View style={{ width: 8, height: 8, borderRadius: 0, backgroundColor: colors.warning }} />
               <Txt v="caption">Cleaning due</Txt>
             </View>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>

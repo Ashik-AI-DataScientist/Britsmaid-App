@@ -247,7 +247,7 @@ def scope(user, q: dict, field: str = "property_id"):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=254)
     password: str
     mfa_code: str = Field(default="", max_length=40)
     browser_session: bool = False
@@ -255,7 +255,8 @@ class LoginIn(BaseModel):
 
 class StaffIn(BaseModel):
     name: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    username: str = Field(default="", max_length=40)
     password: str = Field(min_length=12, max_length=72)
     role: Literal["admin", "cleaner", "supervisor", "owner"] = "cleaner"
     property_ids: List[str] = []
@@ -270,6 +271,8 @@ class StaffIn(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(default=None, max_length=40)
     name: Optional[str] = None
     role: Optional[Literal["admin", "cleaner", "supervisor", "owner"]] = None
     phone: Optional[str] = None
@@ -295,11 +298,12 @@ async def validate_pids(pids: List[str]) -> List[str]:
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
-    email = body.email.strip().lower()
-    user = await db.users.find_one({"email": email})
+    from login_identifiers import matching_users
+    matches = await matching_users(db, body.email)
+    user = matches[0] if len(matches) == 1 else None
     ok = verify_pw(body.password, user["password_hash"] if user else DUMMY_HASH)
     if not user or not user.get("active") or not ok:
-        raise HTTPException(401, "Incorrect email or password")
+        raise HTTPException(401, "Incorrect login or password")
     if user.get("mfa_secret"):
         if not body.mfa_code:
             from fastapi.responses import JSONResponse
@@ -350,14 +354,22 @@ async def list_users(_=Depends(admin_user)):
 
 @api.post("/users")
 async def create_user(body: StaffIn, _=Depends(admin_user)):
-    email = body.email.lower()
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(409, "Email already registered")
+    from login_identifiers import validate_unique
+    email = body.email.lower() if body.email else None
+    login_aliases = await validate_unique(db, {**body.model_dump(), "email": email})
     if body.role == "owner" and not body.property_ids:
         raise HTTPException(400, "Assign at least one villa to the owner")
     pids = await validate_pids(body.property_ids) if body.role != "admin" else []
     doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "phone": body.phone.strip(), "active": True, "created_at": now_iso()}
-    r = await db.users.insert_one(doc)
+    doc.update(username=body.username.strip().lower(), login_aliases=login_aliases)
+    doc.update({"phone_login": next(a for a in login_aliases if a.startswith("+"))} if body.phone.strip() else {})
+    doc.update({"username_login": body.username.strip().lower()} if body.username.strip() else {})
+    if email is None:
+        doc.pop("email")
+    try:
+        r = await db.users.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "Email, phone or username already belongs to another account")
     if doc.get("role") == "cleaner":
         await training.onboarding({**doc, "_id": r.inserted_id})
     return out(await db.users.find_one({"_id": r.inserted_id}))
@@ -369,6 +381,11 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
     if not u:
         raise HTTPException(404, "User not found")
     changes: dict[str, Any] = {}
+    from login_identifiers import validate_unique
+    for field in ("email", "username"):
+        value = getattr(body, field)
+        if value is not None:
+            changes[field] = value.strip().lower()
     if body.role and body.role != u["role"]:
         if str(admin["_id"]) == uid:
             raise HTTPException(400, "You cannot change your own role")
@@ -394,11 +411,21 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
             raise HTTPException(400, "Assign at least one villa")
         changes["property_ids"] = await validate_pids(body.property_ids)
     if changes:
+        changes["login_aliases"] = await validate_unique(db, {**u, **changes}, u["_id"])
         update = {"$set": changes}
-        if body.password:
+        for field, value in (("phone_login", next((a for a in changes["login_aliases"] if a.startswith("+")), None)),
+                             ("username_login", (changes.get("username", u.get("username")) or "").strip().lower())):
+            if value:
+                changes[field] = value
+            else:
+                update.setdefault("$unset", {})[field] = ""
+        if body.password or body.role or body.property_ids is not None or any(k in changes for k in ("email", "username", "phone")):
             update["$inc"] = {"session_version": 1}
             await db.user_sessions.delete_many({"user_id": str(u["_id"])})
-        await db.users.update_one({"_id": u["_id"]}, update)
+        try:
+            await db.users.update_one({"_id": u["_id"]}, update)
+        except DuplicateKeyError:
+            raise HTTPException(409, "Email, phone or username already belongs to another account")
     updated = await db.users.find_one({"_id": u["_id"]})
     if changes.get("role") == "cleaner":
         await training.onboarding(updated)
@@ -683,6 +710,7 @@ class BookingIn(BaseModel):
     ota_commission: float = Field(default=0, ge=0, allow_inf_nan=False)
     status: Literal["confirmed", "cancelled", "blocked"] = "confirmed"
     notes: str = ""
+    revision: Optional[int] = Field(default=None, ge=0)
 
 
 async def ensure_cleaning(pid: str, booking_id: str, day: str):
@@ -731,6 +759,7 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
     if body.status != "cancelled":
         await check_overlap(body)
     doc = body.model_dump()
+    doc.pop("revision", None)
     doc.update({"source": "manual", "created_at": now_iso()})
     doc["_id"] = ObjectId()
     if body.status != "cancelled":
@@ -743,6 +772,21 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
     if body.status == "confirmed":
         await ensure_cleaning(body.property_id, str(r.inserted_id), body.check_out)
     return out(await db.bookings.find_one({"_id": r.inserted_id}))
+
+
+@api.get("/system/booking-integrity")
+async def booking_integrity(_=Depends(admin_user)):
+    rows = await db.bookings.find({"$or": [{"calendar_review_required": True},
+        {"status": "blocked", "amount": {"$gt": 0}}]}).sort("check_in", -1).to_list(500)
+    result = []
+    for booking in rows:
+        prop = await db.properties.find_one({"_id": oid(booking["property_id"])})
+        result.append({"id": str(booking["_id"]), "property_name": (prop or {}).get("name", "Property"),
+            "guest_name": booking.get("guest_name", "Booking"), "check_in": booking["check_in"],
+            "status": booking["status"], "amount": booking.get("amount", 0),
+            "reason": "Calendar information differs from saved booking" if booking.get("calendar_review_required")
+                else "Blocked entry has a saved amount; check whether it should be a confirmed booking"})
+    return result
 
 
 @api.get("/bookings/{bid}")
@@ -762,6 +806,8 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     previous = await db.bookings.find_one({"_id": oid(bid)})
     if not previous:
         raise HTTPException(404, "Booking not found")
+    if body.revision is not None and body.revision != (previous.get("revision") or 0):
+        raise HTTPException(409, "Booking changed. Refresh before saving again.")
     validate_dates(body.check_in, body.check_out)
     active_task = await db.cleaning.find_one({"booking_id": bid, "status": {"$in": ["in_progress", "awaiting_review", "completed"]}})
     if active_task and body.status == "confirmed" and (previous["property_id"] != body.property_id or previous["check_out"] != body.check_out):
@@ -771,7 +817,14 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     claimed = []
     if body.status != "cancelled":
         claimed = await claim_nights(db, bid, body.property_id, body.check_in, body.check_out)
-    result = await db.bookings.update_one({"_id": oid(bid), "revision": previous.get("revision")}, {"$set": body.model_dump(), "$inc": {"revision": 1}})
+    changes = body.model_dump(exclude={"revision"})
+    if str(_["_id"]) != "calendar-sync":
+        changes.update(manual_protected=True, manually_updated_at=now_iso(), manually_updated_by=str(_["_id"]))
+        if previous.get("calendar_observation"):
+            changes.update(calendar_reviewed_observation=previous["calendar_observation"], calendar_review_required=False)
+    await db.booking_history.insert_one({"booking_id": bid, "actor_id": str(_["_id"]), "at": now_iso(),
+        "before": {k: v for k, v in previous.items() if k != "_id"}, "requested": changes})
+    result = await db.bookings.update_one({"_id": oid(bid), "revision": previous.get("revision")}, {"$set": changes, "$inc": {"revision": 1}})
     if not result.matched_count:
         await db.reserved_nights.delete_many({"_id": {"$in": claimed}, "booking_id": bid})
         raise HTTPException(409, "Booking changed. Refresh before saving again.")
@@ -847,6 +900,20 @@ async def sync_property(p: dict) -> list:
                 if ev["cancelled"] and not existing:
                     continue
                 blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
+                # Calendar feeds are availability observations, never the authority for
+                # an admin's entered booking or financial records.
+                desired_status = "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"
+                if existing and (existing.get("source") != "ical" or existing.get("manual_protected")
+                        or existing.get("amount", 0) or existing.get("ota_commission", 0)):
+                    observation = {"guest_name": ev["summary"], "check_in": ev["check_in"],
+                        "check_out": ev["check_out"], "status": desired_status, "ota": f["ota"]}
+                    differs = (any(existing.get(k) != v for k, v in observation.items())
+                        and existing.get("calendar_reviewed_observation") != observation)
+                    await db.bookings.update_one({"_id": existing["_id"]}, {"$set": {
+                        "calendar_observation": observation, "calendar_observed_at": now_iso(),
+                        "calendar_review_required": differs}})
+                    conflicts += int(differs)
+                    continue
                 payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
                            "check_in": ev["check_in"], "check_out": ev["check_out"],
                            "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
@@ -1213,30 +1280,46 @@ async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(staff_use
 class ExpenseIn(BaseModel):
     property_id: str
     month: str  # YYYY-MM
-    type: Literal["electricity", "other"] = "electricity"
+    type: Literal["electricity", "other", "pre_split"] = "electricity"
     amount: float = Field(ge=0, allow_inf_nan=False)
-    notes: str = ""
+    notes: str = Field(default="", max_length=2000)
+    title: str = Field(default="", max_length=150)
+    request_key: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
     _month = field_validator("month")(valid_month)
 
 
 @api.get("/expenses")
 async def list_expenses(property_id: str, user=Depends(finance_user)):
     check_pid(user, property_id)
-    return [out(e) for e in await db.expenses.find({"property_id": property_id}).sort("month", -1).to_list(500)]
+    return [out(e) for e in await db.expenses.find({"property_id": property_id, "is_deleted": {"$ne": True}}).sort("month", -1).to_list(500)]
 
 
 @api.post("/expenses")
 async def create_expense(body: ExpenseIn, _=Depends(admin_user)):
     await validate_pids([body.property_id])
+    if body.type == "pre_split" and (not body.title.strip() or not body.notes.strip()):
+        raise HTTPException(422, "Enter a deduction title and note explaining the cost before the split")
     doc = body.model_dump()
+    doc.pop("request_key", None)
     doc["created_at"] = now_iso()
-    r = await db.expenses.insert_one(doc)
+    doc["created_by"] = str(_["_id"])
+    if body.request_key:
+        doc["_id"] = ObjectId(hashlib.sha256(f"expense:{_['_id']}:{body.request_key}".encode()).hexdigest()[:24])
+        doc["request_digest"] = hashlib.sha256(json.dumps(body.model_dump(exclude={"request_key"}), sort_keys=True).encode()).hexdigest()
+    try:
+        r = await db.expenses.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await db.expenses.find_one({"_id": doc["_id"]})
+        if not existing or existing.get("is_deleted") or existing.get("request_digest") != doc.get("request_digest"):
+            raise HTTPException(409, "This expense changed or was removed. Refresh before entering it again.")
+        return out(existing)
     return out(await db.expenses.find_one({"_id": r.inserted_id}))
 
 
 @api.delete("/expenses/{eid}")
 async def delete_expense(eid: str, _=Depends(admin_user)):
-    await db.expenses.delete_one({"_id": oid(eid)})
+    await db.expenses.update_one({"_id": oid(eid)}, {"$set": {
+        "is_deleted": True, "deleted_at": now_iso(), "deleted_by": str(_["_id"])}})
     return {"ok": True}
 
 # ---------------------------------------------------------------- Settlement & reports
@@ -1255,11 +1338,12 @@ async def compute_settlement(p: dict, month: str):
     bookings = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$gte": start, "$lt": end}}).sort("check_in", 1).to_list(1000)
     gross = sum(b.get("amount", 0) for b in bookings)
     commission = sum(b.get("ota_commission", 0) for b in bookings)
-    net = gross - commission
+    exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month, "is_deleted": {"$ne": True}}).to_list(None)
+    pre_split = sum(e["amount"] for e in exps if e["type"] == "pre_split")
+    net = gross - commission - pre_split
     pct = p.get("owner_share_percent", 70)
     owner_share = round(net * pct / 100, 2)
     bm_share = round(net - owner_share, 2)
-    exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month}).to_list(100)
     elec = sum(e["amount"] for e in exps if e["type"] == "electricity")
     other = sum(e["amount"] for e in exps if e["type"] == "other")
     mode = p.get("electricity_mode", "owner")
@@ -1289,6 +1373,9 @@ async def compute_settlement(p: dict, month: str):
         "owner_share_percent": pct, "britsmaid_share_percent": 100 - pct, "electricity_mode": mode,
         "gross": gross, "ota_commission": commission, "net_revenue": net, "owner_share": owner_share, "britsmaid_share": bm_share,
         "electricity_total": elec, "owner_electricity": owner_elec, "britsmaid_electricity": bm_elec, "other_deductions": other,
+        "pre_split_deductions": pre_split,
+        "deduction_items": [{"id": str(e["_id"]), "type": e["type"], "title": e.get("title", ""),
+            "notes": e.get("notes", ""), "amount": e["amount"]} for e in exps if e["type"] in ("other", "pre_split")],
         "owner_payout": owner_payout, "britsmaid_net": bm_net, "nights": nights,
         "occupancy_percent": round(min(nights, days_in_month) / days_in_month * 100, 1),
         "by_ota": sorted(by_ota.values(), key=lambda x: -x["gross"]),
@@ -1339,6 +1426,7 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
     doc.update({"receipt_number": f"BM-PAY-{datetime.now().year}-{ctr['seq']:04d}", "property_name": p["name"], "owner_name": p.get("owner_name", ""),
                 "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
                 "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
+                "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
                 "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
     r = await db.payouts.insert_one(doc)
     return out(await db.payouts.find_one({"_id": r.inserted_id}))
@@ -1452,6 +1540,9 @@ async def public_report(token: str):
     s = r["settlement"]
     medias = await db.media.find({"_id": {"$in": [ObjectId(m) for m in r.get("media_ids", []) if ObjectId.is_valid(m)]}}).to_list(100)
     e = html.escape
+    deduction_details = "".join(f'<tr><td>{e(d.get("title") or "Owner deduction")}<br/><small>{e(d.get("notes") or "No note recorded")}</small></td><td>{"Before split" if d["type"] == "pre_split" else "Owner only"}</td><td>{inr(d["amount"])}</td></tr>' for d in s.get("deduction_items", []))
+    deduction_details = f'<details><summary>Other deductions · details</summary><table>{deduction_details}</table></details>' if deduction_details else ""
+    pre_split_line = f'<div class="row"><span>Deductions before split</span><span>-{inr(s["pre_split_deductions"])}</span></div>' if s.get("pre_split_deductions") else ""
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
@@ -1476,10 +1567,10 @@ table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px 
 <div class="wrap"><div class="card"><div>Your payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
 <div class="card"><b>Revenue split</b><small> (tap bars)</small>{bars}</div>
 <div class="card"><b>How your payout is calculated</b><div class="row"><span>Gross booking revenue</span><span>{inr(s['gross'])}</span></div>
-<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div><div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
+<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div>{pre_split_line}<div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
 <div class="row"><span>Your share ({s['owner_share_percent']:.0f}%)</span><span>{inr(s['owner_share'])}</span></div>{elec_line}
 {f'<div class="row"><span>Other deductions</span><span>-{inr(s["other_deductions"])}</span></div>' if s['other_deductions'] else ''}
-<div class="row"><b>Payout</b><b>{inr(s['owner_payout'])}</b></div></div>
+{deduction_details}<div class="row"><b>Payout</b><b>{inr(s['owner_payout'])}</b></div></div>
 <div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>
 <div class="card"><b>Property condition</b><p>{e(r.get('condition_notes') or '')}</p><div class="grid">{gallery}</div></div></div>
@@ -1781,7 +1872,14 @@ async def media_migration_loop():
 async def startup():
     await training.indexes()
     await db.login_attempts.create_index("expires_at", expireAfterSeconds=0)
-    await db.users.create_index("email", unique=True)
+    # Replace the original non-sparse index before accepting phone-only accounts.
+    for name, index in (await db.users.index_information()).items():
+        if index.get("key") == [("email", 1)] and not index.get("sparse"):
+            await db.users.drop_index(name)
+    await db.users.create_index("email", unique=True, sparse=True)
+    await db.users.create_index("login_aliases")
+    await db.users.create_index("phone_login", unique=True, sparse=True)
+    await db.users.create_index("username_login", unique=True, sparse=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
     await db.guest_ids.create_index("delete_after")

@@ -1,5 +1,5 @@
 import { PropertyCover } from "@/src/components/PropertyCover";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -12,7 +12,7 @@ import { fmtDate, fmtShort, inr, monthLabel, otaColor, thisMonth, todayISO } fro
 import { radius, spacing, useTheme } from "@/src/theme";
 
 export default function PropertyDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, deduction, month } = useLocalSearchParams<{ id: string; deduction?: string; month?: string }>();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const toast = useToast();
@@ -22,8 +22,11 @@ export default function PropertyDetail() {
   const exp = useQuery({ queryKey: ["expenses", id], queryFn: () => api.get<any[]>(`/expenses?property_id=${id}`) });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`) });
   const [syncing, setSyncing] = useState(false);
-  const [billOpen, setBillOpen] = useState(false);
-  const [bill, setBill] = useState({ month: thisMonth(), amount: "", type: "electricity" as "electricity" | "other", notes: "" });
+  const billSaving = useRef(false);
+  const [savingBill, setSavingBill] = useState(false);
+  const billKey = useRef("");
+  const [billOpen, setBillOpen] = useState(deduction === "pre_split");
+  const [bill, setBill] = useState({ month: month || thisMonth(), amount: "", type: deduction === "pre_split" ? "pre_split" : "electricity" as "electricity" | "other" | "pre_split", notes: "", title: "" });
   const [del, setDel] = useState(false);
 
   if (p.isLoading) return <View style={{ flex: 1, backgroundColor: colors.surface }}><Loading /></View>;
@@ -47,15 +50,22 @@ export default function PropertyDetail() {
   };
 
   const saveBill = async () => {
+    if (billSaving.current) return;
     if (!/^\d{4}-\d{2}$/.test(bill.month) || !Number(bill.amount)) return toast("Enter month (YYYY-MM) and amount", "error");
+    if (bill.type === "pre_split" && (!bill.title.trim() || !bill.notes.trim())) return toast("Add a title and note for the deduction", "error");
+    billSaving.current = true; setSavingBill(true);
+    if (!billKey.current) billKey.current = `expense-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
-      await api.post("/expenses", { property_id: id, month: bill.month, type: bill.type, amount: Number(bill.amount), notes: bill.notes });
+      await api.post("/expenses", { property_id: id, month: bill.month, type: bill.type, amount: Number(bill.amount), notes: bill.notes, title: bill.title, request_key: billKey.current });
+      billKey.current = "";
       setBillOpen(false);
       setBill({ ...bill, amount: "", notes: "" });
-      exp.refetch();
+      qc.invalidateQueries();
       toast("Bill recorded");
     } catch (e: any) {
       toast(e.message, "error");
+    } finally {
+      billSaving.current = false; setSavingBill(false);
     }
   };
 
@@ -154,9 +164,9 @@ export default function PropertyDetail() {
             {(exp.data ?? []).length === 0 ? <Txt v="caption">No bills recorded</Txt> : exp.data!.map((e) => (
               <View key={e.id} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>
                 <Icon name={e.type === "electricity" ? "flash" : "construct-outline"} size={16} color={colors.warning} />
-                <Txt v="body" style={{ flex: 1 }}>{monthLabel(e.month)} · {e.type === "electricity" ? "Electricity" : e.notes || "Other"}</Txt>
+                <Txt v="body" style={{ flex: 1 }}>{monthLabel(e.month)} · {e.type === "electricity" ? "Electricity" : e.title || e.notes || "Other"}</Txt>
                 <Txt v="mono" style={{ fontSize: 14 }}>{inr(e.amount)}</Txt>
-                <Pressable testID={`delete-bill-${e.id}`} hitSlop={8} onPress={async () => { await api.del(`/expenses/${e.id}`); exp.refetch(); }}>
+                <Pressable testID={`delete-bill-${e.id}`} hitSlop={8} onPress={async () => { await api.del(`/expenses/${e.id}`); qc.invalidateQueries(); }}>
                   <Icon name="close-circle" size={18} color={colors.muted} />
                 </Pressable>
               </View>
@@ -185,13 +195,15 @@ export default function PropertyDetail() {
 
       <Sheet visible={billOpen} onClose={() => setBillOpen(false)} title="Record a bill" testID="bill-sheet">
         <View style={{ gap: spacing.md }}>
-          <Segmented testID="bill-type" value={bill.type} onChange={(t) => setBill({ ...bill, type: t })} options={[{ value: "electricity", label: "Electricity" }, { value: "other", label: "Other deduction" }]} />
+          <Segmented testID="bill-type" value={bill.type} onChange={(t) => setBill({ ...bill, type: t })} options={[{ value: "electricity", label: "Electricity" }, { value: "other", label: "Owner only" }, { value: "pre_split", label: "Before split" }]} />
           <View style={{ flexDirection: "row", gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input testID="bill-month-input" label="Month (YYYY-MM)" value={bill.month} onChangeText={(t) => setBill({ ...bill, month: t })} /></View>
             <View style={{ flex: 1 }}><Input testID="bill-amount-input" label="Amount ₹" keyboardType="numeric" value={bill.amount} onChangeText={(t) => setBill({ ...bill, amount: t })} /></View>
           </View>
+          {bill.type === "pre_split" ? <Input testID="bill-title-input" label="Deduction title (required)" value={bill.title} onChangeText={(title) => setBill({ ...bill, title })} /> : null}
+          <Txt v="caption">{bill.type === "pre_split" ? "Deducted from net revenue before the owner and Britsmaid shares are calculated. Title and note appear on the statement." : bill.type === "other" ? "Deducted from the owner payout only." : "Electricity follows the property sharing rule."}</Txt>
           <Input testID="bill-notes-input" label="Notes" value={bill.notes} onChangeText={(t) => setBill({ ...bill, notes: t })} />
-          <Button testID="bill-save-button" title="Save bill" onPress={saveBill} />
+          <Button testID="bill-save-button" title="Save bill" onPress={saveBill} loading={savingBill} />
         </View>
       </Sheet>
       <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
