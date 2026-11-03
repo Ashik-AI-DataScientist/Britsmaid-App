@@ -91,7 +91,7 @@ export default function Staff() {
         </KeyboardAwareScrollView>
       )}
       <Sheet visible={open} onClose={() => setOpen(false)} title="Add team member" testID="staff-sheet">
-        <View style={{ gap: spacing.md }}>
+        <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.lg }}>
           <Segmented testID="staff-role" value={f.role} onChange={(r) => setF({ ...f, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "supervisor", label: "Supervisor" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
           <Txt v="caption">{f.role === "admin" ? "Full access to everything." : f.role === "owner" ? "Sees only the dashboard, earnings, stays & reports of the villas you pick below." : "Assigned villas only: cleaners document their tasks; supervisors review cleaning. Select villas below."}</Txt>
           {f.role !== "admin" ? (
@@ -105,7 +105,7 @@ export default function Staff() {
           <Input testID="staff-phone-input" label="Phone / WhatsApp (can also sign in)" keyboardType="phone-pad" value={f.phone} onChangeText={(t) => setF({ ...f, phone: t })} />
           <Input testID="staff-password-input" label="Temporary password" secureTextEntry value={f.password} onChangeText={(t) => setF({ ...f, password: t })} />
           <Button testID="staff-save-button" title="Add member" onPress={add} loading={busy} />
-        </View>
+        </KeyboardAwareScrollView>
       </Sheet>
       <Sheet visible={!!edit} onClose={() => setEdit(null)} title={`Edit ${edit?.name ?? ""}`} testID="assign-sheet">
         {edit ? (

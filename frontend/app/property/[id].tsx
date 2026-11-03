@@ -1,6 +1,7 @@
 import { PropertyCover } from "@/src/components/PropertyCover";
 import React, { useRef, useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -194,7 +195,7 @@ export default function PropertyDetail() {
       </ScrollView>
 
       <Sheet visible={billOpen} onClose={() => setBillOpen(false)} title="Record a bill" testID="bill-sheet">
-        <View style={{ gap: spacing.md }}>
+        <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.lg }}>
           <Segmented testID="bill-type" value={bill.type} onChange={(t) => setBill({ ...bill, type: t })} options={[{ value: "electricity", label: "Electricity" }, { value: "other", label: "Owner only" }, { value: "pre_split", label: "Before split" }]} />
           <View style={{ flexDirection: "row", gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input testID="bill-month-input" label="Month (YYYY-MM)" value={bill.month} onChangeText={(t) => setBill({ ...bill, month: t })} /></View>
@@ -204,7 +205,7 @@ export default function PropertyDetail() {
           <Txt v="caption">{bill.type === "pre_split" ? "Deducted from net revenue before the owner and Britsmaid shares are calculated. Title and note appear on the statement." : bill.type === "other" ? "Deducted from the owner payout only." : "Electricity follows the property sharing rule."}</Txt>
           <Input testID="bill-notes-input" label="Notes" value={bill.notes} onChangeText={(t) => setBill({ ...bill, notes: t })} />
           <Button testID="bill-save-button" title="Save bill" onPress={saveBill} loading={savingBill} />
-        </View>
+        </KeyboardAwareScrollView>
       </Sheet>
       <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
     </View>
