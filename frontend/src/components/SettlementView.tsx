@@ -5,6 +5,8 @@ import { Card, Icon, Row, Txt } from "@/src/ui";
 import { fmtShort, inr, monthLabel, monthShort, otaColor } from "@/src/format";
 import { fonts, radius, spacing, useTheme } from "@/src/theme";
 import { useRouter } from 'expo-router';
+import { useAuth } from '@/src/auth';
+import { statementExpenses } from '@/src/expense-presentation';
 import { ExpenseDetails } from '@/src/components/ExpenseDetails';
 import { BookingAmounts } from '@/src/components/BookingAmounts';
 
@@ -13,7 +15,20 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
   const router = useRouter();
   const [openBooking, setOpenBooking] = useState<string | null>(null);
   const [seg, setSeg] = useState<string | null>(null);
-  const [openDeductions, setOpenDeductions] = useState(false);
+  const { user } = useAuth();
+  const [expenseGroup, setExpenseGroup] = useState<string | null>(null);
+  const expenses = statementExpenses(s);
+  const editExpense = (item: any) => item.booking_id ? router.push(`/booking/new?id=${item.booking_id}`) : router.push(`/property/${s.property_id}?expense_id=${item.id}&month=${s.month}`);
+  const group = (kind: string, label: string, total: number) => {
+    const items = expenses.filter((e: any) => e.treatment === kind);
+    if (!items.length && !total) return null;
+    return <View>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: expenseGroup === kind }} testID={`statement-expenses-${kind}`} onPress={() => setExpenseGroup(expenseGroup === kind ? null : kind)} style={{ flexDirection: 'row', paddingVertical: spacing.md, gap: spacing.sm }}>
+        <Txt style={{ flex: 1 }}>{label} · details</Txt><Txt v="mono">{inr(total)}</Txt><Icon name={expenseGroup === kind ? 'chevron-up' : 'chevron-down'} size={18} />
+      </Pressable>
+      {expenseGroup === kind ? <View style={{ gap: spacing.md }}>{items.map((item: any) => <ExpenseDetails key={item.id} item={item} onEdit={user?.role === 'admin' && !item.summary ? () => editExpense(item) : undefined} />)}</View> : null}
+    </View>;
+  };
   const [openOta, setOpenOta] = useState<string | null>(null);
   const [trendSel, setTrendSel] = useState<string>(s.month);
 
@@ -103,24 +118,16 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         <Row label="OTA commissions" value={`-${inr(s.ota_commission)}`} />
         {s.gst_total ? <Row label="Booking GST" value={`-${inr(s.gst_total)}`} /> : null}
         {s.platform_tax ? <Row label="Platform tax deductions" value={`-${inr(s.platform_tax)}`} /> : null}
-        {s.booking_misc ? <Row label="Other booking expenses" value={`-${inr(s.booking_misc)}`} /> : null}
-        {s.pre_split_deductions ? <Row label="Deductions before split" value={`-${inr(s.pre_split_deductions)}`} /> : null}
+        {group('before_split', 'Expenses before split', s.expense_before_total ?? ((s.pre_split_deductions || 0) + (s.booking_misc || 0)))}
         <Row label="Net revenue" value={inr(s.net_revenue)} />
         <Row label={`Owner share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
-        <Row label="Electricity · owner contribution" value={`-${inr(s.owner_electricity)}`} />
-        {(s.deduction_items?.length || s.other_deductions) ? <>
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: openDeductions }} testID="statement-deductions-toggle" onPress={() => setOpenDeductions(!openDeductions)} style={{ flexDirection: "row", alignItems: "center", paddingVertical: spacing.md, gap: spacing.sm }}>
-            <Txt style={{ flex: 1 }}>Expenses · details</Txt>
-            <Txt v="mono">{inr((s.deduction_items || []).reduce((total: number, item: any) => total + item.amount, 0))}</Txt>
-            <Icon name={openDeductions ? "chevron-up" : "chevron-down"} size={18} />
-          </Pressable>
-          {openDeductions ? <View testID="statement-deductions-details" style={{ gap: spacing.md, paddingBottom: spacing.md }}>
-            {(s.deduction_items ?? []).map((item: any) => <ExpenseDetails key={item.id} item={item} />)}
-          </View> : null}
-          {s.other_deductions ? <Row label="Other expenses · owner contribution" value={`-${inr(s.other_deductions)}`} /> : null}
-        </> : null}
+        {group('after_split', 'Expenses after split', s.expense_after_total ?? expenses.filter((e: any) => e.treatment === 'after_split').reduce((n: number, e: any) => n + e.amount, 0))}
+        {(s.owner_after_expenses ?? ((s.owner_electricity || 0) + (s.other_deductions || 0))) ? <Row label="Expenses after split · owner contribution" value={`-${inr(s.owner_after_expenses ?? ((s.owner_electricity || 0) + (s.other_deductions || 0)))}`} /> : null}
+        {group('reference', 'Expenses for reference · not deducted', s.expense_reference_total ?? expenses.filter((e: any) => e.treatment === 'reference').reduce((n: number, e: any) => n + e.amount, 0))}
         {s.owner_tds_percent ? <><Row label="Owner balance after expenses" value={inr(s.owner_before_tds)} /><Row label="Owner TDS (2%) · monthly total" value={`-${inr(s.owner_tds)}`} /></> : null}
         <Row strong label="Owner payout after TDS" value={inr(s.owner_payout)} testID="breakdown-owner-payout" />
+        <Row label={`Britsmaid share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
+        {(s.britsmaid_after_expenses ?? ((s.britsmaid_electricity || 0) + (s.britsmaid_other_expenses || 0))) ? <Row label="Expenses after split · Britsmaid contribution" value={`-${inr(s.britsmaid_after_expenses ?? ((s.britsmaid_electricity || 0) + (s.britsmaid_other_expenses || 0)))}`} /> : null}
         <View style={{ marginTop: spacing.md, flexDirection: "row", justifyContent: "space-between" }}>
           <Txt v="caption">Britsmaid net after allocated expenses</Txt>
           <Txt v="mono" style={{ fontSize: 14 }}>{inr(s.britsmaid_net)}</Txt>

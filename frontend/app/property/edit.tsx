@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
-import { Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, Input, Loading, Segmented, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ConfirmSheet, ErrorState, Header, Icon, Input, Loading, Txt, useToast } from "@/src/ui";
 import { OTAS, otaColor } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 import { Contact, ContactsEditor } from "@/src/components/Contacts";
@@ -108,8 +108,6 @@ export default function EditProperty() {
           <Input testID="property-owner-address-input" label="Owner address" value={f.owner_address} onChangeText={set("owner_address")} />
           <Input testID="property-share-input" label="Owner share %" keyboardType="numeric" value={f.owner_share_percent} onChangeText={set("owner_share_percent")} />
           <Txt v="caption">Britsmaid keeps {100 - (Number(f.owner_share_percent) || 0)}% of net revenue (after OTA commissions).</Txt>
-          <Txt v="label">Electricity bill</Txt>
-          <Segmented testID="property-electricity-mode" value={f.electricity_mode} onChange={set("electricity_mode")} options={[{ value: "owner", label: "Owner pays all" }, { value: "split_half", label: "Britsmaid pays 50%" }]} />
         </Card>
         <Card style={{ gap: spacing.md }}>
           <Txt v="label">Emergency & other contacts</Txt>

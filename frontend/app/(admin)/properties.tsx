@@ -9,7 +9,7 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
 import { Badge, Button, Card, Empty, ErrorState, Loading, Txt } from "@/src/ui";
-import { spacing, radius, useTheme } from "@/src/theme";
+import { spacing, useTheme } from "@/src/theme";
 
 export default function Properties() {
   const insets = useSafeAreaInsets();
@@ -57,12 +57,6 @@ export default function Properties() {
                   <View>
                     <Txt v="caption">Owner / BM</Txt>
                     <Txt v="mono">{p.owner_share_percent}/{100 - p.owner_share_percent}</Txt>
-                  </View>
-                  <View>
-                    <Txt v="caption">Electricity</Txt>
-                    <View style={{ marginTop: 2, borderRadius: radius.pill }}>
-                      <Badge label={p.electricity_mode === "split_half" ? "50/50" : "Owner"} tone="brand" />
-                    </View>
                   </View>
                 </View>
               </Card>

@@ -521,12 +521,12 @@ async def authorize_media(media_id, user):
         if not linked and user["role"] == "owner":
             linked = await db.owner_reports.find_one(scope(user, {"media_ids": media_id}))
             linked = linked or await db.owner_reports.find_one(scope(user, {"settlement.deduction_items.media_ids": media_id}))
-            linked = linked or await db.expenses.find_one(scope(user, {"media_ids": media_id, "is_deleted": {"$ne": True}}))
+            linked = linked or await db.expenses.find_one(scope(user, {"$or": [{"media_ids": media_id}, {"change_history.before.media_ids": media_id}, {"change_history.after.media_ids": media_id}]}))
         if not linked:
             linked_elsewhere = await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"settlement.deduction_items.media_ids": media_id})
-            linked_elsewhere = linked_elsewhere or await db.expenses.find_one({"media_ids": media_id})
+            linked_elsewhere = linked_elsewhere or await db.expenses.find_one({"$or": [{"media_ids": media_id}, {"change_history.before.media_ids": media_id}, {"change_history.after.media_ids": media_id}]})
             if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
                 raise HTTPException(404, "File not found")
 
@@ -701,7 +701,7 @@ async def delete_property(pid: str, _=Depends(admin_user)):
     return {"ok": True}
 
 # ---------------------------------------------------------------- Bookings
-from booking_finance import BookingFinance, ExpenseAllocation, calculate as calculate_booking, booking_totals, expense_shares, allocate, money, percent_amount
+from booking_finance import BookingFinance, ExpenseAllocation, calculate as calculate_booking, booking_totals, expense_shares, allocate, money, percent_amount, expense_view, booking_expense_item
 
 
 class BookingIn(BaseModel):
@@ -1300,60 +1300,152 @@ async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(staff_use
             raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
 
-# ---------------------------------------------------------------- Expenses (electricity)
+# ---------------------------------------------------------------- Expenses
 class ExpenseIn(BaseModel):
     property_id: str
-    month: str  # YYYY-MM
-    type: Literal["electricity", "other", "pre_split"] = "electricity"
+    month: str
+    type: Literal["electricity", "other", "pre_split"] = "electricity"  # legacy clients
+    treatment: Optional[Literal["before_split", "after_split", "reference"]] = None
     amount: float = Field(ge=0, allow_inf_nan=False)
     notes: str = Field(default="", max_length=2000)
     title: str = Field(default="", max_length=150)
     allocation: Optional[ExpenseAllocation] = None
     media_ids: list[str] = Field(default_factory=list, max_length=10)
+    revision: Optional[int] = Field(None, ge=0)
+    change_reason: str = Field(default="", max_length=1000)
     request_key: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
     _month = field_validator("month")(valid_month)
+
+
+def expense_snapshot(e, prop):
+    view = expense_view(e, prop)
+    return {key: view.get(key) for key in ("property_id", "month", "type", "treatment", "title", "amount", "notes", "allocation", "media_ids", "revision", "owner_amount", "britsmaid_amount")}
+
+
+async def expense_payload(body, actor, previous=None):
+    await validate_pids([body.property_id])
+    doc = body.model_dump(exclude={"request_key", "revision", "change_reason"})
+    prop = await db.properties.find_one({"_id": oid(body.property_id)})
+    if body.treatment:
+        if not body.title.strip():
+            raise HTTPException(422, "Enter an expense title or description")
+        if body.amount <= 0:
+            raise HTTPException(422, "Expense amount must be greater than zero")
+        if body.treatment == "reference":
+            if not previous or expense_view(previous, prop)["treatment"] != "reference":
+                raise HTTPException(422, "Reference-only treatment is reserved for existing owner-paid records")
+            doc["type"] = previous["type"]
+        else:
+            doc["type"] = "pre_split" if body.treatment == "before_split" else "other"
+        if body.treatment == "after_split" and not body.allocation:
+            raise HTTPException(422, "Choose who bears this after-split expense")
+        if body.treatment != "after_split" and body.allocation:
+            raise HTTPException(422, "Allocation only applies to expenses deducted after the split")
+    elif body.type == "pre_split" and (not body.title.strip() or not body.notes.strip()):
+        raise HTTPException(422, "Enter a deduction title and note explaining the cost before the split")
+    if doc["type"] == "pre_split" and body.allocation:
+        raise HTTPException(422, "A before-split expense cannot also be allocated after the split")
+    doc["title"] = doc["title"].strip()
+    doc["amount"] = money(body.amount)
+    if body.treatment and doc["amount"] <= 0:
+        raise HTTPException(422, "Expense amount must be at least 0.01")
+    if body.allocation:
+        doc["allocation"] = allocate(body.amount, body.allocation.model_dump())
+    doc["media_ids"] = list(dict.fromkeys(body.media_ids))
+    for mid in doc["media_ids"]:
+        media = await db.media.find_one({"_id": oid(mid), "is_deleted": False})
+        retained = previous and mid in previous.get("media_ids", [])
+        if not media or (not retained and media.get("owner_id") != str(actor["_id"])):
+            raise HTTPException(422, "Choose an available attachment uploaded by your account")
+    return doc, prop
 
 
 @api.get("/expenses")
 async def list_expenses(property_id: str, user=Depends(finance_user)):
     check_pid(user, property_id)
-    return [out(e) for e in await db.expenses.find({"property_id": property_id, "is_deleted": {"$ne": True}}).sort("month", -1).to_list(500)]
+    prop = await db.properties.find_one({"_id": oid(property_id)}) or {}
+    rows = [out(expense_view(e, prop)) for e in await db.expenses.find({"property_id": property_id, "is_deleted": {"$ne": True}}).sort("month", -1).to_list(500)]
+    for booking in await db.bookings.find({"property_id": property_id, "status": "confirmed", "financials.misc_amount": {"$gt": 0}}).to_list(1000):
+        rows.append(booking_expense_item(booking))
+    return sorted(rows, key=lambda item: item["month"], reverse=True)
+
+
+@api.get("/expenses/{eid}/history")
+async def expense_history(eid: str, user=Depends(finance_user)):
+    e = await db.expenses.find_one({"_id": oid(eid)})
+    if not e:
+        raise HTTPException(404, "Expense not found")
+    check_pid(user, e["property_id"])
+    return {"current_revision": e.get("revision", 0), "is_deleted": bool(e.get("is_deleted")),
+            "entries": [{"at": h["at"], "reason": h["reason"], "action": h.get("action", "edited"),
+                "before": h["before"], "after": h.get("after")} for h in e.get("change_history", [])]}
 
 
 @api.post("/expenses")
 async def create_expense(body: ExpenseIn, _=Depends(admin_user)):
-    await validate_pids([body.property_id])
-    if body.type == "pre_split" and (not body.title.strip() or not body.notes.strip()):
-        raise HTTPException(422, "Enter a deduction title and note explaining the cost before the split")
-    doc = body.model_dump()
-    doc.pop("request_key", None)
-    if body.type == "pre_split" and body.allocation:
-        raise HTTPException(422, "Choose a shared or owner expense for allocation; before-split costs cannot also be allocated")
-    if body.allocation:
-        doc["allocation"] = allocate(body.amount, body.allocation.model_dump())
-    for mid in body.media_ids:
-        media = await db.media.find_one({"_id": oid(mid), "is_deleted": False})
-        if not media or media.get("owner_id") != str(_["_id"]):
-            raise HTTPException(422, "Choose an available attachment uploaded by your account")
-    doc["created_at"] = now_iso()
-    doc["created_by"] = str(_["_id"])
+    doc, prop = await expense_payload(body, _)
+    digest = hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+    doc.update(created_at=now_iso(), created_by=str(_["_id"]), revision=0,
+               tds_policy_trigger=bool(doc.get("allocation")))
     if body.request_key:
         doc["_id"] = ObjectId(hashlib.sha256(f"expense:{_['_id']}:{body.request_key}".encode()).hexdigest()[:24])
-        doc["request_digest"] = hashlib.sha256(json.dumps(body.model_dump(exclude={"request_key"}), sort_keys=True).encode()).hexdigest()
+        doc["request_digest"] = digest
     try:
         r = await db.expenses.insert_one(doc)
     except DuplicateKeyError:
         existing = await db.expenses.find_one({"_id": doc["_id"]})
-        if not existing or existing.get("is_deleted") or existing.get("request_digest") != doc.get("request_digest"):
+        if not existing or existing.get("is_deleted") or existing.get("request_digest") != digest or existing.get("revision", 0):
             raise HTTPException(409, "This expense changed or was removed. Refresh before entering it again.")
-        return out(existing)
-    return out(await db.expenses.find_one({"_id": r.inserted_id}))
+        return out(expense_view(existing, prop))
+    return out(expense_view(await db.expenses.find_one({"_id": r.inserted_id}), prop))
+
+
+@api.put("/expenses/{eid}")
+async def update_expense(eid: str, body: ExpenseIn, user=Depends(admin_user)):
+    previous = await db.expenses.find_one({"_id": oid(eid), "is_deleted": {"$ne": True}})
+    if not previous:
+        raise HTTPException(404, "Expense not found or already removed")
+    if body.property_id != previous["property_id"]:
+        raise HTTPException(422, "An expense cannot be moved to another property")
+    if body.revision is None or body.revision != previous.get("revision", 0):
+        raise HTTPException(409, "Expense changed. Refresh before editing again.")
+    if not body.change_reason.strip():
+        raise HTTPException(422, "Enter a reason for this expense change")
+    doc, prop = await expense_payload(body, user, previous)
+    doc["tds_policy_trigger"] = previous.get("tds_policy_trigger", bool(previous.get("allocation")))
+    stamp = now_iso()
+    history = {"at": stamp, "reason": body.change_reason.strip(), "actor_id": str(user["_id"]),
+               "before": expense_snapshot(previous, prop), "after": expense_snapshot(dict(doc, revision=body.revision + 1), prop)}
+    doc.update(updated_at=stamp, last_change_reason=body.change_reason.strip())
+    result = await db.expenses.update_one({"_id": previous["_id"], "revision": previous.get("revision"), "is_deleted": {"$ne": True}},
+        {"$set": doc, "$inc": {"revision": 1}, "$push": {"change_history": history}})
+    if not result.matched_count:
+        raise HTTPException(409, "Expense changed. Refresh before editing again.")
+    return out(expense_view(await db.expenses.find_one({"_id": previous["_id"]}), prop))
+
+
+class ExpenseRemoval(BaseModel):
+    revision: Optional[int] = Field(None, ge=0)
+    change_reason: str = Field(default="Expense removed by admin", max_length=1000)
 
 
 @api.delete("/expenses/{eid}")
-async def delete_expense(eid: str, _=Depends(admin_user)):
-    await db.expenses.update_one({"_id": oid(eid)}, {"$set": {
-        "is_deleted": True, "deleted_at": now_iso(), "deleted_by": str(_["_id"])}})
+async def delete_expense(eid: str, body: Optional[ExpenseRemoval] = None, _=Depends(admin_user)):
+    e = await db.expenses.find_one({"_id": oid(eid), "is_deleted": {"$ne": True}})
+    if not e:
+        raise HTTPException(404, "Expense not found or already removed")
+    if body and body.revision is not None and body.revision != e.get("revision", 0):
+        raise HTTPException(409, "Expense changed. Refresh before removing it.")
+    reason = (body.change_reason if body else "Expense removed by admin").strip()
+    if not reason:
+        raise HTTPException(422, "Enter a reason for removing this expense")
+    prop = await db.properties.find_one({"_id": oid(e["property_id"])}) or {}
+    stamp = now_iso()
+    result = await db.expenses.update_one({"_id": e["_id"], "revision": e.get("revision"), "is_deleted": {"$ne": True}},
+        {"$set": {"is_deleted": True, "deleted_at": stamp, "deleted_by": str(_["_id"])}, "$inc": {"revision": 1},
+         "$push": {"change_history": {"at": stamp, "reason": reason, "action": "removed", "actor_id": str(_["_id"]), "before": expense_snapshot(e, prop), "after": None}}})
+    if not result.matched_count:
+        raise HTTPException(409, "Expense changed. Refresh before removing it.")
     return {"ok": True}
 
 # ---------------------------------------------------------------- Settlement & reports
@@ -1377,7 +1469,7 @@ async def compute_settlement(p: dict, month: str):
     platform_tax = money(sum(t["platform_tax"] for t in totals))
     booking_misc = money(sum(t["misc"] for t in totals))
     exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month, "is_deleted": {"$ne": True}}).to_list(None)
-    tds_enabled = any(b.get("financials") for b in bookings) or any(e.get("allocation") for e in exps)
+    tds_enabled = any(b.get("financials") for b in bookings) or any(e.get("allocation") and e.get("tds_policy_trigger", True) for e in exps)
     pre_split = sum(e["amount"] for e in exps if e["type"] == "pre_split")
     net = money(gross - commission - gst_total - platform_tax - booking_misc - pre_split)
     pct = p.get("owner_share_percent", 70)
@@ -1421,10 +1513,12 @@ async def compute_settlement(p: dict, month: str):
         "gst_total": gst_total, "platform_tax": platform_tax, "booking_misc": booking_misc,
         "owner_before_tds": owner_before_tds, "owner_tds": owner_tds, "owner_tds_percent": 2 if tds_enabled else 0,
         "britsmaid_other_expenses": bm_other,
-        "deduction_items": [{"id": str(e["_id"]), "type": e["type"], "title": e.get("title", ""),
-            "notes": e.get("notes", ""), "amount": e["amount"], "allocation": e.get("allocation"),
-            "owner_amount": expense_shares(e, p)[0], "britsmaid_amount": expense_shares(e, p)[1],
-            "media_ids": e.get("media_ids", [])} for e in exps],
+        "expense_before_total": money(pre_split + booking_misc),
+        "expense_after_total": money(sum(e["amount"] for e in exps if expense_view(e, p)["treatment"] == "after_split")),
+        "expense_reference_total": money(sum(e["amount"] for e in exps if expense_view(e, p)["treatment"] == "reference")),
+        "owner_after_expenses": money(owner_elec + other), "britsmaid_after_expenses": money(bm_elec + bm_other),
+        "deduction_items": [dict(expense_snapshot(e, p), id=str(e["_id"]), updated_at=e.get("updated_at"), last_change_reason=e.get("last_change_reason")) for e in exps]
+            + [item for b in bookings if (item := booking_expense_item(b))],
         "owner_payout": owner_payout, "britsmaid_net": bm_net, "nights": nights,
         "occupancy_percent": round(min(nights, days_in_month) / days_in_month * 100, 1),
         "by_ota": sorted(by_ota.values(), key=lambda x: -x["gross"]),
@@ -1479,6 +1573,9 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
                 "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
                 "owner_tds": snap["owner_tds"], "owner_before_tds": snap["owner_before_tds"],
                 "owner_tds_percent": snap["owner_tds_percent"],
+                "expense_before_total": snap["expense_before_total"], "expense_after_total": snap["expense_after_total"],
+                "expense_reference_total": snap["expense_reference_total"],
+                "owner_after_expenses": snap["owner_after_expenses"], "britsmaid_after_expenses": snap["britsmaid_after_expenses"],
                 "gst_total": snap["gst_total"], "platform_tax": snap["platform_tax"], "booking_misc": snap["booking_misc"],
                 "britsmaid_other_expenses": snap["britsmaid_other_expenses"],
                 "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
@@ -1602,13 +1699,14 @@ async def public_report(token: str):
     deduction_details = ""
     for d in s.get("deduction_items", []):
         owner_amount, bm_amount = d.get("owner_amount", 0), d.get("britsmaid_amount", 0)
-        shares = f'<p>Owner: {inr(owner_amount)} / Britsmaid: {inr(bm_amount)}</p>' if 'owner_amount' in d else ''
-        treatment = 'Before revenue split' if d['type'] == 'pre_split' else 'After revenue split'
+        shares = f'<p>Owner: {inr(owner_amount)} / Britsmaid: {inr(bm_amount)}</p>' if 'owner_amount' in d and d.get('treatment') not in ('before_split', 'reference') and d['type'] != 'pre_split' else ''
+        treatment = 'Reference only - not deducted' if d.get('treatment') == 'reference' else 'Before revenue split' if d['type'] == 'pre_split' else 'After revenue split'
         attachments = ''.join(f'<a href="{e(token)}/media/{e(mid)}" target="_blank" rel="noopener">Open attachment {i + 1}</a><br>' for i, mid in enumerate(d.get('media_ids', [])))
         deduction_details += f'<details><summary>{e(d.get("title") or "Expense")} - {inr(d["amount"])}</summary><p>{e(d.get("notes") or "")}</p><small>{treatment}</small>{shares}{attachments}</details>'
-    tax_lines = ''.join(f'<div class="row"><span>{label}</span><span>-{inr(s.get(key, 0))}</span></div>' for key, label in [('gst_total', 'Booking GST'), ('platform_tax', 'Platform tax deductions'), ('booking_misc', 'Other booking expenses')] if s.get(key))
+    s.setdefault('expense_before_total', money(s.get('pre_split_deductions', 0) + s.get('booking_misc', 0)))
+    tax_lines = ''.join(f'<div class="row"><span>{label}</span><span>-{inr(s.get(key, 0))}</span></div>' for key, label in [('gst_total', 'Booking GST'), ('platform_tax', 'Platform tax deductions'), ('expense_before_total', 'Expenses before split')] if s.get(key))
     tds_line = f'<div class="row"><span>Owner balance after all expenses</span><span>{inr(s.get("owner_before_tds", 0))}</span></div><div class="row"><span>Owner TDS (2%) · monthly total</span><span>-{inr(s.get("owner_tds", 0))}</span></div>' if s.get('owner_tds_percent') else ''
-    pre_split_line = f'<div class="row"><span>Deductions before split</span><span>-{inr(s["pre_split_deductions"])}</span></div>' if s.get("pre_split_deductions") else ""
+    pre_split_line = ''
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
@@ -1620,7 +1718,8 @@ async def public_report(token: str):
             continue
         lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Platform tax deduction')])
         bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary>{lines}<p>{e(f.get("misc_title") or "Other booking expense")}: {inr(f.get("misc_amount", 0))}<br>{e(f.get("misc_notes") or "")}</p><b>Net booking revenue: {inr(b.get("net_revenue", 0))}</b></details></td></tr>'
-    elec_line = f'<div class="row"><span>Electricity · owner contribution</span><span>-{inr(s["owner_electricity"])}</span></div>'
+    after_expenses = s.get('owner_after_expenses', money(s.get('owner_electricity', 0) + s.get('other_deductions', 0)))
+    elec_line = f'<div class="row"><span>Expenses after split · owner contribution</span><span>-{inr(after_expenses)}</span></div>' if after_expenses else ''
     maxv = max([s["owner_share"], s["britsmaid_share"], s["ota_commission"], 1])
     bars = "".join(f'<div class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{v / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></div>'
                    for lbl, v, c in [("Owner share", s["owner_share"], "#1B3A6B"), ("Britsmaid share", s["britsmaid_share"], "#375B96"), ("OTA commission", s["ota_commission"], "#9CA3AF")])
@@ -1640,7 +1739,6 @@ table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px 
 <div class="card"><b>How your payout is calculated</b><div class="row"><span>Gross booking revenue</span><span>{inr(s['gross'])}</span></div>
 <div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div>{tax_lines}{pre_split_line}<div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
 <div class="row"><span>Your share ({s['owner_share_percent']:.0f}%)</span><span>{inr(s['owner_share'])}</span></div>{elec_line}
-{f'<div class="row"><span>Other deductions</span><span>-{inr(s["other_deductions"])}</span></div>' if s['other_deductions'] else ''}
 {deduction_details}{tds_line}<div class="row"><b>Payout after TDS</b><b>{inr(s['owner_payout'])}</b></div></div>
 <div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>

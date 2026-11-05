@@ -11,7 +11,7 @@ const deductions = [{id: 'cost', type: 'pre_split', amount: 1000, title: '<scrip
 const statement = {by_ota: [], bookings: [], month: '2026-11', property_name:'Sample', owner_name:'Sample', gross:10000, ota_commission:1000, net_revenue:8000, owner_share:5600, britsmaid_share:2400, owner_share_percent:70, britsmaid_share_percent:30, owner_payout:5300, owner_electricity:0, pre_split_deductions:1000, other_deductions:300, deduction_items:deductions};
 const receipt = { ...statement, receipt_number:'TEST', amount:5300, calculated_payout:5300, paid_on:'2026-11-03', method:'Cash' };
 for (const html of [scope.exports.settlementHtml(statement), scope.exports.payoutReceiptHtml(receipt)]) {
-  assert(html.includes('Deductions before split'));
+  assert(html.includes('Expenses before split'));
   assert(html.includes('INR 5300'));
   assert(html.includes('&lt;script&gt;bad()&lt;/script&gt;'));
   assert(!html.includes('<script>bad()</script>'));
