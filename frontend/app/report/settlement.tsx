@@ -50,14 +50,14 @@ export default function Settlement() {
           </Card> : null}
           <SettlementView s={q.data} onMonthPress={setMonth} />
           <View style={{ marginTop: spacing.md }}>
-            <PayoutStatusCard key={`${q.data.month}-${q.data.payout?.id ?? "none"}`} s={q.data} canMark onChange={q.refetch} />
+            <PayoutStatusCard key={`${q.data.month}-${q.data.payout?.id ?? "none"}`} s={q.data} canMark={user?.role === 'admin'} onChange={q.refetch} />
           </View>
         </ScrollView>
       )}
       {q.data ? (
         <View style={{ position: "absolute", left: spacing.lg, right: spacing.lg, bottom: insets.bottom + 16, flexDirection: "row", gap: spacing.sm }}>
           <Button testID="settlement-share-pdf" style={{ flex: 1 }} icon="share-outline" title="Share PDF" onPress={share} loading={busy} />
-          <Button testID="settlement-create-report" style={{ flex: 1 }} variant="secondary" icon="camera-outline" title="Owner report" onPress={() => router.push(`/report/new?property_id=${property_id}&month=${month}`)} />
+          {user?.role === 'admin' ? <Button testID="settlement-create-report" style={{ flex: 1 }} variant="secondary" icon="camera-outline" title="Owner report" onPress={() => router.push(`/report/new?property_id=${property_id}&month=${month}`)} /> : null}
         </View>
       ) : null}
     </View>
