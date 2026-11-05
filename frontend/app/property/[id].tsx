@@ -1,30 +1,37 @@
+import { PropertyCover } from "@/src/components/PropertyCover";
+import { ExpenseEditor } from "@/src/components/ExpenseEditor";
+import { useAuth } from "@/src/auth";
+import { ExpenseDetails } from "@/src/components/ExpenseDetails";
 import React, { useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
-import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
-import { Badge, Button, Card, ConfirmSheet, ErrorState, HomeButton, Icon, IconButton, Input, Loading, Row, Segmented, Sheet, Txt, useToast } from "@/src/ui";
+import { Badge, Button, Card, ConfirmSheet, ErrorState, HomeButton, Icon, IconButton, Loading, Row, Txt, useToast } from "@/src/ui";
 import { ContactsCard } from "@/src/components/Contacts";
-import { fmtDate, fmtShort, inr, monthLabel, otaColor, thisMonth, todayISO } from "@/src/format";
+import { fmtDate, fmtShort, inr, monthLabel, otaColor, todayISO } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
 export default function PropertyDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, deduction, month, expense_id } = useLocalSearchParams<{ id: string; deduction?: string; month?: string; expense_id?: string }>();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const toast = useToast();
   const qc = useQueryClient();
   const { colors } = useTheme();
-  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`) });
+  const p = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`), refetchInterval: 30000 });
   const exp = useQuery({ queryKey: ["expenses", id], queryFn: () => api.get<any[]>(`/expenses?property_id=${id}`) });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`) });
   const [syncing, setSyncing] = useState(false);
-  const [billOpen, setBillOpen] = useState(false);
-  const [bill, setBill] = useState({ month: thisMonth(), amount: "", type: "electricity" as "electricity" | "other", notes: "" });
+  const { user } = useAuth();
+  const [editor, setEditor] = useState<any>(deduction ? { initialTreatment: deduction === 'pre_split' ? 'before_split' : '' } : null);
+  const [dismissedExpense, setDismissedExpense] = useState('');
   const [del, setDel] = useState(false);
+  const linkedExpense = expense_id && dismissedExpense !== expense_id ? exp.data?.find(e => e.id === expense_id) : null;
+  const activeEditor = editor || (linkedExpense ? { item: linkedExpense } : null);
+  const editExpense = (item: any) => item.booking_id ? router.push(`/booking/new?id=${item.booking_id}`) : setEditor({ item });
 
   if (p.isLoading) return <View style={{ flex: 1, backgroundColor: colors.surface }}><Loading /></View>;
   if (p.isError) return <View style={{ flex: 1, paddingTop: insets.top }}><ErrorState message={(p.error as Error).message} onRetry={p.refetch} /></View>;
@@ -46,19 +53,6 @@ export default function PropertyDetail() {
     }
   };
 
-  const saveBill = async () => {
-    if (!/^\d{4}-\d{2}$/.test(bill.month) || !Number(bill.amount)) return toast("Enter month (YYYY-MM) and amount", "error");
-    try {
-      await api.post("/expenses", { property_id: id, month: bill.month, type: bill.type, amount: Number(bill.amount), notes: bill.notes });
-      setBillOpen(false);
-      setBill({ ...bill, amount: "", notes: "" });
-      exp.refetch();
-      toast("Bill recorded");
-    } catch (e: any) {
-      toast(e.message, "error");
-    }
-  };
-
   const remove = async () => {
     await api.del(`/properties/${id}`);
     qc.invalidateQueries({ queryKey: ["properties"] });
@@ -70,7 +64,7 @@ export default function PropertyDetail() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={p.isRefetching} onRefresh={() => { p.refetch(); exp.refetch(); bookings.refetch(); }} tintColor={colors.brandPrimary} />}>
         <View style={{ height: 240, backgroundColor: colors.brandTertiary }}>
-          {v.cover_url ? <Image source={{ uri: v.cover_url }} style={{ width: "100%", height: "100%" }} contentFit="cover" /> : null}
+          <PropertyCover property={v} />
           <LinearGradient colors={["transparent", colors.scrim]} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 140 }} />
           <View style={{ position: "absolute", top: insets.top + spacing.sm, left: spacing.lg, right: spacing.lg, flexDirection: "row", justifyContent: "space-between" }}>
             <IconButton testID="property-back-button" name="chevron-back" tone="inverse" onPress={() => router.back()} />
@@ -110,7 +104,6 @@ export default function PropertyDetail() {
             <Txt v="label" style={{ marginBottom: spacing.xs }}>Revenue share</Txt>
             <Row label="Owner share" value={`${v.owner_share_percent}%`} />
             <Row label="Britsmaid share" value={`${100 - v.owner_share_percent}%`} />
-            <Row label="Electricity" value={v.electricity_mode === "split_half" ? "Britsmaid pays 50%" : "Owner managed"} />
             <Row label="Base nightly rate" value={inr(v.base_rate)} />
           </Card>
 
@@ -121,7 +114,7 @@ export default function PropertyDetail() {
             </View>
             {(v.ical_feeds ?? []).length === 0 ? (
               <Pressable testID="property-add-ical" onPress={() => router.push(`/property/edit?id=${id}`)}>
-                <Txt v="body" color={colors.brandPrimary}>Add Airbnb / Booking.com / Agoda iCal links →</Txt>
+                <Txt v="body" color={colors.brandPrimary}>Add OTA iCal links, including MakeMyTrip →</Txt>
               </Pressable>
             ) : v.ical_feeds.map((f: any, i: number) => (
               <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>
@@ -135,33 +128,28 @@ export default function PropertyDetail() {
           <Card>
             <Txt v="label" style={{ marginBottom: spacing.sm }}>Upcoming stays</Txt>
             {upcoming.length === 0 ? <Txt v="caption">No upcoming bookings</Txt> : upcoming.map((b) => (
-              <Pressable key={b.id} testID={`property-booking-${b.id}`} onPress={() => router.push(`/booking/new?id=${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm }}>
+              <Pressable key={b.id} testID={`property-booking-${b.id}`} onPress={() => router.push(`/booking/${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm }}>
                 <View style={{ width: 4, height: 32, borderRadius: 2, backgroundColor: otaColor(b.ota) }} />
                 <View style={{ flex: 1 }}>
                   <Txt v="body" style={{ color: colors.onSurface }}>{b.guest_name}</Txt>
                   <Txt v="caption">{b.ota} · {fmtShort(b.check_in)} → {fmtShort(b.check_out)}</Txt>
                 </View>
-                {b.amount ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.amount)}</Txt> : null}
+                {(b.financials?.guest_total ?? b.amount) ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.financials?.guest_total ?? b.amount)}</Txt> : null}
               </Pressable>
             ))}
           </Card>
 
           <Card>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: spacing.sm }}>
-              <Txt v="label" style={{ flex: 1 }}>Bills & deductions</Txt>
-              <Button testID="property-add-bill" small variant="secondary" icon="flash-outline" title="Add bill" onPress={() => setBillOpen(true)} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing.sm }}>
+              <Txt v="label" style={{ flex: 1 }}>Expenses</Txt>
+              {user?.role === 'admin' ? <Button testID="property-add-bill" small variant="secondary" icon="add" title="Add expense" onPress={() => setEditor({})} /> : null}
             </View>
-            {(exp.data ?? []).length === 0 ? <Txt v="caption">No bills recorded</Txt> : exp.data!.map((e) => (
-              <View key={e.id} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>
-                <Icon name={e.type === "electricity" ? "flash" : "construct-outline"} size={16} color={colors.warning} />
-                <Txt v="body" style={{ flex: 1 }}>{monthLabel(e.month)} · {e.type === "electricity" ? "Electricity" : e.notes || "Other"}</Txt>
-                <Txt v="mono" style={{ fontSize: 14 }}>{inr(e.amount)}</Txt>
-                <Pressable testID={`delete-bill-${e.id}`} hitSlop={8} onPress={async () => { await api.del(`/expenses/${e.id}`); exp.refetch(); }}>
-                  <Icon name="close-circle" size={18} color={colors.muted} />
-                </Pressable>
+            {exp.isLoading ? <Loading /> : exp.isError ? <ErrorState message={(exp.error as Error).message} onRetry={exp.refetch} /> : !(exp.data || []).length ? <Txt v="caption">No expenses recorded</Txt> : exp.data!.map(e => (
+              <View key={e.id} style={{ gap: spacing.sm, paddingVertical: 6 }}>
+                <ExpenseDetails item={e} onEdit={user?.role === 'admin' ? () => editExpense(e) : undefined} />
+                <Txt v="caption">{monthLabel(e.month)}</Txt>
               </View>
             ))}
-            <Txt v="caption" style={{ marginTop: spacing.sm }}>{v.electricity_mode === "split_half" ? "Electricity is split 50/50 between owner & Britsmaid in statements." : "Electricity is paid by the owner directly (shown for reference)."}</Txt>
           </Card>
 
           <Card>
@@ -183,17 +171,7 @@ export default function PropertyDetail() {
         </View>
       </ScrollView>
 
-      <Sheet visible={billOpen} onClose={() => setBillOpen(false)} title="Record a bill" testID="bill-sheet">
-        <View style={{ gap: spacing.md }}>
-          <Segmented testID="bill-type" value={bill.type} onChange={(t) => setBill({ ...bill, type: t })} options={[{ value: "electricity", label: "Electricity" }, { value: "other", label: "Other deduction" }]} />
-          <View style={{ flexDirection: "row", gap: spacing.md }}>
-            <View style={{ flex: 1 }}><Input testID="bill-month-input" label="Month (YYYY-MM)" value={bill.month} onChangeText={(t) => setBill({ ...bill, month: t })} /></View>
-            <View style={{ flex: 1 }}><Input testID="bill-amount-input" label="Amount ₹" keyboardType="numeric" value={bill.amount} onChangeText={(t) => setBill({ ...bill, amount: t })} /></View>
-          </View>
-          <Input testID="bill-notes-input" label="Notes" value={bill.notes} onChangeText={(t) => setBill({ ...bill, notes: t })} />
-          <Button testID="bill-save-button" title="Save bill" onPress={saveBill} />
-        </View>
-      </Sheet>
+      {activeEditor ? <ExpenseEditor key={activeEditor.item?.id || 'new'} propertyId={id} item={activeEditor.item} initialMonth={month} initialTreatment={activeEditor.initialTreatment} onClose={() => { setEditor(null); setDismissedExpense(expense_id || ''); }} /> : null}
       <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
     </View>
   );

@@ -18,7 +18,7 @@ export default function Dashboard() {
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard") });
+  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard"), refetchInterval: 30000 });
   const d = q.data;
   const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 
@@ -113,7 +113,7 @@ export default function Dashboard() {
             <View key={key} style={{ gap: spacing.sm }}>
               <Txt v="label">{title}</Txt>
               {list.length === 0 ? <Card><Txt v="caption">None</Txt></Card> : list.map((b: any) => (
-                <Card key={b.id} testID={`${key}-${b.id}`} onPress={() => router.push(`/booking/new?id=${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+                <Card key={b.id} testID={`${key}-${b.id}`} onPress={() => router.push(`/booking/${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
                   <View style={{ width: 4, alignSelf: "stretch", borderRadius: 2, backgroundColor: otaColor(b.ota) }} />
                   <View style={{ flex: 1 }}>
                     <Txt v="subtitle" style={{ fontSize: 15 }}>{b.guest_name}</Txt>

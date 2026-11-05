@@ -101,7 +101,7 @@ function OtaReport({ bottom }: { bottom: number }) {
                         </View>
                       ))}
                       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Txt v="body">Net after commission</Txt>
+                        <Txt v="body">Net after booking deductions</Txt>
                         <Txt v="mono" style={{ fontSize: 14 }}>{inr(r.net)}</Txt>
                       </View>
                     </Animated.View>

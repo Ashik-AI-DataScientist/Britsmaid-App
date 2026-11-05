@@ -1,0 +1,33 @@
+name: Britsmaid service health
+on:
+  workflow_dispatch:
+  schedule:
+    # Hourly at :35 UTC, including 02:05 IST. Not a guaranteed exact-time scheduler.
+    - cron: '35 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: britsmaid-health
+  cancel-in-progress: false
+jobs:
+  health:
+    # Keep disabled until free Actions allowance/billing limits and notifications are reviewed.
+    if: vars.ENABLE_FREE_MONITOR == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify application health and recent verified backup
+        env:
+          APP_ORIGIN: ${{ vars.BRITSMAID_APP_ORIGIN }}
+        run: |
+          python - <<'PY'
+          import os, re, urllib.request
+          origin = os.environ['APP_ORIGIN']
+          if not re.fullmatch(r'https://[a-z0-9.-]+', origin):
+              raise SystemExit('Configure an HTTPS BRITSMAID_APP_ORIGIN')
+          for path in ['/healthz', '/healthz/backup']:
+              with urllib.request.urlopen(origin + path, timeout=80) as response:
+                  if response.status != 200:
+                      raise SystemExit('Britsmaid health verification failed')
+          print('Britsmaid service and backup checks passed')
+          PY
