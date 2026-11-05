@@ -158,7 +158,7 @@ export default function PropertyDetail() {
                   <Txt v="body" style={{ color: colors.onSurface }}>{b.guest_name}</Txt>
                   <Txt v="caption">{b.ota} · {fmtShort(b.check_in)} → {fmtShort(b.check_out)}</Txt>
                 </View>
-                {b.amount ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.amount)}</Txt> : null}
+                {(b.financials?.guest_total ?? b.amount) ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.financials?.guest_total ?? b.amount)}</Txt> : null}
               </Pressable>
             ))}
           </Card>

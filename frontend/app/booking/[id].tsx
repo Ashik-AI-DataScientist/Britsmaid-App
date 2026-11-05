@@ -23,7 +23,7 @@ export default function BookingDetail() {
       {user?.role === 'admin' ? <Button title="Edit booking" onPress={() => router.push(`/booking/new?id=${id}`)} /> : null}
       <Card><Txt v="subtitle">{b.guest_name}</Txt><Row label="Property" value={p?.name || ''} /><Row label={b.ota} value={b.status} />
         <Row label="Check-in" value={b.check_in} /><Row label="Check-out" value={b.check_out} /><Row label="Guests" value={String(b.guests)} />
-        <Row label="Saved booking amount" value={inr(b.amount)} />{!b.financials ? <Row label="OTA commission" value={inr(b.ota_commission)} /> : null}
+        <Row label="Gross guest payment" value={inr(b.financials?.guest_total ?? b.amount)} />{!b.financials ? <Row label="OTA commission" value={inr(b.ota_commission)} /> : null}
         <Txt>{b.notes}</Txt></Card>
       <Card><BookingAmounts gross={b.amount} value={b.financials} readOnly ownerPercent={p?.owner_share_percent ?? 70} /></Card>
       {statement.data ? <Card><Txt v="subtitle">Monthly payout · {b.check_in.slice(0, 7)}</Txt><Txt v="caption">Includes every booking and allocated expense for this month.</Txt>

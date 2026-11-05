@@ -119,7 +119,7 @@ export default function CalendarScreen() {
             </View>
             <View style={{ alignItems: "flex-end", gap: 4 }}>
               <Badge label={b.status === "blocked" ? "Blocked" : b.ota} tone={b.status === "blocked" ? "neutral" : "brand"} />
-              {b.amount ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.amount)}</Txt> : b.source === "ical" ? <Txt v="caption">iCal</Txt> : null}
+              {(b.financials?.guest_total ?? b.amount) ? <Txt v="mono" style={{ fontSize: 13 }}>{inr(b.financials?.guest_total ?? b.amount)}</Txt> : b.source === "ical" ? <Txt v="caption">iCal</Txt> : null}
             </View>
           </Card>
         ))}
