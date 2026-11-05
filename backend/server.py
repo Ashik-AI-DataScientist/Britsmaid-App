@@ -1568,6 +1568,8 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
     ctr = await db.counters.find_one_and_update({"_id": "payout"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
     doc = body.model_dump()
     doc.update({"receipt_number": f"BM-PAY-{datetime.now().year}-{ctr['seq']:04d}", "property_name": p["name"], "owner_name": p.get("owner_name", ""),
+                "net_revenue": snap["net_revenue"], "britsmaid_share": snap["britsmaid_share"], "britsmaid_share_percent": snap["britsmaid_share_percent"], "britsmaid_net": snap["britsmaid_net"],
+                "electricity_total": snap["electricity_total"], "britsmaid_electricity": snap["britsmaid_electricity"],
                 "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
                 "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
                 "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
@@ -1696,17 +1698,8 @@ async def public_report(token: str):
     s = r["settlement"]
     medias = await db.media.find({"_id": {"$in": [ObjectId(m) for m in r.get("media_ids", []) if ObjectId.is_valid(m)]}}).to_list(100)
     e = html.escape
-    deduction_details = ""
-    for d in s.get("deduction_items", []):
-        owner_amount, bm_amount = d.get("owner_amount", 0), d.get("britsmaid_amount", 0)
-        shares = f'<p>Owner: {inr(owner_amount)} / Britsmaid: {inr(bm_amount)}</p>' if 'owner_amount' in d and d.get('treatment') not in ('before_split', 'reference') and d['type'] != 'pre_split' else ''
-        treatment = 'Reference only - not deducted' if d.get('treatment') == 'reference' else 'Before revenue split' if d['type'] == 'pre_split' else 'After revenue split'
-        attachments = ''.join(f'<a href="{e(token)}/media/{e(mid)}" target="_blank" rel="noopener">Open attachment {i + 1}</a><br>' for i, mid in enumerate(d.get('media_ids', [])))
-        deduction_details += f'<details><summary>{e(d.get("title") or "Expense")} - {inr(d["amount"])}</summary><p>{e(d.get("notes") or "")}</p><small>{treatment}</small>{shares}{attachments}</details>'
-    s.setdefault('expense_before_total', money(s.get('pre_split_deductions', 0) + s.get('booking_misc', 0)))
-    tax_lines = ''.join(f'<div class="row"><span>{label}</span><span>-{inr(s.get(key, 0))}</span></div>' for key, label in [('gst_total', 'Booking GST'), ('platform_tax', 'Platform tax deductions'), ('expense_before_total', 'Expenses before split')] if s.get(key))
-    tds_line = f'<div class="row"><span>Owner balance after all expenses</span><span>{inr(s.get("owner_before_tds", 0))}</span></div><div class="row"><span>Owner TDS (2%) · monthly total</span><span>-{inr(s.get("owner_tds", 0))}</span></div>' if s.get('owner_tds_percent') else ''
-    pre_split_line = ''
+    from report_presentation import public_payout_sections
+    presentation, calculation_html, expenses_html, britsmaid_html = public_payout_sections(s, inr, token)
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
@@ -1716,30 +1709,29 @@ async def public_report(token: str):
         f = b.get('financials')
         if not f:
             continue
-        lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Platform tax deduction')])
+        lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Other tax deductions')])
         bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary>{lines}<p>{e(f.get("misc_title") or "Other booking expense")}: {inr(f.get("misc_amount", 0))}<br>{e(f.get("misc_notes") or "")}</p><b>Net booking revenue: {inr(b.get("net_revenue", 0))}</b></details></td></tr>'
-    after_expenses = s.get('owner_after_expenses', money(s.get('owner_electricity', 0) + s.get('other_deductions', 0)))
-    elec_line = f'<div class="row"><span>Expenses after split · owner contribution</span><span>-{inr(after_expenses)}</span></div>' if after_expenses else ''
-    maxv = max([s["owner_share"], s["britsmaid_share"], s["ota_commission"], 1])
-    bars = "".join(f'<div class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{v / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></div>'
-                   for lbl, v, c in [("Owner share", s["owner_share"], "#1B3A6B"), ("Britsmaid share", s["britsmaid_share"], "#375B96"), ("OTA commission", s["ota_commission"], "#9CA3AF")])
+    maxv = max([s["owner_share"], s["britsmaid_share"], 1])
+    bars = "".join(f'<button type="button" class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{max(v, 0) / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></button>'
+                   for lbl, v, c in [("Owner allocated share", s["owner_share"], "#1B3A6B"), ("Britsmaid allocated share", s["britsmaid_share"], "#375B96")]) if s.get('net_revenue', 0) > 0 else '<p>No positive revenue available to split. See the payout calculation below.</p>'
+    overview = ''.join(f'<div class="row"><span>{label}</span><span>{inr(value)}</span></div>' for label, value in [('OTA commissions', s.get('ota_commission', 0)), ('Booking taxes', presentation['bookingTaxes']), ('Expenses', presentation['totalExpenses'])] if value or (label == 'Expenses' and presentation['groups']))
+    if presentation['groups']:
+        overview += '<small>See the detailed expense breakdown.</small>'
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(r['title'])}</title>
 <style>body{{font-family:-apple-system,Segoe UI,sans-serif;margin:0;background:#F3F4F6;color:#111827}}header{{background:#1B3A6B;color:#fff;padding:24px 20px}}
 h1{{margin:0;font-size:22px}}.wrap{{padding:16px;max-width:720px;margin:auto}}.card{{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;border:1px solid #E5E7EB}}
 .big{{font-size:34px;font-weight:700;color:#1B3A6B}}.row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #F3F4F6}}
-details{{border-bottom:1px solid #E5E7EB;padding:10px 0}}summary{{display:flex;justify-content:space-between;cursor:pointer}}
-.bar{{display:grid;grid-template-columns:120px 1fr 90px;align-items:center;gap:8px;margin:10px 0;cursor:pointer}}.track{{background:#E8EDF4;border-radius:6px;height:14px}}
+details{{border-bottom:1px solid #E5E7EB;padding:10px 0}}summary{{display:flex;justify-content:space-between;cursor:pointer;gap:12px}}summary>span:first-child{{min-width:0;overflow-wrap:anywhere}}summary>span:last-child{{white-space:nowrap}}.row{{gap:12px}}.row>span:first-child{{min-width:0;overflow-wrap:anywhere}}.row>span:last-child{{white-space:nowrap}}p{{overflow-wrap:anywhere}}
+.bar{{border:0;padding:0;background:transparent;color:inherit;font:inherit;width:100%;display:grid;grid-template-columns:120px 1fr 90px;align-items:center;gap:8px;margin:10px 0;cursor:pointer}}.track{{background:#E8EDF4;border-radius:6px;height:14px}}
 .fill{{height:14px;border-radius:6px;transition:width .6s}}.bar em{{font-style:normal;text-align:right}}.bar.on label{{font-weight:700}}
 .grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}.grid img,.grid video{{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;cursor:zoom-in}}
 #z{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);align-items:center;justify-content:center}}#z img{{max-width:95%;max-height:95%}}
 table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px solid #F3F4F6}}small{{color:#6B7280}}</style></head><body>
-<header><div style="opacity:.8">BRITSMAID · Owner Statement</div><h1>{e(r['title'])}</h1><div>{e(s['owner_name'])} · {s['month']}</div></header>
-<div class="wrap"><div class="card"><div>Your payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
-<div class="card"><b>Revenue split</b><small> (tap bars)</small>{bars}</div>
-<div class="card"><b>How your payout is calculated</b><div class="row"><span>Gross booking revenue</span><span>{inr(s['gross'])}</span></div>
-<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div>{tax_lines}{pre_split_line}<div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
-<div class="row"><span>Your share ({s['owner_share_percent']:.0f}%)</span><span>{inr(s['owner_share'])}</span></div>{elec_line}
-{deduction_details}{tds_line}<div class="row"><b>Payout after TDS</b><b>{inr(s['owner_payout'])}</b></div></div>
+<header><div style="opacity:.8">Britsmaid · Owner statement</div><h1>{e(r['title'])}</h1><div>{e(s['owner_name'])} · {s['month']}</div></header>
+<div class="wrap"><div class="card"><div>Owner final payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
+<div class="card"><b>Revenue split</b><small> (tap bars)</small><div class="row"><span>Revenue available to split</span><span>{inr(s['net_revenue'])}</span></div>{bars}{overview}</div>
+<div class="card"><b>How the payout is calculated</b>{calculation_html}</div>
+{expenses_html}{britsmaid_html}
 <div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>
 <div class="card"><b>Property condition</b><p>{e(r.get('condition_notes') or '')}</p><div class="grid">{gallery}</div></div></div>

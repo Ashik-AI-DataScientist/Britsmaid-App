@@ -14,7 +14,7 @@ assert.equal(bookingMath(10500, f).fee, 1200);
 f.platform_fee.base = 'gross'; assert.equal(bookingMath(10500, f).fee, 1260);
 f.gst_included = false; assert.equal(bookingMath(10000, f).gross, 10500);
 assert.equal(financialPayload({...f, misc_amount: ''}).misc_amount, 0);
-const pdfScope = {exports: {}, require: name => name === '@/src/format' ? {inr:n=>`INR ${n}`, fmtDate:d=>d, monthLabel:m=>m} : name === '@/src/api' ? {LOGO_URL:'logo'} : {}};
+const pdfScope = {exports: {}, require: name => name === '@/src/expense-presentation' ? require('./report-helpers.cjs') : name === '@/src/format' ? {inr:n=>`INR ${n}`, fmtDate:d=>d, monthLabel:m=>m} : name === '@/src/api' ? {LOGO_URL:'logo'} : {}};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/pdf.ts'), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText, pdfScope);
 const s = {by_ota:[], bookings:[], month:'2026-11', owner_tds:111.2, owner_tds_percent:2, owner_before_tds:5560, owner_payout:5448.8, gst_total:500, platform_tax:100, booking_misc:100};
 const html = pdfScope.exports.settlementHtml(s);
@@ -37,6 +37,6 @@ assert.equal(allocationMath(1000,{entry_mode:'amount',amount_side:'britsmaid',br
 assert.equal(allocationMath(.03,{entry_mode:'percent',owner_percent:50}).owner_amount,.02);
 const explicit = {...s,expense_before_total:100,owner_after_expenses:250,owner_electricity:200,other_deductions:50};
 const explicitHtml=pdfScope.exports.settlementHtml(explicit);
-assert(explicitHtml.includes('Expenses before split') && explicitHtml.includes('Expenses after split'));
+assert(explicitHtml.includes('Expenses before revenue split') && explicitHtml.includes('Owner expenses after split'));
 assert(!explicitHtml.includes('Electricity · owner contribution') && !explicitHtml.includes('Other deductions'));
 console.log('PASS bidirectional booking entry, zero bases, exact rounding, expense allocation and unified PDF rows');

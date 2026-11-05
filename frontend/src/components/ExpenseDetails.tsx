@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View } from 'react-native';
+import { useAuth } from '@/src/auth';
 import { api } from '@/src/api';
 import { Button, Card, Row, Txt } from '@/src/ui';
 import { MediaThumb } from '@/src/components/MediaThumb';
@@ -18,7 +19,7 @@ function Shares({ item }: { item: any }) {
   if (expenseTreatment(item) !== 'after_split') return null;
   const a = item.allocation;
   const owner = a?.owner_amount ?? item.owner_amount, bm = a?.britsmaid_amount ?? item.britsmaid_amount;
-  if (owner == null && bm == null) return <Txt v="caption">Original owner deduction recorded in this report.</Txt>;
+  if (owner == null && bm == null) return <Txt v="caption">Allocation detail was not included in this saved statement.</Txt>;
   return <>
     {owner > 0 ? <Row label={bm > 0 ? `Owner${a?.owner_percent != null ? ` (${a.owner_percent}%)` : ''}` : 'Owner bears the full expense'} value={inr(owner)} /> : null}
     {bm > 0 ? <Row label={owner > 0 ? `Britsmaid${a?.britsmaid_percent != null ? ` (${a.britsmaid_percent}%)` : ''}` : 'Britsmaid bears the full expense'} value={inr(bm)} /> : null}
@@ -26,6 +27,7 @@ function Shares({ item }: { item: any }) {
 }
 export function ExpenseDetails({ item, onEdit }: { item: any; onEdit?: (item: any) => void }) {
   const [open, setOpen] = useState(false), [history, setHistory] = useState<any>(null), [historyOpen, setHistoryOpen] = useState(false), [error, setError] = useState(''), [loading, setLoading] = useState(false);
+  const { user } = useAuth();
   const treatment = expenseTreatment(item);
   const loadHistory = async () => {
     if (historyOpen) { setHistoryOpen(false); return; }
@@ -43,7 +45,7 @@ export function ExpenseDetails({ item, onEdit }: { item: any; onEdit?: (item: an
       <Shares item={item} />
       {item.last_change_reason ? <Txt v="caption">Updated {fmtDate(item.updated_at)}: {item.last_change_reason}</Txt> : null}
       <Evidence ids={item.media_ids || []} />
-      {onEdit ? <Button small variant="secondary" title={item.booking_id ? 'Edit in booking' : 'Edit expense'} onPress={() => onEdit(item)} /> : null}
+      {user?.role === 'admin' && onEdit ? <Button small variant="secondary" title={item.booking_id ? 'Edit in booking' : 'Edit expense'} onPress={() => onEdit(item)} /> : null}
       {/^[a-f\d]{24}$/i.test(item.id || '') ? <Button small variant="ghost" title={historyOpen ? 'Hide change history' : 'View change history'} onPress={loadHistory} loading={loading} /> : null}
       {error ? <Card><Txt>{error}</Txt></Card> : null}
       {historyOpen && history ? <>

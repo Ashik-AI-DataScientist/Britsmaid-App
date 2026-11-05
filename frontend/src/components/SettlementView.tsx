@@ -6,7 +6,7 @@ import { fmtShort, inr, monthLabel, monthShort, otaColor } from "@/src/format";
 import { fonts, radius, spacing, useTheme } from "@/src/theme";
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/src/auth';
-import { statementExpenses } from '@/src/expense-presentation';
+import { reportPresentation } from '@/src/expense-presentation';
 import { ExpenseDetails } from '@/src/components/ExpenseDetails';
 import { BookingAmounts } from '@/src/components/BookingAmounts';
 
@@ -16,31 +16,37 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
   const [openBooking, setOpenBooking] = useState<string | null>(null);
   const [seg, setSeg] = useState<string | null>(null);
   const { user } = useAuth();
-  const [expenseGroup, setExpenseGroup] = useState<string | null>(null);
-  const expenses = statementExpenses(s);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const presentation = reportPresentation(s);
+  const toggle = (key: string) => setExpanded(previous => ({ ...previous, [key]: !previous[key] }));
   const editExpense = (item: any) => item.booking_id ? router.push(`/booking/new?id=${item.booking_id}`) : router.push(`/property/${s.property_id}?expense_id=${item.id}&month=${s.month}`);
-  const group = (kind: string, label: string, total: number) => {
-    const items = expenses.filter((e: any) => e.treatment === kind);
-    if (!items.length && !total) return null;
-    return <View>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: expenseGroup === kind }} testID={`statement-expenses-${kind}`} onPress={() => setExpenseGroup(expenseGroup === kind ? null : kind)} style={{ flexDirection: 'row', paddingVertical: spacing.md, gap: spacing.sm }}>
-        <Txt style={{ flex: 1 }}>{label} · details</Txt><Txt v="mono">{inr(total)}</Txt><Icon name={expenseGroup === kind ? 'chevron-up' : 'chevron-down'} size={18} />
+  const disclosure = (key: string, label: string, value: string | undefined, children: React.ReactNode) => <View>
+      <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded: !!expanded[key] }} testID={`statement-${key}`} onPress={() => toggle(key)} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.md, gap: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
+        <Txt style={{ flex: 1 }}>{label}</Txt>{value != null ? <Txt v="mono">{value}</Txt> : null}<Icon name={expanded[key] ? 'chevron-up' : 'chevron-down'} size={18} />
       </Pressable>
-      {expenseGroup === kind ? <View style={{ gap: spacing.md }}>{items.map((item: any) => <ExpenseDetails key={item.id} item={item} onEdit={user?.role === 'admin' && !item.summary ? () => editExpense(item) : undefined} />)}</View> : null}
+      {expanded[key] ? <View testID={`statement-${key}-content`} style={{ gap: spacing.md, paddingVertical: spacing.sm }}>{children}</View> : null}
     </View>;
+  const expenseItems = (kind: string) => {
+    const group = presentation.groups.find(g => g.key === kind);
+    return <>
+      {group?.mismatch ? <Txt color={colors.error}>The saved expense total differs from the available details. Saved amounts are retained; ask the admin to review this statement.</Txt> : null}
+      {group?.items.map((item: any) => <ExpenseDetails key={item.id} item={item} onEdit={user?.role === 'admin' && !item.summary ? () => editExpense(item) : undefined} />)}
+    </>;
   };
   const [openOta, setOpenOta] = useState<string | null>(null);
   const [trendSel, setTrendSel] = useState<string>(s.month);
 
   const segments = [
-    { key: "owner", label: "Owner share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of revenue after OTA commission and deductions before split goes to the owner.` },
-    { key: "bm", label: "Britsmaid share", value: s.britsmaid_share, color: colors.brandSecondary, note: `${s.britsmaid_share_percent}% of net revenue retained for management.` },
-    { key: "ota", label: "OTA commission", value: s.ota_commission, color: colors.borderStrong, note: "Charged by booking platforms before the split." },
-    ...((s.gst_total || s.platform_tax || s.booking_misc) ? [{ key: 'booking-costs', label: 'Booking taxes and other expenses', value: (s.gst_total || 0) + (s.platform_tax || 0) + (s.booking_misc || 0), color: colors.warning, note: 'GST, platform tax deductions and other booking expenses, deducted before the split.' }] : []),
-    ...(s.pre_split_deductions ? [{ key: "deductions", label: "Deductions before split", value: s.pre_split_deductions, color: colors.warning, note: "Explained property costs deducted before calculating either share. Expand deduction details below." }] : []),
+    { key: "owner", label: "Owner allocated share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of revenue available to split. Owner expenses after split and TDS are deducted later in the payout calculation.` },
+    { key: "bm", label: "Britsmaid allocated share", value: s.britsmaid_share, color: colors.brandSecondary, note: `${s.britsmaid_share_percent}% of revenue available to split. Britsmaid expenses after split are deducted in the Britsmaid breakdown.` },
   ];
   const total = segments.reduce((a, b) => a + b.value, 0) || 1;
-  const canChartSplit = s.gross > 0 && segments.every(g => g.value >= 0);
+  const overview = [
+    { key: 'ota', label: 'OTA commissions', value: s.ota_commission, note: 'Charged by booking platforms before the revenue split. Open booking deductions or individual bookings for the breakdown.' },
+    { key: 'booking-costs', label: 'Booking taxes', value: presentation.bookingTaxes, note: 'Booking GST and other tax deductions, included once in booking deductions before the revenue split.' },
+    { key: 'expenses', label: 'Expenses', value: presentation.totalExpenses, note: 'Full reported expense total for both parties, including before-split, after-split and any reference-only records. See the detailed expense breakdown for how each cost is treated.' },
+  ];
+  const canChartSplit = s.net_revenue > 0 && segments.every(g => g.value >= 0);
   const trend: any[] = s.trend ?? [];
   const maxT = Math.max(1, ...trend.map((t) => t.gross));
   const selT = trend.find((t) => t.month === trendSel);
@@ -48,7 +54,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
   return (
     <View style={{ gap: spacing.md }}>
       <Animated.View entering={FadeIn} testID="settlement-hero" style={{ backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.xl }}>
-        <Txt v="label" color={colors.brandTertiary}>Owner payout · {monthLabel(s.month)}</Txt>
+        <Txt v="label" color={colors.brandTertiary}>Owner final payout · {monthLabel(s.month)}</Txt>
         <Txt v="display" color={colors.onBrandPrimary} style={{ fontSize: 38, marginTop: spacing.xs }} testID="settlement-owner-payout">{inr(s.owner_payout)}</Txt>
         <View style={{ flexDirection: "row", gap: spacing.lg, marginTop: spacing.md }}>
           {[["Nights", String(s.nights)], ["Occupancy", `${s.occupancy_percent}%`], ["Split", `${s.owner_share_percent}/${s.britsmaid_share_percent}`]].map(([l, v]) => (
@@ -63,24 +69,30 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
       <Card testID="split-card">
         <Txt v="subtitle">Revenue split</Txt>
         <Txt v="caption">Tap a segment to see how it is calculated</Txt>
+        <Row label="Revenue available to split" value={inr(s.net_revenue)} />
         {canChartSplit ? <View style={{ flexDirection: "row", height: 28, borderRadius: radius.sm, overflow: "hidden", marginTop: spacing.md, backgroundColor: colors.surfaceSecondary }}>
           {segments.map((g) => (
             <Pressable key={g.key} testID={`split-segment-${g.key}`} onPress={() => setSeg(seg === g.key ? null : g.key)} style={{ flex: Math.max(g.value, 0) / total, backgroundColor: g.color, opacity: seg && seg !== g.key ? 0.35 : 1 }} />
           ))}
-        </View> : <Txt v="caption" style={{ marginTop: spacing.md }}>{segments.some(g => g.value < 0) ? "Costs exceed revenue this month. The amounts and calculation below show the balance." : "No booking revenue to chart this month."}</Txt>}
+        </View> : <Txt v="caption" style={{ marginTop: spacing.md }}>{segments.some(g => g.value < 0) ? "Costs exceed revenue this month. The amounts and calculation below show the balance." : "No positive revenue available to split this month."}</Txt>}
         <View style={{ marginTop: spacing.md, gap: spacing.sm }}>
           {segments.map((g) => (
             <Pressable key={g.key} testID={`split-legend-${g.key}`} onPress={() => setSeg(seg === g.key ? null : g.key)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, opacity: seg && seg !== g.key ? 0.5 : 1 }}>
               <View style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: g.color }} />
               <Txt v="body" style={{ flex: 1 }}>{g.label}</Txt>
               <Txt v="mono">{inr(g.value)}</Txt>
-              <Txt v="caption" style={{ width: 44, textAlign: "right" }}>{canChartSplit ? `${Math.round((g.value / total) * 100)}%` : "—"}</Txt>
             </Pressable>
           ))}
         </View>
+        <View style={{ marginTop: spacing.md }}>
+          {overview.filter(g => g.value || (g.key === 'expenses' && presentation.groups.length)).map(g => <Pressable key={g.key} accessibilityRole="button" testID={`split-legend-${g.key}`} onPress={() => setSeg(seg === g.key ? null : g.key)} style={{ flexDirection: 'row', paddingVertical: spacing.sm, gap: spacing.sm }}>
+            <Txt style={{ flex: 1 }}>{g.label}</Txt><Txt v="mono">{inr(g.value)}</Txt>
+          </Pressable>)}
+          {presentation.groups.length ? <Txt v="caption">See the detailed expense breakdown.</Txt> : null}
+        </View>
         {seg ? (
           <Animated.View entering={FadeIn} style={{ marginTop: spacing.md, backgroundColor: colors.brandTertiary, borderRadius: radius.sm, padding: spacing.md }}>
-            <Txt v="body" color={colors.onBrandTertiary}>{segments.find((x) => x.key === seg)?.note}</Txt>
+            <Txt v="body" color={colors.onBrandTertiary}>{[...segments, ...overview].find((x) => x.key === seg)?.note}</Txt>
           </Animated.View>
         ) : null}
       </Card>
@@ -114,24 +126,45 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
 
       <Card testID="breakdown-card">
         <Txt v="subtitle" style={{ marginBottom: spacing.xs }}>How the payout is calculated</Txt>
-        <Row label="Gross booking revenue" value={inr(s.gross)} />
-        <Row label="OTA commissions" value={`-${inr(s.ota_commission)}`} />
-        {s.gst_total ? <Row label="Booking GST" value={`-${inr(s.gst_total)}`} /> : null}
-        {s.platform_tax ? <Row label="Platform tax deductions" value={`-${inr(s.platform_tax)}`} /> : null}
-        {group('before_split', 'Expenses before split', s.expense_before_total ?? ((s.pre_split_deductions || 0) + (s.booking_misc || 0)))}
-        <Row label="Net revenue" value={inr(s.net_revenue)} />
-        <Row label={`Owner share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
-        {group('after_split', 'Expenses after split', s.expense_after_total ?? expenses.filter((e: any) => e.treatment === 'after_split').reduce((n: number, e: any) => n + e.amount, 0))}
-        {(s.owner_after_expenses ?? ((s.owner_electricity || 0) + (s.other_deductions || 0))) ? <Row label="Expenses after split · owner contribution" value={`-${inr(s.owner_after_expenses ?? ((s.owner_electricity || 0) + (s.other_deductions || 0)))}`} /> : null}
-        {group('reference', 'Expenses for reference · not deducted', s.expense_reference_total ?? expenses.filter((e: any) => e.treatment === 'reference').reduce((n: number, e: any) => n + e.amount, 0))}
-        {s.owner_tds_percent ? <><Row label="Owner balance after expenses" value={inr(s.owner_before_tds)} /><Row label="Owner TDS (2%) · monthly total" value={`-${inr(s.owner_tds)}`} /></> : null}
-        <Row strong label="Owner payout after TDS" value={inr(s.owner_payout)} testID="breakdown-owner-payout" />
-        <Row label={`Britsmaid share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
-        {(s.britsmaid_after_expenses ?? ((s.britsmaid_electricity || 0) + (s.britsmaid_other_expenses || 0))) ? <Row label="Expenses after split · Britsmaid contribution" value={`-${inr(s.britsmaid_after_expenses ?? ((s.britsmaid_electricity || 0) + (s.britsmaid_other_expenses || 0)))}`} /> : null}
-        <View style={{ marginTop: spacing.md, flexDirection: "row", justifyContent: "space-between" }}>
-          <Txt v="caption">Britsmaid net after allocated expenses</Txt>
-          <Txt v="mono" style={{ fontSize: 14 }}>{inr(s.britsmaid_net)}</Txt>
-        </View>
+        <Row label="Gross guest payments" value={inr(s.gross)} />
+        {presentation.bookingDeductions ? disclosure('booking-deductions', 'Booking deductions', `-${inr(presentation.bookingDeductions)}`, <>
+          {s.ota_commission ? <Row label="OTA commissions" value={inr(s.ota_commission)} /> : null}
+          {s.gst_total ? <Row label="Booking GST" value={inr(s.gst_total)} /> : null}
+          {s.platform_tax ? <Row label="Other tax deductions" value={inr(s.platform_tax)} /> : null}
+          <Txt v="caption">Included once before the revenue split. Individual booking breakdowns are available below.</Txt>
+        </>) : null}
+        {presentation.groups.some(g => g.key === 'before_split') ? disclosure('before-summary', 'Expenses before revenue split', `-${inr(presentation.before)}`, expenseItems('before_split')) : null}
+        <Row strong label="Revenue available to split" value={inr(s.net_revenue)} />
+        <Row label={`Owner allocated share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
+        {presentation.ownerAfter > 0 ? disclosure('owner-after', 'Owner expenses after split', `-${inr(presentation.ownerAfter)}`, <>
+          {expenseItems('after_split')}
+          <Txt v="caption">Expense entries show the full costs. Only the owner contribution above is deducted from the owner share.</Txt>
+        </>) : null}
+        {s.owner_before_tds != null ? <Row label="Owner balance before TDS" value={inr(s.owner_before_tds)} /> : null}
+        {s.owner_tds_percent || s.owner_tds ? disclosure('tds', `Owner TDS (${s.owner_tds_percent || 2}%)`, `-${inr(s.owner_tds)}`, <Txt v="caption">Calculated on the positive owner balance after applicable expenses. This is the monthly total.</Txt>) : null}
+        <Row strong label="Owner final payout" value={inr(s.owner_payout)} testID="breakdown-owner-payout" />
+      </Card>
+
+      {presentation.groups.length ? <Card testID="statement-expense-records">
+        <Txt v="subtitle">Expenses</Txt>
+        <Row label="Total reported expenses" value={inr(presentation.totalExpenses)} />
+        {presentation.groups.map(g => <View key={g.key}>
+          {disclosure(`expenses-${g.key}`, g.label, inr(g.total), <>
+            {g.key === 'after_split' ? <>
+              {presentation.ownerAfter > 0 ? <Row label="Owner contribution" value={inr(presentation.ownerAfter)} /> : null}
+              {presentation.bmAfter > 0 ? <Row label="Britsmaid contribution" value={inr(presentation.bmAfter)} /> : null}
+            </> : null}
+            {expenseItems(g.key)}
+          </>)}
+        </View>)}
+      </Card> : null}
+
+      <Card testID="statement-britsmaid-card">
+        {disclosure('britsmaid-breakdown', 'Britsmaid breakdown', undefined, <>
+          <Row label={`Britsmaid allocated share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
+          {presentation.bmAfter > 0 ? disclosure('britsmaid-after', 'Britsmaid expenses after split', `-${inr(presentation.bmAfter)}`, expenseItems('after_split')) : null}
+          <Row strong label="Britsmaid net earnings" value={inr(s.britsmaid_net)} />
+        </>)}
       </Card>
 
       <Card testID="ota-breakdown-card">

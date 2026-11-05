@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '@/src/auth';
 import { api, request } from '@/src/api';
 import { allocationMath, money } from '@/src/booking-finance';
 import { CaptureSheet, Media } from '@/src/components/CaptureSheet';
@@ -12,6 +13,7 @@ import { spacing, useTheme } from '@/src/theme';
 export function ExpenseEditor({ propertyId, item, initialMonth, initialTreatment, onClose }: {
   propertyId: string; item?: any; initialMonth?: string; initialTreatment?: string; onClose: () => void;
 }) {
+  const { user } = useAuth();
   const qc = useQueryClient(), toast = useToast();
   const { colors } = useTheme();
   const [f, setF] = useState({ title: item?.title || '', amount: item ? String(item.amount) : '', month: item?.month || initialMonth || thisMonth(), notes: item?.notes || '', treatment: item?.treatment || initialTreatment || '', change_reason: '' });
@@ -54,6 +56,7 @@ export function ExpenseEditor({ propertyId, item, initialMonth, initialTreatment
     catch (e: any) { setConfirm(false); setError(e.message); }
     finally { lock.current = false; setSaving(false); }
   };
+  if (user?.role !== 'admin') return null;
   return <>
     <Sheet visible onClose={() => { if (!saving) onClose(); }} title={item ? 'Edit expense' : 'Add expense'} testID="expense-editor">
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.lg }}>

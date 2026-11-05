@@ -20,7 +20,7 @@ export function BookingAmounts({ gross, value, onChange, ownerPercent = 70, read
       <Chip label="Payment includes GST" selected={f.gst_included} onPress={() => onChange?.({ ...f, gst_included: true })} />
       <Chip label="Amount excludes GST" selected={!f.gst_included} onPress={() => onChange?.({ ...f, gst_included: false })} />
     </View> : <Txt v="caption">{f.gst_included ? "GST included in guest payment" : "Entered amount excludes GST"}</Txt>}
-    {([['gst', 'GST', t.gst], ['platform_fee', 'Platform fee', t.fee], ['platform_tax', 'Platform tax deduction', t.tax]] as const).map(([key, label, amount]) => { const rate = f[key].entry_mode === 'amount' ? t.rates[key] : f[key].percent; return <View key={key} style={{ gap: 6 }}>
+    {([['gst', 'GST', t.gst], ['platform_fee', 'Platform fee', t.fee], ['platform_tax', 'Other tax deductions', t.tax]] as const).map(([key, label, amount]) => { const rate = f[key].entry_mode === 'amount' ? t.rates[key] : f[key].percent; return <View key={key} style={{ gap: 6 }}>
       {!readOnly ? <Txt v="label">{label}</Txt> : null}
       {readOnly ? <Row label={`${label}${rate != null ? ` (${rate}%)` : ''}${f[key].manual && !f[key].entry_mode ? ' · adjusted' : ''}`} value={inr(amount)} /> : <View style={{ flexDirection: "row", gap: spacing.md }}>
         <View style={{ flex: 1 }}><Input testID={`financial-${key}-percent`} label="Percentage %" keyboardType="decimal-pad" value={rate == null ? "" : String(rate)} onChangeText={v => onChange?.({ ...f, [key]: { ...f[key], percent: v === "" ? null : v, manual: false, entry_mode: 'percent' } })} /></View>
