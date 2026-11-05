@@ -1,0 +1,23 @@
+/* global __dirname */
+const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
+const ts = require('../node_modules/typescript');
+const scope = { exports: {} };
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/booking-finance.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, scope);
+const {newFinancials, bookingMath, financialPayload} = scope.exports;
+const f = newFinancials(); f.gst.percent = 5; f.platform_fee.percent = 10; f.platform_tax.percent = 1; f.misc_amount = 100;
+assert.equal(bookingMath(10500, f).net, 8800);
+f.platform_fee.manual = true; f.platform_fee.amount = 950;
+assert.equal(bookingMath(10500, f).net, 8850);
+assert.equal(bookingMath(21000, f).fee, 950);
+f.platform_fee.percent = 12; f.platform_fee.manual = false;
+assert.equal(bookingMath(10500, f).fee, 1200);
+f.platform_fee.base = 'gross'; assert.equal(bookingMath(10500, f).fee, 1260);
+f.gst_included = false; assert.equal(bookingMath(10000, f).gross, 10500);
+assert.equal(financialPayload({...f, misc_amount: ''}).misc_amount, 0);
+const pdfScope = {exports: {}, require: name => name === '@/src/format' ? {inr:n=>`INR ${n}`, fmtDate:d=>d, monthLabel:m=>m} : name === '@/src/api' ? {LOGO_URL:'logo'} : {}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/pdf.ts'), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText, pdfScope);
+const s = {by_ota:[], bookings:[], month:'2026-11', owner_tds:111.2, owner_tds_percent:2, owner_before_tds:5560, owner_payout:5448.8, gst_total:500, platform_tax:100, booking_misc:100};
+const html = pdfScope.exports.settlementHtml(s);
+assert(html.includes('Owner TDS (2%)'));
+assert(html.includes('INR 111.2') && html.includes('INR 5448.8') && html.includes('Booking GST'));
+console.log('PASS booking percentages, amount overrides, GST bases and monthly TDS in PDF');

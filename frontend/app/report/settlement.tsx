@@ -14,13 +14,13 @@ import { spacing, useTheme } from "@/src/theme";
 
 
 export default function Settlement() {
-  const { property_id } = useLocalSearchParams<{ property_id: string }>();
+  const { property_id, month: initialMonth } = useLocalSearchParams<{ property_id: string; month?: string }>();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const toast = useToast();
   const { colors } = useTheme();
-  const [month, setMonth] = useState(thisMonth());
+  const [month, setMonth] = useState(initialMonth || thisMonth());
   const [busy, setBusy] = useState(false);
   const q = useQuery({ queryKey: ["settlement", property_id, month], queryFn: () => api.get(`/reports/settlement?property_id=${property_id}&month=${month}`) });
 

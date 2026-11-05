@@ -41,7 +41,7 @@ export default function Settings() {
         {(integrity.data ?? []).map((b: any) => <View key={b.id} style={{ gap: spacing.sm }}>
           <Txt>{b.property_name} · {b.check_in} · {inr(b.amount)}</Txt>
           <Txt v="caption">{b.reason}</Txt>
-          <Button title="Review saved booking" variant="secondary" onPress={() => router.push(`/booking/new?id=${b.id}`)} />
+          <Button title="Review saved booking" variant="secondary" onPress={() => router.push(`/booking/${b.id}`)} />
         </View>)}
       </Card>
       <Card style={{ gap: spacing.md }}><Txt v="subtitle">Services and backups</Txt>

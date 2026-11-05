@@ -9,6 +9,8 @@ import { DateField } from "@/src/components/DateField";
 import { Badge, Button, Card, Chip, ChipRow, ConfirmSheet, ErrorState, Header, IconButton, Input, Loading, Txt, useToast } from "@/src/ui";
 import { OTAS, addDays, inr, nightsBetween, otaColor, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
+import { BookingAmounts } from "@/src/components/BookingAmounts";
+import { financialPayload, newFinancials } from "@/src/booking-finance";
 
 export default function BookingForm() {
   const params = useLocalSearchParams<{ id?: string; property_id?: string; date?: string }>();
@@ -26,12 +28,14 @@ export default function BookingForm() {
   const [loading, setLoading] = useState(!!id);
   const [saving, setSaving] = useState(false);
   const [del, setDel] = useState(false);
+  const [financials, setFinancials] = useState<any>(id ? null : newFinancials());
 
   useEffect(() => {
     if (!id) return;
     let alive = true;
     api.get(`/bookings/${id}`).then((b) => {
       if (!alive) return;
+      setFinancials(b.financials || null);
       setF({ ...b, revision: b.revision || 0, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
       setLoading(false);
     }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
@@ -48,9 +52,10 @@ export default function BookingForm() {
   const save = async () => {
     if (!f.property_id || !f.guest_name.trim()) return toast("Choose a villa and enter guest name", "error");
     if (nights < 1) return toast("Check-out must be after check-in", "error");
+    if (!Number.isFinite(Number(f.amount)) || Number(f.amount) < 0) return toast('Enter a valid guest payment amount', 'error');
     setSaving(true);
-    const body = { ...f, guests: Number(f.guests) || 1, amount: Number(f.amount) || 0, ota_commission: Number(f.ota_commission) || 0 };
     try {
+      const body = { ...f, financials: financials ? financialPayload(financials) : null, guests: Number(f.guests) || 1, amount: Number(f.amount) || 0, ota_commission: Number(f.ota_commission) || 0 };
       if (id) await api.put(`/bookings/${id}`, body);
       else await api.post("/bookings", body);
       qc.invalidateQueries();
@@ -113,15 +118,16 @@ export default function BookingForm() {
         </Card>
         <Card style={{ gap: spacing.md }}>
           <View style={{ flexDirection: "row", gap: spacing.md }}>
-            <View style={{ flex: 1 }}><Input testID="booking-amount-input" label="Booking amount ₹" keyboardType="numeric" value={f.amount} onChangeText={set("amount")} /></View>
-            <View style={{ flex: 1 }}><Input testID="booking-commission-input" label="OTA commission ₹" keyboardType="numeric" value={f.ota_commission} onChangeText={set("ota_commission")} /></View>
+            <View style={{ flex: 1 }}><Input testID="booking-amount-input" label={financials?.gst_included === false ? "Booking amount before GST ₹" : "Gross guest payment ₹"} keyboardType="numeric" value={f.amount} onChangeText={set("amount")} /></View>
+            {!financials ? <View style={{ flex: 1 }}><Input testID="booking-commission-input" label="OTA commission ₹" keyboardType="numeric" value={f.ota_commission} onChangeText={set("ota_commission")} /></View> : null}
           </View>
-          {prop ? (
+          {prop && !financials ? (
             <View style={{ flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" }}>
               <Badge tone="brand" label={`Owner ${inr(((Number(f.amount) || 0) - (Number(f.ota_commission) || 0)) * prop.owner_share_percent / 100)}`} />
               <Badge tone="info" label={`Britsmaid ${inr(((Number(f.amount) || 0) - (Number(f.ota_commission) || 0)) * (100 - prop.owner_share_percent) / 100)}`} />
             </View>
           ) : null}
+          <BookingAmounts gross={Number(f.amount) || 0} value={financials} onChange={setFinancials} ownerPercent={prop?.owner_share_percent ?? 70} commission={Number(f.ota_commission) || 0} />
           <Input testID="booking-notes-input" label="Notes" multiline value={f.notes} onChangeText={set("notes")} />
         </Card>
         <Button testID="booking-save-button" title={id ? "Save booking" : "Confirm booking"} onPress={save} loading={saving} />

@@ -111,7 +111,7 @@ export default function CalendarScreen() {
 
         <Txt v="label" testID="calendar-selected-day">{fmtDate(day)}</Txt>
         {dayBookings.map((b: any) => (
-          <Card key={b.id} testID={`calendar-booking-${b.id}`} onPress={() => router.push(`/booking/new?id=${b.id}`)} style={{ flexDirection: "row", gap: spacing.md, alignItems: "center" }}>
+          <Card key={b.id} testID={`calendar-booking-${b.id}`} onPress={() => router.push(`/booking/${b.id}`)} style={{ flexDirection: "row", gap: spacing.md, alignItems: "center" }}>
             <View style={{ width: 4, alignSelf: "stretch", borderRadius: 2, backgroundColor: b.status === "blocked" ? colors.muted : otaColor(b.ota) }} />
             <View style={{ flex: 1, gap: 2 }}>
               <Txt v="subtitle" style={{ fontSize: 15 }}>{b.guest_name}</Txt>

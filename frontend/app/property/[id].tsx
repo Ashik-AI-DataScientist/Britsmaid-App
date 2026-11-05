@@ -1,4 +1,6 @@
 import { PropertyCover } from "@/src/components/PropertyCover";
+import { CaptureSheet, Media } from "@/src/components/CaptureSheet";
+import { ExpenseDetails } from "@/src/components/ExpenseDetails";
 import React, { useRef, useState } from "react";
 import { RefreshControl, ScrollView, View, Pressable } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
@@ -29,6 +31,9 @@ export default function PropertyDetail() {
   const [billOpen, setBillOpen] = useState(deduction === "pre_split");
   const [bill, setBill] = useState({ month: month || thisMonth(), amount: "", type: deduction === "pre_split" ? "pre_split" : "electricity" as "electricity" | "other" | "pre_split", notes: "", title: "" });
   const [del, setDel] = useState(false);
+  const [capture, setCapture] = useState(false);
+  const [attachments, setAttachments] = useState<Media[]>([]);
+  const [allocation, setAllocation] = useState<any>(null);
 
   if (p.isLoading) return <View style={{ flex: 1, backgroundColor: colors.surface }}><Loading /></View>;
   if (p.isError) return <View style={{ flex: 1, paddingTop: insets.top }}><ErrorState message={(p.error as Error).message} onRetry={p.refetch} /></View>;
@@ -57,10 +62,11 @@ export default function PropertyDetail() {
     billSaving.current = true; setSavingBill(true);
     if (!billKey.current) billKey.current = `expense-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
-      await api.post("/expenses", { property_id: id, month: bill.month, type: bill.type, amount: Number(bill.amount), notes: bill.notes, title: bill.title, request_key: billKey.current });
+      await api.post("/expenses", { property_id: id, month: bill.month, type: bill.type, amount: Number(bill.amount), notes: bill.notes, title: bill.title, allocation: bill.type === 'pre_split' ? null : allocation ? { ...allocation, owner_percent: Number(allocation.owner_percent), britsmaid_percent: Number(allocation.britsmaid_percent), owner_amount: Number(allocation.owner_amount), britsmaid_amount: Number(allocation.britsmaid_amount) } : null, media_ids: attachments.map(m => m.id), request_key: billKey.current });
       billKey.current = "";
       setBillOpen(false);
       setBill({ ...bill, amount: "", notes: "" });
+      setAttachments([]); setAllocation(null);
       qc.invalidateQueries();
       toast("Bill recorded");
     } catch (e: any) {
@@ -146,7 +152,7 @@ export default function PropertyDetail() {
           <Card>
             <Txt v="label" style={{ marginBottom: spacing.sm }}>Upcoming stays</Txt>
             {upcoming.length === 0 ? <Txt v="caption">No upcoming bookings</Txt> : upcoming.map((b) => (
-              <Pressable key={b.id} testID={`property-booking-${b.id}`} onPress={() => router.push(`/booking/new?id=${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm }}>
+              <Pressable key={b.id} testID={`property-booking-${b.id}`} onPress={() => router.push(`/booking/${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.sm }}>
                 <View style={{ width: 4, height: 32, borderRadius: 2, backgroundColor: otaColor(b.ota) }} />
                 <View style={{ flex: 1 }}>
                   <Txt v="body" style={{ color: colors.onSurface }}>{b.guest_name}</Txt>
@@ -163,10 +169,9 @@ export default function PropertyDetail() {
               <Button testID="property-add-bill" small variant="secondary" icon="flash-outline" title="Add bill" onPress={() => setBillOpen(true)} />
             </View>
             {(exp.data ?? []).length === 0 ? <Txt v="caption">No bills recorded</Txt> : exp.data!.map((e) => (
-              <View key={e.id} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>
-                <Icon name={e.type === "electricity" ? "flash" : "construct-outline"} size={16} color={colors.warning} />
-                <Txt v="body" style={{ flex: 1 }}>{monthLabel(e.month)} · {e.type === "electricity" ? "Electricity" : e.title || e.notes || "Other"}</Txt>
-                <Txt v="mono" style={{ fontSize: 14 }}>{inr(e.amount)}</Txt>
+              <View key={e.id} style={{ gap: spacing.sm, paddingVertical: 6 }}>
+                <ExpenseDetails item={e} />
+                <Txt v="caption">{monthLabel(e.month)}</Txt>
                 <Pressable testID={`delete-bill-${e.id}`} hitSlop={8} onPress={async () => { await api.del(`/expenses/${e.id}`); qc.invalidateQueries(); }}>
                   <Icon name="close-circle" size={18} color={colors.muted} />
                 </Pressable>
@@ -201,12 +206,26 @@ export default function PropertyDetail() {
             <View style={{ flex: 1 }}><Input testID="bill-month-input" label="Month (YYYY-MM)" value={bill.month} onChangeText={(t) => setBill({ ...bill, month: t })} /></View>
             <View style={{ flex: 1 }}><Input testID="bill-amount-input" label="Amount ₹" keyboardType="numeric" value={bill.amount} onChangeText={(t) => setBill({ ...bill, amount: t })} /></View>
           </View>
-          {bill.type === "pre_split" ? <Input testID="bill-title-input" label="Deduction title (required)" value={bill.title} onChangeText={(title) => setBill({ ...bill, title })} /> : null}
+          <Input testID="bill-title-input" label="Expense title / description" value={bill.title} onChangeText={(title) => setBill({ ...bill, title })} />
           <Txt v="caption">{bill.type === "pre_split" ? "Deducted from net revenue before the owner and Britsmaid shares are calculated. Title and note appear on the statement." : bill.type === "other" ? "Deducted from the owner payout only." : "Electricity follows the property sharing rule."}</Txt>
           <Input testID="bill-notes-input" label="Notes" value={bill.notes} onChangeText={(t) => setBill({ ...bill, notes: t })} />
+          {bill.type !== 'pre_split' ? <>
+            <Button variant="secondary" title={allocation ? 'Use original property expense rule' : 'Set owner / Britsmaid allocation'} onPress={() => setAllocation(allocation ? null : { owner_percent: 50, britsmaid_percent: 50, owner_amount: Number(bill.amount) / 2, britsmaid_amount: Number(bill.amount) / 2, manual: false })} />
+            {allocation ? <View style={{ gap: 10 }}>
+              <Txt>Percentages calculate both shares. Entering an amount adjusts the other share to match the total.</Txt>
+              {(['owner', 'britsmaid'] as const).map(who => { const other = who === 'owner' ? 'britsmaid' : 'owner'; return <View key={who} style={{ flexDirection: 'row', gap: 12 }}>
+                <View style={{ flex: 1 }}><Input label={`${who === 'owner' ? 'Owner' : 'Britsmaid'} %`} keyboardType="decimal-pad" value={String(allocation[`${who}_percent`])} onChangeText={v => { const pct = Number(v); const own = Math.round(Number(bill.amount) * (who === 'owner' ? pct : 100 - pct)) / 100; setAllocation({ ...allocation, [`${who}_percent`]: v, [`${other}_percent`]: 100 - pct, owner_amount: own, britsmaid_amount: Math.round((Number(bill.amount) - own) * 100) / 100, manual: false }); }} /></View>
+                <View style={{ flex: 1 }}><Input label="Share ₹" keyboardType="decimal-pad" value={String(allocation.manual ? allocation[`${who}_amount`] : Math.round(Number(bill.amount) * Number(allocation[`${who}_percent`])) / 100)} onChangeText={v => setAllocation({ ...allocation, [`${who}_amount`]: v, [`${other}_amount`]: Math.round((Number(bill.amount) - Number(v)) * 100) / 100, manual: true })} /></View>
+              </View>; })}
+              <Txt v="caption">{allocation.manual ? 'Amounts adjusted manually; amounts take priority over percentages.' : 'Calculated automatically from the total expense.'}</Txt>
+            </View> : null}
+          </> : null}
+          <Button variant="secondary" title={`Attach photo · camera or library (${attachments.length})`} onPress={() => setCapture(true)} />
+          {attachments.map(m => <Button key={m.id} small variant="ghost" title="Remove attached photo" onPress={() => setAttachments(x => x.filter(a => a.id !== m.id))} />)}
           <Button testID="bill-save-button" title="Save bill" onPress={saveBill} loading={savingBill} />
         </KeyboardAwareScrollView>
       </Sheet>
+      <CaptureSheet visible={capture} onClose={() => setCapture(false)} purpose="Expense evidence" destination={{ key: `expense-${id}`, label: 'Expense evidence' }} onUploaded={async media => { setAttachments(old => [...old, ...media.filter(m => !old.some(x => x.id === m.id))]); }} />
       <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
     </View>
   );

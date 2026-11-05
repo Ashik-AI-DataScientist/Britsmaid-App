@@ -71,6 +71,8 @@ class CleaningRetention:
         return False
 
     async def shared(self, mid, task_id):
+        if await self.db.owner_reports.find_one({"settlement.deduction_items.media_ids": mid}):
+            return True
         if await self.db.properties.find_one({"cover_media_id": mid}) or await self.db.owner_reports.find_one({"media_ids": mid}):
             return True
         if await self.db.training_lessons.find_one({"$or": [{"media_ids": mid}, {"draft.media_ids": mid}, {"published.media_ids": mid}]}):

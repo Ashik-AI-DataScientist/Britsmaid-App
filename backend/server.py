@@ -520,9 +520,13 @@ async def authorize_media(media_id, user):
         linked = await db.cleaning.find_one(cq)
         if not linked and user["role"] == "owner":
             linked = await db.owner_reports.find_one(scope(user, {"media_ids": media_id}))
+            linked = linked or await db.owner_reports.find_one(scope(user, {"settlement.deduction_items.media_ids": media_id}))
+            linked = linked or await db.expenses.find_one(scope(user, {"media_ids": media_id, "is_deleted": {"$ne": True}}))
         if not linked:
             linked_elsewhere = await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
+            linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"settlement.deduction_items.media_ids": media_id})
+            linked_elsewhere = linked_elsewhere or await db.expenses.find_one({"media_ids": media_id})
             if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
                 raise HTTPException(404, "File not found")
 
@@ -697,6 +701,9 @@ async def delete_property(pid: str, _=Depends(admin_user)):
     return {"ok": True}
 
 # ---------------------------------------------------------------- Bookings
+from booking_finance import BookingFinance, ExpenseAllocation, calculate as calculate_booking, booking_totals, expense_shares, allocate, money, percent_amount
+
+
 class BookingIn(BaseModel):
     property_id: str
     guest_name: str
@@ -708,6 +715,7 @@ class BookingIn(BaseModel):
     check_out: str
     amount: float = Field(default=0, ge=0, allow_inf_nan=False)
     ota_commission: float = Field(default=0, ge=0, allow_inf_nan=False)
+    financials: Optional[BookingFinance] = None
     status: Literal["confirmed", "cancelled", "blocked"] = "confirmed"
     notes: str = ""
     revision: Optional[int] = Field(default=None, ge=0)
@@ -760,6 +768,9 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
         await check_overlap(body)
     doc = body.model_dump()
     doc.pop("revision", None)
+    if body.financials:
+        doc["financials"] = calculate_booking(body.amount, body.financials.model_dump())
+        doc["ota_commission"] = doc["financials"]["platform_fee"]["amount"]
     doc.update({"source": "manual", "created_at": now_iso()})
     doc["_id"] = ObjectId()
     if body.status != "cancelled":
@@ -814,10 +825,23 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
         raise HTTPException(409, "Cleaning work already exists. Reopen it with an admin reason before changing the property or checkout date.")
     if body.status != "cancelled":
         await check_overlap(body, bid)
+    if body.financials:
+        calculate_booking(body.amount, body.financials.model_dump())
+    elif previous.get("financials"):
+        if "financials" in body.model_fields_set:
+            raise HTTPException(422, "Keep the saved financial breakdown; edit its amounts instead")
+        calculate_booking(body.amount, previous["financials"])
     claimed = []
     if body.status != "cancelled":
         claimed = await claim_nights(db, bid, body.property_id, body.check_in, body.check_out)
     changes = body.model_dump(exclude={"revision"})
+    if previous.get("financials") and "financials" not in body.model_fields_set:
+        changes["financials"] = previous["financials"]
+    if previous.get("financials") and changes.get("financials") is None:
+        raise HTTPException(422, "Keep the saved financial breakdown; edit its amounts instead")
+    if changes.get("financials"):
+        changes["financials"] = calculate_booking(body.amount, changes["financials"])
+        changes["ota_commission"] = changes["financials"]["platform_fee"]["amount"]
     if str(_["_id"]) != "calendar-sync":
         changes.update(manual_protected=True, manually_updated_at=now_iso(), manually_updated_by=str(_["_id"]))
         if previous.get("calendar_observation"):
@@ -1284,6 +1308,8 @@ class ExpenseIn(BaseModel):
     amount: float = Field(ge=0, allow_inf_nan=False)
     notes: str = Field(default="", max_length=2000)
     title: str = Field(default="", max_length=150)
+    allocation: Optional[ExpenseAllocation] = None
+    media_ids: list[str] = Field(default_factory=list, max_length=10)
     request_key: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
     _month = field_validator("month")(valid_month)
 
@@ -1301,6 +1327,14 @@ async def create_expense(body: ExpenseIn, _=Depends(admin_user)):
         raise HTTPException(422, "Enter a deduction title and note explaining the cost before the split")
     doc = body.model_dump()
     doc.pop("request_key", None)
+    if body.type == "pre_split" and body.allocation:
+        raise HTTPException(422, "Choose a shared or owner expense for allocation; before-split costs cannot also be allocated")
+    if body.allocation:
+        doc["allocation"] = allocate(body.amount, body.allocation.model_dump())
+    for mid in body.media_ids:
+        media = await db.media.find_one({"_id": oid(mid), "is_deleted": False})
+        if not media or media.get("owner_id") != str(_["_id"]):
+            raise HTTPException(422, "Choose an available attachment uploaded by your account")
     doc["created_at"] = now_iso()
     doc["created_by"] = str(_["_id"])
     if body.request_key:
@@ -1336,36 +1370,46 @@ def shift_month(month: str, delta: int) -> str:
 async def compute_settlement(p: dict, month: str):
     start, end = month_range(month)
     bookings = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$gte": start, "$lt": end}}).sort("check_in", 1).to_list(1000)
-    gross = sum(b.get("amount", 0) for b in bookings)
-    commission = sum(b.get("ota_commission", 0) for b in bookings)
+    totals = [booking_totals(b) for b in bookings]
+    gross = money(sum(t["gross"] for t in totals))
+    commission = money(sum(t["commission"] for t in totals))
+    gst_total = money(sum(t["gst"] for t in totals))
+    platform_tax = money(sum(t["platform_tax"] for t in totals))
+    booking_misc = money(sum(t["misc"] for t in totals))
     exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month, "is_deleted": {"$ne": True}}).to_list(None)
+    tds_enabled = any(b.get("financials") for b in bookings) or any(e.get("allocation") for e in exps)
     pre_split = sum(e["amount"] for e in exps if e["type"] == "pre_split")
-    net = gross - commission - pre_split
+    net = money(gross - commission - gst_total - platform_tax - booking_misc - pre_split)
     pct = p.get("owner_share_percent", 70)
-    owner_share = round(net * pct / 100, 2)
-    bm_share = round(net - owner_share, 2)
+    owner_share = percent_amount(net, pct) if tds_enabled else round(net * pct / 100, 2)
+    bm_share = money(net - owner_share)
     elec = sum(e["amount"] for e in exps if e["type"] == "electricity")
-    other = sum(e["amount"] for e in exps if e["type"] == "other")
+    other = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "other"))
+    bm_other = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "other"))
     mode = p.get("electricity_mode", "owner")
-    if mode == "split_half":
-        owner_elec, bm_elec = round(elec / 2, 2), round(elec / 2, 2)
-    else:
-        owner_elec, bm_elec = 0, 0  # paid directly by owner
-    owner_payout = round(owner_share - owner_elec - other, 2)
-    bm_net = round(bm_share - bm_elec, 2)
+    legacy_elec = sum(e["amount"] for e in exps if e["type"] == "electricity" and not e.get("allocation"))
+    legacy_half = round(legacy_elec / 2, 2) if mode == "split_half" else 0
+    owner_elec = money(legacy_half + sum(expense_shares(e, p)[0] for e in exps if e["type"] == "electricity" and e.get("allocation")))
+    bm_elec = money(legacy_half + sum(expense_shares(e, p)[1] for e in exps if e["type"] == "electricity" and e.get("allocation")))
+    owner_before_tds = money(owner_share - owner_elec - other)
+    # Opt-in through the new financial entry preserves untouched historical statements.
+    owner_tds = percent_amount(max(owner_before_tds, 0), 2) if tds_enabled else 0
+    owner_payout = money(owner_before_tds - owner_tds)
+    bm_net = money(bm_share - bm_elec - bm_other)
     nights = 0
     occupied = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$lt": end}, "check_out": {"$gt": start}}).to_list(5000)
     nights = sum((min(date.fromisoformat(b["check_out"]), date.fromisoformat(end)) - max(date.fromisoformat(b["check_in"]), date.fromisoformat(start))).days for b in occupied)
     by_ota: dict[str, dict] = {}
-    for b in bookings:
+    for b, t in zip(bookings, totals):
         n = (date.fromisoformat(b["check_out"]) - date.fromisoformat(b["check_in"])).days
         o = by_ota.setdefault(b["ota"], {"ota": b["ota"], "bookings": 0, "nights": 0, "gross": 0, "commission": 0})
         o["bookings"] += 1
         o["nights"] += n
-        o["gross"] += b.get("amount", 0)
-        o["commission"] += b.get("ota_commission", 0)
+        o["gross"] += t["gross"]
+        o["commission"] += t["commission"]
+        o["deductions"] = money(o.get("deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
     for o in by_ota.values():
-        o["net"] = o["gross"] - o["commission"]
+        o["net"] = money(o["gross"] - o["commission"] - o["deductions"])
     y, m = map(int, month.split("-"))
     days_in_month = (date.fromisoformat(end) - date.fromisoformat(start)).days
     return {
@@ -1374,13 +1418,19 @@ async def compute_settlement(p: dict, month: str):
         "gross": gross, "ota_commission": commission, "net_revenue": net, "owner_share": owner_share, "britsmaid_share": bm_share,
         "electricity_total": elec, "owner_electricity": owner_elec, "britsmaid_electricity": bm_elec, "other_deductions": other,
         "pre_split_deductions": pre_split,
+        "gst_total": gst_total, "platform_tax": platform_tax, "booking_misc": booking_misc,
+        "owner_before_tds": owner_before_tds, "owner_tds": owner_tds, "owner_tds_percent": 2 if tds_enabled else 0,
+        "britsmaid_other_expenses": bm_other,
         "deduction_items": [{"id": str(e["_id"]), "type": e["type"], "title": e.get("title", ""),
-            "notes": e.get("notes", ""), "amount": e["amount"]} for e in exps if e["type"] in ("other", "pre_split")],
+            "notes": e.get("notes", ""), "amount": e["amount"], "allocation": e.get("allocation"),
+            "owner_amount": expense_shares(e, p)[0], "britsmaid_amount": expense_shares(e, p)[1],
+            "media_ids": e.get("media_ids", [])} for e in exps],
         "owner_payout": owner_payout, "britsmaid_net": bm_net, "nights": nights,
         "occupancy_percent": round(min(nights, days_in_month) / days_in_month * 100, 1),
         "by_ota": sorted(by_ota.values(), key=lambda x: -x["gross"]),
         "bookings": [{"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "check_in": b["check_in"], "check_out": b["check_out"],
-                      "amount": b.get("amount", 0), "ota_commission": b.get("ota_commission", 0)} for b in bookings],
+                      "amount": t["gross"], "ota_commission": t["commission"], "financials": b.get("financials"),
+                      "net_revenue": t["net"]} for b, t in zip(bookings, totals)],
     }
 
 
@@ -1427,6 +1477,10 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
                 "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
                 "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
                 "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
+                "owner_tds": snap["owner_tds"], "owner_before_tds": snap["owner_before_tds"],
+                "owner_tds_percent": snap["owner_tds_percent"],
+                "gst_total": snap["gst_total"], "platform_tax": snap["platform_tax"], "booking_misc": snap["booking_misc"],
+                "britsmaid_other_expenses": snap["britsmaid_other_expenses"],
                 "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
     r = await db.payouts.insert_one(doc)
     return out(await db.payouts.find_one({"_id": r.inserted_id}))
@@ -1456,16 +1510,18 @@ async def ota_report(month: str, property_id: Optional[str] = None, _=Depends(ad
     rows: dict[str, dict] = {}
     for b in bookings:
         n = (date.fromisoformat(b["check_out"]) - date.fromisoformat(b["check_in"])).days
+        t = booking_totals(b)
         r = rows.setdefault(b["ota"], {"ota": b["ota"], "bookings": 0, "nights": 0, "gross": 0, "commission": 0, "properties": {}})
         r["bookings"] += 1
         r["nights"] += n
-        r["gross"] += b.get("amount", 0)
-        r["commission"] += b.get("ota_commission", 0)
+        r["gross"] += t["gross"]
+        r["commission"] += t["commission"]
+        r["other_deductions"] = money(r.get("other_deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
         pn = props.get(b["property_id"], "Unknown")
-        r["properties"][pn] = r["properties"].get(pn, 0) + b.get("amount", 0)
+        r["properties"][pn] = r["properties"].get(pn, 0) + t["gross"]
     result = []
     for r in rows.values():
-        r["net"] = r["gross"] - r["commission"]
+        r["net"] = money(r["gross"] - r["commission"] - r.get("other_deductions", 0))
         r["adr"] = round(r["gross"] / r["nights"], 2) if r["nights"] else 0
         r["properties"] = [{"name": k, "gross": v} for k, v in sorted(r["properties"].items(), key=lambda x: -x[1])]
         result.append(r)
@@ -1523,13 +1579,16 @@ async def delete_owner_report(rid: str, _=Depends(admin_user)):
 @api.get("/public/reports/{token}/media/{media_id}")
 async def public_media(token: str, media_id: str):
     r = await db.owner_reports.find_one({"share_token": token})
-    if not r or media_id not in r.get("media_ids", []):
+    allowed = set((r or {}).get("media_ids", []))
+    for item in (r or {}).get("settlement", {}).get("deduction_items", []):
+        allowed.update(item.get("media_ids", []))
+    if not r or media_id not in allowed:
         raise HTTPException(404, "Not found")
     return await stream_media(media_id)
 
 
 def inr(v):
-    return "₹" + f"{v:,.0f}"
+    return "₹" + f"{v:,.2f}"
 
 
 @api.get("/public/reports/{token}", response_class=HTMLResponse)
@@ -1540,16 +1599,28 @@ async def public_report(token: str):
     s = r["settlement"]
     medias = await db.media.find({"_id": {"$in": [ObjectId(m) for m in r.get("media_ids", []) if ObjectId.is_valid(m)]}}).to_list(100)
     e = html.escape
-    deduction_details = "".join(f'<tr><td>{e(d.get("title") or "Owner deduction")}<br/><small>{e(d.get("notes") or "No note recorded")}</small></td><td>{"Before split" if d["type"] == "pre_split" else "Owner only"}</td><td>{inr(d["amount"])}</td></tr>' for d in s.get("deduction_items", []))
-    deduction_details = f'<details><summary>Other deductions · details</summary><table>{deduction_details}</table></details>' if deduction_details else ""
+    deduction_details = ""
+    for d in s.get("deduction_items", []):
+        owner_amount, bm_amount = d.get("owner_amount", 0), d.get("britsmaid_amount", 0)
+        shares = f'<p>Owner: {inr(owner_amount)} / Britsmaid: {inr(bm_amount)}</p>' if 'owner_amount' in d else ''
+        treatment = 'Before revenue split' if d['type'] == 'pre_split' else 'After revenue split'
+        attachments = ''.join(f'<a href="{e(token)}/media/{e(mid)}" target="_blank" rel="noopener">Open attachment {i + 1}</a><br>' for i, mid in enumerate(d.get('media_ids', [])))
+        deduction_details += f'<details><summary>{e(d.get("title") or "Expense")} - {inr(d["amount"])}</summary><p>{e(d.get("notes") or "")}</p><small>{treatment}</small>{shares}{attachments}</details>'
+    tax_lines = ''.join(f'<div class="row"><span>{label}</span><span>-{inr(s.get(key, 0))}</span></div>' for key, label in [('gst_total', 'Booking GST'), ('platform_tax', 'Platform tax deductions'), ('booking_misc', 'Other booking expenses')] if s.get(key))
+    tds_line = f'<div class="row"><span>Owner balance after all expenses</span><span>{inr(s.get("owner_before_tds", 0))}</span></div><div class="row"><span>Owner TDS (2%) · monthly total</span><span>-{inr(s.get("owner_tds", 0))}</span></div>' if s.get('owner_tds_percent') else ''
     pre_split_line = f'<div class="row"><span>Deductions before split</span><span>-{inr(s["pre_split_deductions"])}</span></div>' if s.get("pre_split_deductions") else ""
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
     ota_rows = "".join(f'<details><summary><b>{e(o["ota"])}</b><span>{inr(o["gross"])}</span></summary><div class="row"><span>Bookings</span><span>{o["bookings"]}</span></div><div class="row"><span>Nights</span><span>{o["nights"]}</span></div><div class="row"><span>OTA commission</span><span>-{inr(o["commission"])}</span></div><div class="row"><span>Net</span><span>{inr(o["net"])}</span></div></details>' for o in s["by_ota"])
     bk_rows = "".join(f'<tr><td>{e(b["guest_name"])}<br><small>{e(b["ota"])} · {b["check_in"]} → {b["check_out"]}</small></td><td align="right">{inr(b["amount"])}</td></tr>' for b in s["bookings"])
-    elec_line = (f'<div class="row"><span>Electricity (50% of {inr(s["electricity_total"])})</span><span>-{inr(s["owner_electricity"])}</span></div>'
-                 if s["electricity_mode"] == "split_half" else '<div class="row"><span>Electricity</span><span>Managed by owner</span></div>')
+    for b in s['bookings']:
+        f = b.get('financials')
+        if not f:
+            continue
+        lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Platform tax deduction')])
+        bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary>{lines}<p>{e(f.get("misc_title") or "Other booking expense")}: {inr(f.get("misc_amount", 0))}<br>{e(f.get("misc_notes") or "")}</p><b>Net booking revenue: {inr(b.get("net_revenue", 0))}</b></details></td></tr>'
+    elec_line = f'<div class="row"><span>Electricity · owner contribution</span><span>-{inr(s["owner_electricity"])}</span></div>'
     maxv = max([s["owner_share"], s["britsmaid_share"], s["ota_commission"], 1])
     bars = "".join(f'<div class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{v / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></div>'
                    for lbl, v, c in [("Owner share", s["owner_share"], "#1B3A6B"), ("Britsmaid share", s["britsmaid_share"], "#375B96"), ("OTA commission", s["ota_commission"], "#9CA3AF")])
@@ -1567,10 +1638,10 @@ table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px 
 <div class="wrap"><div class="card"><div>Your payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
 <div class="card"><b>Revenue split</b><small> (tap bars)</small>{bars}</div>
 <div class="card"><b>How your payout is calculated</b><div class="row"><span>Gross booking revenue</span><span>{inr(s['gross'])}</span></div>
-<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div>{pre_split_line}<div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
+<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div>{tax_lines}{pre_split_line}<div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
 <div class="row"><span>Your share ({s['owner_share_percent']:.0f}%)</span><span>{inr(s['owner_share'])}</span></div>{elec_line}
 {f'<div class="row"><span>Other deductions</span><span>-{inr(s["other_deductions"])}</span></div>' if s['other_deductions'] else ''}
-{deduction_details}<div class="row"><b>Payout</b><b>{inr(s['owner_payout'])}</b></div></div>
+{deduction_details}{tds_line}<div class="row"><b>Payout after TDS</b><b>{inr(s['owner_payout'])}</b></div></div>
 <div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>
 <div class="card"><b>Property condition</b><p>{e(r.get('condition_notes') or '')}</p><div class="grid">{gallery}</div></div></div>
@@ -1692,7 +1763,7 @@ async def dashboard(_=Depends(admin_user)):
         return {"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "property_name": pmap.get(b["property_id"], "—"), "check_in": b["check_in"], "check_out": b["check_out"]}
     return {
         "month": month, "properties": len(props), "occupied_today": occupied,
-        "month_gross": sum(b.get("amount", 0) for b in month_b), "month_bookings": len(month_b),
+        "month_gross": money(sum(booking_totals(b)["gross"] for b in month_b)), "month_bookings": len(month_b),
         "arrivals": [bk(b) for b in arrivals], "departures": [bk(b) for b in departures],
         "pending_cleaning": [{"id": str(c["_id"]), "property_name": pmap.get(c["property_id"], "—"), "date": c["date"], "status": c["status"]} for c in pending_clean],
         "unpaid_invoices": len(unpaid), "unpaid_total": sum(i.get("total", 0) for i in unpaid),

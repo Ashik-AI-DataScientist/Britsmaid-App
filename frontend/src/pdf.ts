@@ -4,6 +4,8 @@ import * as Sharing from "expo-sharing";
 import { LOGO_URL } from "@/src/api";
 import { fmtDate, inr, monthLabel } from "@/src/format";
 
+const financeRows = (s: any) => [['Booking GST', s.gst_total], ['Platform tax deductions', s.platform_tax], ['Other booking expenses', s.booking_misc]].filter(([, value]) => value).map(([label, value]) => `<tr><td>${label}</td><td class="r">-${inr(Number(value))}</td></tr>`).join('');
+const tdsRows = (s: any) => (s.owner_tds_percent || s.owner_tds) ? `<tr><td>Owner balance after all expenses</td><td class="r">${inr(s.owner_before_tds)}</td></tr><tr><td>Owner TDS (2%) · monthly total</td><td class="r">-${inr(s.owner_tds)}</td></tr>` : '';
 const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
 
 const shell = (title: string, body: string) => `<!doctype html><html><head><meta charset="utf-8"/><title>${esc(title)}</title>
@@ -30,18 +32,23 @@ ${inv.notes ? `<div class="box">${esc(inv.notes)}</div>` : ""}`);
 export function settlementHtml(s: any, extra?: { title?: string; notes?: string; photos?: string[] }) {
   const ota = s.by_ota.map((o: any) => `<tr><td>${esc(o.ota)}</td><td class="r">${o.bookings}</td><td class="r">${o.nights}</td><td class="r">${inr(o.gross)}</td><td class="r">-${inr(o.commission)}</td><td class="r">${inr(o.net)}</td></tr>`).join("");
   const bk = s.bookings.map((b: any) => `<tr><td>${esc(b.guest_name)}</td><td>${esc(b.ota)}</td><td>${fmtDate(b.check_in)} → ${fmtDate(b.check_out)}</td><td class="r">${inr(b.amount)}</td></tr>`).join("");
+  const breakdowns = s.bookings.filter((b: any) => b.financials).map((b: any) => {
+    const f = b.financials;
+    const lines = [['GST', f.gst], ['Platform fee', f.platform_fee], ['Platform tax deduction', f.platform_tax]].map(([label, line]: any[]) => `<tr><td>${label}${line.manual ? ' (adjusted)' : ''}</td><td>${line.percent == null ? 'Not entered' : `${line.percent}%`}</td><td class="r">${inr(line.amount)}</td></tr>`).join('');
+    return `<h4>${esc(b.guest_name)} · ${esc(b.ota)}</h4><table><tr><th>Booking breakdown</th><th>Percentage</th><th>Amount</th></tr><tr><td>Gross guest payment</td><td></td><td>${inr(b.amount)}</td></tr>${lines}<tr><td>${esc(f.misc_title || 'Other booking expense')}<br>${esc(f.misc_notes)}</td><td></td><td>${inr(f.misc_amount)}</td></tr><tr><td>Net booking revenue</td><td></td><td>${inr(b.net_revenue)}</td></tr></table>`;
+  }).join('');
   const photos = (extra?.photos ?? []).map((u) => `<img src="${u}" style="width:31%;margin:1%;border-radius:6px;aspect-ratio:1;object-fit:cover"/>`).join("");
   return shell("Owner statement", `<div class="top"><div><h1>${esc(extra?.title || "Owner Statement")}</h1><div class="muted">${esc(s.property_name)} · ${esc(s.owner_name)} · ${monthLabel(s.month)}</div></div><img class="logo" src="${LOGO_URL}"/></div>
 <div class="box"><div class="muted">Owner payout</div><div class="big">${inr(s.owner_payout)}</div><div class="muted">${s.nights} nights · ${s.occupancy_percent}% occupancy · Split ${s.owner_share_percent}% owner / ${s.britsmaid_share_percent}% Britsmaid</div></div>
 <table><tr><th>Calculation</th><th class="r">Amount</th></tr><tr><td>Gross booking revenue</td><td class="r">${inr(s.gross)}</td></tr><tr><td>OTA commissions</td><td class="r">-${inr(s.ota_commission)}</td></tr>
-${s.pre_split_deductions ? `<tr><td>Deductions before split</td><td class="r">-${inr(s.pre_split_deductions)}</td></tr>` : ""}
+${financeRows(s)}${s.pre_split_deductions ? `<tr><td>Deductions before split</td><td class="r">-${inr(s.pre_split_deductions)}</td></tr>` : ""}
 <tr><td>Net revenue</td><td class="r">${inr(s.net_revenue)}</td></tr><tr><td>Owner share (${s.owner_share_percent}%)</td><td class="r">${inr(s.owner_share)}</td></tr><tr><td>Britsmaid share (${s.britsmaid_share_percent}%)</td><td class="r">${inr(s.britsmaid_share)}</td></tr>
-<tr><td>Electricity ${s.electricity_mode === "split_half" ? `(owner 50% of ${inr(s.electricity_total)})` : "(managed by owner)"}</td><td class="r">-${inr(s.owner_electricity)}</td></tr>
-${s.other_deductions ? `<tr><td>Other deductions</td><td class="r">-${inr(s.other_deductions)}</td></tr>` : ""}<tr class="tot"><td>Owner payout</td><td class="r">${inr(s.owner_payout)}</td></tr></table>
-${s.deduction_items?.length ? `<h3>Deduction details</h3><table><tr><th>Deduction and note</th><th>Applied to</th><th class="r">Amount</th></tr>${s.deduction_items.map((d: any) => `<tr><td>${esc(d.title || "Owner deduction")}<br/>${esc(d.notes || "No note recorded")}</td><td>${d.type === "pre_split" ? "Before split" : "Owner only"}</td><td class="r">-${inr(d.amount)}</td></tr>`).join("")}</table>` : ""}
+<tr><td>Electricity · owner contribution</td><td class="r">-${inr(s.owner_electricity)}</td></tr>
+${s.other_deductions ? `<tr><td>Other deductions</td><td class="r">-${inr(s.other_deductions)}</td></tr>` : ""}${tdsRows(s)}<tr class="tot"><td>Owner payout after TDS</td><td class="r">${inr(s.owner_payout)}</td></tr></table>
+${s.deduction_items?.length ? `<h3>Deduction details</h3><table><tr><th>Deduction and note</th><th>Applied to</th><th class="r">Amount</th></tr>${s.deduction_items.map((d: any) => `<tr><td>${esc(d.title || "Owner deduction")}<br/>${esc(d.notes || "No note recorded")}</td><td>${d.type === "pre_split" ? "Before split" : d.allocation ? `Owner ${inr(d.allocation.owner_amount)} / Britsmaid ${inr(d.allocation.britsmaid_amount)}` : "Owner only"}</td><td class="r">-${inr(d.amount)}</td></tr>`).join("")}</table>` : ""}
 <h3>Revenue by OTA</h3><table><tr><th>OTA</th><th class="r">Bookings</th><th class="r">Nights</th><th class="r">Gross</th><th class="r">Commission</th><th class="r">Net</th></tr>${ota}</table>
 <h3>Bookings</h3><table><tr><th>Guest</th><th>OTA</th><th>Stay</th><th class="r">Amount</th></tr>${bk}</table>
-${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
+${breakdowns}${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
 }
 
 export function payoutReceiptHtml(p: any) {
@@ -51,12 +58,12 @@ export function payoutReceiptHtml(p: any) {
 <div class="box"><div class="muted">Amount paid</div><div class="big">${inr(p.amount)}</div></div>
 <table><tr><th>Statement summary · ${monthLabel(p.month)}</th><th class="r">Amount</th></tr>
 <tr><td>Gross booking revenue (${p.nights} nights)</td><td class="r">${inr(p.gross)}</td></tr><tr><td>OTA commissions</td><td class="r">-${inr(p.ota_commission)}</td></tr>
-${p.pre_split_deductions ? `<tr><td>Deductions before split</td><td class="r">-${inr(p.pre_split_deductions)}</td></tr>` : ""}
+${financeRows(p)}${p.pre_split_deductions ? `<tr><td>Deductions before split</td><td class="r">-${inr(p.pre_split_deductions)}</td></tr>` : ""}
 <tr><td>Owner share (${p.owner_share_percent}%)</td><td class="r">${inr(p.owner_share)}</td></tr>
-${p.owner_electricity ? `<tr><td>Electricity (owner 50%)</td><td class="r">-${inr(p.owner_electricity)}</td></tr>` : ""}
+${p.owner_electricity ? `<tr><td>Electricity · owner contribution</td><td class="r">-${inr(p.owner_electricity)}</td></tr>` : ""}
 ${p.other_deductions ? `<tr><td>Other deductions</td><td class="r">-${inr(p.other_deductions)}</td></tr>` : ""}
-<tr class="tot"><td>Calculated payout</td><td class="r">${inr(p.calculated_payout)}</td></tr><tr class="tot"><td>Amount paid</td><td class="r">${inr(p.amount)}</td></tr></table>
-${p.deduction_items?.length ? `<h3>Deduction details</h3><table>${p.deduction_items.map((d: any) => `<tr><td>${esc(d.title || "Owner deduction")}<br/>${esc(d.notes || "No note recorded")}</td><td>${d.type === "pre_split" ? "Before split" : "Owner only"}</td><td class="r">-${inr(d.amount)}</td></tr>`).join("")}</table>` : ""}
+${tdsRows(p)}<tr class="tot"><td>Calculated payout after TDS</td><td class="r">${inr(p.calculated_payout)}</td></tr><tr class="tot"><td>Amount paid</td><td class="r">${inr(p.amount)}</td></tr></table>
+${p.deduction_items?.length ? `<h3>Deduction details</h3><table>${p.deduction_items.map((d: any) => `<tr><td>${esc(d.title || "Owner deduction")}<br/>${esc(d.notes || "No note recorded")}</td><td>${d.type === "pre_split" ? "Before split" : d.allocation ? `Owner ${inr(d.allocation.owner_amount)} / Britsmaid ${inr(d.allocation.britsmaid_amount)}` : "Owner only"}</td><td class="r">-${inr(d.amount)}</td></tr>`).join("")}</table>` : ""}
 ${p.notes ? `<div class="box">${esc(p.notes)}</div>` : ""}`);
 }
 

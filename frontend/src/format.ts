@@ -1,5 +1,5 @@
 export const inr = (v: number | undefined | null) =>
-  "₹" + Math.round(v ?? 0).toLocaleString("en-IN");
+  "₹" + (v ?? 0).toLocaleString("en-IN", { minimumFractionDigits: Number.isInteger(v ?? 0) ? 0 : 2, maximumFractionDigits: 2 });
 
 const pad = (n: number) => String(n).padStart(2, "0");
 export const toISO = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
