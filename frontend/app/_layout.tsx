@@ -19,6 +19,13 @@ function AuthGate() {
   const { user, loading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+  const area = segments[0] as string;
+  const page = (segments as string[])[1];
+  const ownerBlocked = user?.role === "owner" && (
+    ["(admin)", "staff", "guests", "invoice", "issues", "settings", "training"].includes(area)
+    || (["booking", "report"].includes(area) && page === "new")
+    || (area === "property" && page === "edit")
+  );
   useEffect(() => {
     if (loading) return;
     const onLogin = segments[0] === "login";
@@ -27,10 +34,10 @@ function AuthGate() {
     if (user && !onLogin && !isGuest) {
       const area = segments[0] as string;
       if ((user.role === "cleaner" || user.role === "supervisor") && area && area !== "cleaning" && !(user.role === "cleaner" && area === "training")) router.replace("/cleaning");
-      if (user.role === "owner" && (["(admin)", "staff", "guests", "invoice", "issues", "settings", "training"].includes(area) || (['booking', 'report'].includes(area) && (segments as string[])[1] === 'new') || (area === 'property' && (segments as string[])[1] === 'edit'))) router.replace("/owner");
+      if (ownerBlocked) router.replace("/owner");
     }
-  }, [user, loading, segments, router]);
-  if (loading) return <Loading label="Signing you in..." />;
+  }, [user, loading, segments, router, ownerBlocked]);
+  if (loading || ownerBlocked) return <Loading label={ownerBlocked ? "Opening owner portal..." : "Signing you in..."} />;
   return <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surfaceSecondary } }} />;
 }
 

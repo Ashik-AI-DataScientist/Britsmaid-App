@@ -26,11 +26,12 @@ export default function PropertyDetail() {
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`) });
   const [syncing, setSyncing] = useState(false);
   const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [editor, setEditor] = useState<any>(deduction ? { initialTreatment: deduction === 'pre_split' ? 'before_split' : '' } : null);
   const [dismissedExpense, setDismissedExpense] = useState('');
   const [del, setDel] = useState(false);
   const linkedExpense = expense_id && dismissedExpense !== expense_id ? exp.data?.find(e => e.id === expense_id) : null;
-  const activeEditor = editor || (linkedExpense ? { item: linkedExpense } : null);
+  const activeEditor = isAdmin ? editor || (linkedExpense ? { item: linkedExpense } : null) : null;
   const editExpense = (item: any) => item.booking_id ? router.push(`/booking/new?id=${item.booking_id}`) : setEditor({ item });
 
   if (p.isLoading) return <View style={{ flex: 1, backgroundColor: colors.surface }}><Loading /></View>;
@@ -70,8 +71,8 @@ export default function PropertyDetail() {
             <IconButton testID="property-back-button" name="chevron-back" tone="inverse" onPress={() => router.back()} />
             <View style={{ flexDirection: "row", gap: spacing.sm }}>
               <HomeButton tone="inverse" />
-              <IconButton testID="property-edit-button" name="create-outline" tone="inverse" onPress={() => router.push(`/property/edit?id=${id}`)} />
-              <IconButton testID="property-delete-button" name="trash-outline" tone="inverse" onPress={() => setDel(true)} />
+              {isAdmin ? <IconButton testID="property-edit-button" name="create-outline" tone="inverse" onPress={() => router.push(`/property/edit?id=${id}`)} /> : null}
+              {isAdmin ? <IconButton testID="property-delete-button" name="trash-outline" tone="inverse" onPress={() => setDel(true)} /> : null}
             </View>
           </View>
           <View style={{ position: "absolute", left: spacing.lg, bottom: spacing.lg, right: spacing.lg }}>
@@ -86,9 +87,9 @@ export default function PropertyDetail() {
 
         <View style={{ padding: spacing.lg, gap: spacing.md }}>
           <View style={{ flexDirection: "row", gap: spacing.sm }}>
-            <Button testID="property-new-booking" small icon="add" title="Booking" onPress={() => router.push(`/booking/new?property_id=${id}`)} style={{ flex: 1 }} />
+            {isAdmin ? <Button testID="property-new-booking" small icon="add" title="Booking" onPress={() => router.push(`/booking/new?property_id=${id}`)} style={{ flex: 1 }} /> : null}
             <Button testID="property-statement" small variant="secondary" icon="pie-chart-outline" title="Statement" onPress={() => router.push(`/report/settlement?property_id=${id}`)} style={{ flex: 1 }} />
-            <Button testID="property-report" small variant="secondary" icon="camera-outline" title="Report" onPress={() => router.push(`/report/new?property_id=${id}`)} style={{ flex: 1 }} />
+            {isAdmin ? <Button testID="property-report" small variant="secondary" icon="camera-outline" title="Report" onPress={() => router.push(`/report/new?property_id=${id}`)} style={{ flex: 1 }} /> : null}
           </View>
           {v.needs_cleaning && v.pending_cleaning_id ? (
             <Card testID="property-pending-cleaning" onPress={() => router.push(`/cleaning/${v.pending_cleaning_id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.warningSoft, borderColor: colors.warningSoft }}>
@@ -110,12 +111,12 @@ export default function PropertyDetail() {
           <Card>
             <View style={{ flexDirection: "row", alignItems: "center", marginBottom: spacing.sm }}>
               <Txt v="label" style={{ flex: 1 }}>OTA iCal sync</Txt>
-              <Button testID="property-ical-sync" small variant="secondary" icon="sync" title="Sync now" loading={syncing} onPress={sync} />
+              {isAdmin ? <Button testID="property-ical-sync" small variant="secondary" icon="sync" title="Sync now" loading={syncing} onPress={sync} /> : null}
             </View>
             {(v.ical_feeds ?? []).length === 0 ? (
-              <Pressable testID="property-add-ical" onPress={() => router.push(`/property/edit?id=${id}`)}>
+              isAdmin ? <Pressable testID="property-add-ical" onPress={() => router.push(`/property/edit?id=${id}`)}>
                 <Txt v="body" color={colors.brandPrimary}>Add OTA iCal links, including MakeMyTrip →</Txt>
-              </Pressable>
+              </Pressable> : <Txt v="caption">No OTA calendars linked yet.</Txt>
             ) : v.ical_feeds.map((f: any, i: number) => (
               <View key={i} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: 6 }}>
                 <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: otaColor(f.ota) }} />
@@ -163,16 +164,16 @@ export default function PropertyDetail() {
             </View>
           </Card>
           <Button testID="property-cleaning-history" variant="ghost" icon="sparkles-outline" title="Cleaning history" onPress={() => router.push(`/cleaning?property_id=${id}`)} />
-          <View style={{ flexDirection: "row", gap: spacing.sm }}>
+          {isAdmin ? <View style={{ flexDirection: "row", gap: spacing.sm }}>
             <Button testID="property-edit-bottom" style={{ flex: 1 }} variant="secondary" icon="create-outline" title="Edit property" onPress={() => router.push(`/property/edit?id=${id}`)} />
             <Button testID="property-delete-bottom" style={{ flex: 1 }} variant="danger" icon="trash-outline" title="Delete" onPress={() => setDel(true)} />
-          </View>
+          </View> : null}
           <Txt v="caption" style={{ textAlign: "center" }}>Added {fmtDate(v.created_at)}</Txt>
         </View>
       </ScrollView>
 
       {activeEditor ? <ExpenseEditor key={activeEditor.item?.id || 'new'} propertyId={id} item={activeEditor.item} initialMonth={month} initialTreatment={activeEditor.initialTreatment} onClose={() => { setEditor(null); setDismissedExpense(expense_id || ''); }} /> : null}
-      <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} />
+      {isAdmin ? <ConfirmSheet visible={del} title="Remove property?" message={`${v.name} will be hidden from all lists. Bookings and reports are kept.`} onConfirm={remove} onClose={() => setDel(false)} /> : null}
     </View>
   );
 }

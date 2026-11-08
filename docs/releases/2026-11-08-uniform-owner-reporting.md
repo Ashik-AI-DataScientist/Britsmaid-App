@@ -38,3 +38,19 @@ The Revenue by OTA section now shows gross guest payments, combined taxes and co
 Validation for this revision: 148 targeted backend/report tests passed, including three new OTA cases for zero, one-paisa and positive booking expenses. The frontend edge suite and 659 report/PDF scenarios passed. Revised paid/pending PDF samples and the long-report sample passed content/bounds checks and visual inspection of the updated table. TypeScript, lint and the local web build were checked. Retired booking editor prompts and the old OTA Commission/Net label pair were checked for absence from current application source. This revision is a descendant of the previously reviewed local release, retaining those changes.
 
 Interactive browser and physical phone checks remain outstanding because the browser-control tools cannot start. Deployment still requires the user's confirmation.
+
+## Owner consistency and read-only audit
+
+All owners use the same OwnerVilla and shared statement, calendar and expense components. Earnings, Payouts, Calendar, Stays and Updates are common features. Data is scoped to the assigned property IDs. Populated records determine which optional breakdown groups are shown.
+
+The audit found that the separate property-detail route still displayed some admin action buttons to owners who reached it directly. Backend authorization already denied those writes. The local fix now hides property edit/delete, booking/report creation, iCal setup/sync, and deletion confirmation from owners. Expense editor query parameters cannot mount the editor for an owner. The owner route guard withholds forbidden editor/admin routes immediately while redirecting, preventing a transient editor render.
+
+Additional verification passed:
+
+- 54 registered business-data write routes were attempted with each of two independent owner sessions, all returning 403 (108 checks). Normal login/logout and authorized view-ticket creation are distinguished from business editing; guest invitation uploads have their own authorization flow.
+- Both owners could read their complete assigned statements, expense notes, allocation details, attached receipt tickets and edit-history explanations. The same calls to another owner's property or receipt were blocked.
+- Zero, one and multiple property assignment cases were checked for dashboards, global lists and calendars. The dedicated owner access suite now has 114 passing cases.
+- 18 synthetic React renders verified common owner property tabs, the selected calendar property, expanded expense notes and evidence, and hidden admin controls. Another 26 route renders verified that forbidden owner routes cannot render their navigation stack while view routes remain available.
+- The full isolated backend regression suite passed 730 tests before the final four assignment cases were added. Those four cases also passed in the final 114-case owner suite. Frontend validation includes these new render tests.
+
+The browser-control startup failure was reproduced during this audit, so these are API and synthetic component-render checks, not a completed interactive browser or physical phone walkthrough. Production data and deployment remain untouched pending the user's approval.
