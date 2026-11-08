@@ -108,7 +108,8 @@ ${p.notes ? `<div class="box">${esc(p.notes)}</div>` : ""}`);
 
 export async function sharePdf(html: string) {
   if (Platform.OS === "web") {
-    await Print.printAsync({ html });
+    const { previewWebPdf } = await import('./pdf-web');
+    await previewWebPdf(html);
     return;
   }
   const { uri } = await Print.printToFileAsync({ html });
