@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
+import { PropertyCalendar } from "@/src/components/PropertyCalendar";
 import { SettlementView } from "@/src/components/SettlementView";
 import { PayoutStatusCard, downloadReceipt } from "@/src/components/Payout";
 import { settlementHtml, sharePdf } from "@/src/pdf";
@@ -11,7 +12,7 @@ import { Badge, Button, Card, Empty, ErrorState, Header, Icon, IconButton, Loadi
 import { fmtDate, fmtShort, inr, monthLabel, otaColor, shiftMonth, thisMonth, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 
-type Tab = "earnings" | "payouts" | "stays" | "updates";
+type Tab = "earnings" | "payouts" | "stays" | "updates" | "calendar";
 
 export default function OwnerVilla() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -22,7 +23,7 @@ export default function OwnerVilla() {
   const [tab, setTab] = useState<Tab>("earnings");
   const [month, setMonth] = useState(thisMonth());
   const [busy, setBusy] = useState(false);
-  const prop = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`) });
+  const prop = useQuery({ queryKey: ["property", id], queryFn: () => api.get(`/properties/${id}`), refetchInterval: 30000 });
   const s = useQuery({ queryKey: ["settlement", id, month], queryFn: () => api.get(`/reports/settlement?property_id=${id}&month=${month}`), enabled: tab === "earnings" });
   const bookings = useQuery({ queryKey: ["bookings", id], queryFn: () => api.get<any[]>(`/bookings?property_id=${id}`), enabled: tab === "stays" });
   const reports = useQuery({ queryKey: ["owner-reports", id], queryFn: () => api.get<any[]>(`/owner-reports?property_id=${id}`), enabled: tab === "updates" });
@@ -35,11 +36,15 @@ export default function OwnerVilla() {
 
   const share = async () => {
     setBusy(true);
-    try { await sharePdf(settlementHtml(s.data)); } catch (e: any) { toast(e.message, "error"); } finally { setBusy(false); }
+    try {
+      const latest = await s.refetch();
+      if (latest.error) throw latest.error;
+      await sharePdf(settlementHtml(latest.data));
+    } catch (e: any) { toast(e.message, "error"); } finally { setBusy(false); }
   };
 
   const stay = (b: any) => (
-    <Card key={b.id} testID={`owner-stay-${b.id}`} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+    <Card key={b.id} onPress={() => router.push(`/booking/${b.id}`)} testID={`owner-stay-${b.id}`} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
       <View style={{ width: 4, alignSelf: "stretch", borderRadius: 2, backgroundColor: b.status === "blocked" ? colors.muted : otaColor(b.ota) }} />
       <View style={{ flex: 1 }}>
         <Txt v="subtitle" style={{ fontSize: 15 }}>{fmtShort(b.check_in)} → {fmtShort(b.check_out)}</Txt>
@@ -53,7 +58,7 @@ export default function OwnerVilla() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <Header back title={prop.data?.name ?? "Villa"} subtitle={prop.data?.location} />
       <View style={{ padding: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, gap: spacing.sm }}>
-        <Segmented testID="owner-villa-tabs" value={tab} onChange={setTab} options={[{ value: "earnings", label: "Earnings" }, { value: "payouts", label: "Payouts" }, { value: "stays", label: "Stays" }, { value: "updates", label: "Updates" }]} />
+        <Segmented testID="owner-villa-tabs" value={tab} onChange={setTab} options={[{ value: "earnings", label: "Earnings" }, { value: "payouts", label: "Payouts" }, { value: "calendar", label: "Calendar" }, { value: "stays", label: "Stays" }, { value: "updates", label: "Updates" }]} />
         {tab === "earnings" ? (
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
             <IconButton testID="owner-prev-month" name="chevron-back" onPress={() => setMonth(shiftMonth(month, -1))} />
@@ -62,7 +67,7 @@ export default function OwnerVilla() {
           </View>
         ) : null}
       </View>
-      {tab === "earnings" ? (
+      {tab === "calendar" ? <PropertyCalendar key={id} propertyId={id} /> : tab === "earnings" ? (
         s.isLoading ? <Loading label="Generating report..." /> : s.isError ? <ErrorState message="Failed to fetch report" onRetry={s.refetch} /> : (
           <>
             <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: insets.bottom + 96 }} refreshControl={<RefreshControl refreshing={s.isRefetching} onRefresh={s.refetch} tintColor={colors.brandPrimary} />}>

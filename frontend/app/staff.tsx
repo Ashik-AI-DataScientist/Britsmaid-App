@@ -19,12 +19,12 @@ export default function Staff() {
   const q = useQuery({ queryKey: ["users"], queryFn: () => api.get<any[]>("/users") });
   const [open, setOpen] = useState(false);
   const props = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
-  const blank = { name: "", email: "", password: "", phone: "", role: "cleaner" as Role, property_ids: [] as string[] };
+  const blank = { name: "", email: "", username: "", password: "", phone: "", role: "cleaner" as Role, property_ids: [] as string[] };
   const [f, setF] = useState(blank);
   const [invite, setInvite] = useState<Invitee | null>(null);
   const [busy, setBusy] = useState(false);
   const [rm, setRm] = useState<any>(null);
-  const [edit, setEdit] = useState<{ id: string; name: string; phone: string; role: Role; password: string; property_ids: string[]; self: boolean } | null>(null);
+  const [edit, setEdit] = useState<{ id: string; name: string; email: string; username: string; phone: string; role: Role; password: string; property_ids: string[]; self: boolean } | null>(null);
   const pname = (id: string) => props.data?.find((p) => p.id === id)?.name ?? "—";
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
@@ -32,10 +32,12 @@ export default function Staff() {
     if (!edit) return;
     if (!edit.name.trim()) return toast("Name is required", "error");
     if (edit.role === "owner" && !edit.property_ids.length) return toast("Assign at least one villa", "error");
-    if (edit.password && edit.password.length < 6) return toast("Password must be at least 6 characters", "error");
+    if (edit.password && edit.password.length < 12) return toast("Password must be at least 12 characters", "error");
     try {
       await api.put(`/users/${edit.id}`, {
         name: edit.name.trim(),
+        ...(edit.email.trim() ? { email: edit.email.trim() } : {}),
+        username: edit.username.trim(),
         phone: edit.phone,
         ...(edit.self ? {} : { role: edit.role }),
         ...(edit.role !== "admin" ? { property_ids: edit.property_ids } : {}),
@@ -50,11 +52,11 @@ export default function Staff() {
   };
 
   const add = async () => {
-    if (!f.name || !f.email || f.password.length < 6) return toast("Name, email and a 6+ char password are required", "error");
+    if (!f.name.trim() || !(f.email.trim() || f.username.trim() || f.phone.trim()) || f.password.length < 12) return toast("Name, an email / phone / username and a 12+ character password are required", "error");
     if (f.role === "owner" && !f.property_ids.length) return toast("Select the villa(s) this owner can see", "error");
     setBusy(true);
     try {
-      const created = await api.post("/users", { ...f, property_ids: f.role !== "admin" ? f.property_ids : [] });
+      const created = await api.post("/users", { ...f, email: f.email.trim() || null, property_ids: f.role !== "admin" ? f.property_ids : [] });
       setOpen(false);
       setF(blank);
       setInvite({ ...created, password: f.password });
@@ -73,11 +75,11 @@ export default function Staff() {
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
         <KeyboardAwareScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.sm, paddingBottom: insets.bottom + spacing.xl }}>
           {(q.data ?? []).map((u) => (
-            <Card key={u.id} testID={`staff-${u.id}`} onPress={() => setEdit({ id: u.id, name: u.name, phone: u.phone ?? "", role: u.role, password: "", property_ids: u.property_ids ?? [], self: u.id === user?.id })} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+            <Card key={u.id} testID={`staff-${u.id}`} onPress={() => setEdit({ id: u.id, name: u.name, email: u.email || "", username: u.username || "", phone: u.phone ?? "", role: u.role, password: "", property_ids: u.property_ids ?? [], self: u.id === user?.id })} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
               <Icon name={u.role === "admin" ? "shield-checkmark-outline" : u.role === "owner" ? "home-outline" : "sparkles-outline"} size={22} color={colors.brandPrimary} />
               <View style={{ flex: 1 }}>
                 <Txt v="subtitle" style={{ fontSize: 15 }}>{u.name}</Txt>
-                <Txt v="caption">{u.email}</Txt>
+                <Txt v="caption">{[u.email, u.phone, u.username].filter(Boolean).join(" · ")}</Txt>
                 {u.role !== "admin" ? <Txt v="caption" color={colors.brandPrimary} testID={`staff-villas-${u.id}`}>Villas: {(u.property_ids ?? []).map(pname).join(", ") || "none"}</Txt> : null}
                 <Txt v="caption" color={colors.brandPrimary}>Tap to edit access & password</Txt>
               </View>
@@ -89,7 +91,7 @@ export default function Staff() {
         </KeyboardAwareScrollView>
       )}
       <Sheet visible={open} onClose={() => setOpen(false)} title="Add team member" testID="staff-sheet">
-        <View style={{ gap: spacing.md }}>
+        <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={{ gap: spacing.md, paddingBottom: spacing.lg }}>
           <Segmented testID="staff-role" value={f.role} onChange={(r) => setF({ ...f, role: r })} options={[{ value: "cleaner", label: "Cleaner" }, { value: "supervisor", label: "Supervisor" }, { value: "owner", label: "Villa owner" }, { value: "admin", label: "Admin" }]} />
           <Txt v="caption">{f.role === "admin" ? "Full access to everything." : f.role === "owner" ? "Sees only the dashboard, earnings, stays & reports of the villas you pick below." : "Assigned villas only: cleaners document their tasks; supervisors review cleaning. Select villas below."}</Txt>
           {f.role !== "admin" ? (
@@ -98,11 +100,12 @@ export default function Staff() {
             </View>
           ) : null}
           <Input testID="staff-name-input" label="Name" value={f.name} onChangeText={(t) => setF({ ...f, name: t })} />
-          <Input testID="staff-email-input" label="Email" autoCapitalize="none" keyboardType="email-address" value={f.email} onChangeText={(t) => setF({ ...f, email: t })} />
-          <Input testID="staff-phone-input" label="WhatsApp number (for invite)" keyboardType="phone-pad" value={f.phone} onChangeText={(t) => setF({ ...f, phone: t })} />
+          <Input testID="staff-email-input" label="Email (optional)" autoCapitalize="none" keyboardType="email-address" value={f.email} onChangeText={(t) => setF({ ...f, email: t })} />
+          <Input testID="staff-username-input" label="Username (optional)" autoCapitalize="none" value={f.username} onChangeText={(username) => setF({ ...f, username })} />
+          <Input testID="staff-phone-input" label="Phone / WhatsApp (can also sign in)" keyboardType="phone-pad" value={f.phone} onChangeText={(t) => setF({ ...f, phone: t })} />
           <Input testID="staff-password-input" label="Temporary password" secureTextEntry value={f.password} onChangeText={(t) => setF({ ...f, password: t })} />
           <Button testID="staff-save-button" title="Add member" onPress={add} loading={busy} />
-        </View>
+        </KeyboardAwareScrollView>
       </Sheet>
       <Sheet visible={!!edit} onClose={() => setEdit(null)} title={`Edit ${edit?.name ?? ""}`} testID="assign-sheet">
         {edit ? (
@@ -119,6 +122,8 @@ export default function Staff() {
               </View>
             ) : null}
             <Input testID="edit-name-input" label="Name" value={edit.name} onChangeText={(t) => setEdit({ ...edit, name: t })} />
+            <Input testID="edit-email-input" label="Email" autoCapitalize="none" value={edit.email} onChangeText={(email) => setEdit({ ...edit, email })} />
+            <Input testID="edit-username-input" label="Username" autoCapitalize="none" value={edit.username} onChangeText={(username) => setEdit({ ...edit, username })} />
             <Input testID="edit-phone-input" label="WhatsApp number" keyboardType="phone-pad" value={edit.phone} onChangeText={(t) => setEdit({ ...edit, phone: t })} />
             <Input testID="edit-password-input" label="Set new password (optional)" secureTextEntry value={edit.password} onChangeText={(t) => setEdit({ ...edit, password: t })} placeholder="Leave blank to keep current" />
             <Button testID="assign-save-button" title="Save changes" onPress={saveAssign} />

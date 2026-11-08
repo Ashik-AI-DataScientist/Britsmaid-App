@@ -144,7 +144,7 @@ async def test_owner_report_and_dashboard_are_scoped(ctx):
     r=await ctx['client'].get('/api/owner/dashboard',headers=auth(ctx,'owner'))
     assert r.status_code == 200 and [v['id'] for v in r.json()['villas']] == [ctx['p1']]
     r=await ctx['client'].get('/api/reports/settlement',params={'property_id':ctx['p1'],'month':month},headers=auth(ctx,'owner'))
-    assert r.status_code == 200 and r.json()['gross'] == 1000 and r.json()['owner_payout'] == 700
+    assert r.status_code == 200 and r.json()['gross'] == 1000 and r.json()['owner_payout'] == 686
     assert (await ctx['client'].get('/api/reports/settlement',params={'property_id':ctx['p2'],'month':month},headers=auth(ctx,'owner'))).status_code == 404
 
 @pytest.mark.asyncio
@@ -178,7 +178,17 @@ async def test_concurrent_overlapping_bookings_are_not_both_accepted(ctx,monkeyp
     monkeypatch.setattr(server,'check_overlap',racing_check)
     today=datetime.now(guest_ids.INDIA_TZ).date()+timedelta(days=10)
     body={'property_id':ctx['p1'],'guest_name':'Concurrent guest','check_in':today.isoformat(),'check_out':(today+timedelta(days=2)).isoformat()}
-    results=await asyncio.gather(*(ctx['client'].post('/api/bookings',headers=auth(ctx),json=body) for _ in range(2)))
+    # Exercise the atomic booking invariant below the new serialized API write guard.
+    # Both checks intentionally race; the night-claim index must still reject one.
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    async def direct_booking():
+        try:
+            await server.create_booking(server.BookingIn(**body), ctx['users']['admin'])
+            return SimpleNamespace(status_code=200)
+        except HTTPException as exc:
+            return SimpleNamespace(status_code=exc.status_code)
+    results=await asyncio.gather(direct_booking(), direct_booking())
     assert sorted(r.status_code for r in results) == [200,409], f'Concurrent booking responses: {[r.status_code for r in results]}'
 
 @pytest.mark.asyncio
@@ -238,9 +248,9 @@ async def test_calendar_feed_failure_and_recovery_create_notice(ctx,monkeypatch)
     p=await ctx['db'].properties.find_one({'_id':ObjectId(ctx['p1'])})
     p['ical_feeds']=[{'ota':'Other','url':'https://example.invalid/calendar'}]
     def fail(*args,**kwargs): raise RuntimeError('simulated network failure')
-    monkeypatch.setattr(server.requests,'get',fail)
+    monkeypatch.setattr(server,'fetch_calendar',fail)
     assert (await server.sync_property(p))[0]['ok'] is False
-    monkeypatch.setattr(server.requests,'get',lambda *a,**kw:Feed())
+    monkeypatch.setattr(server,'fetch_calendar',lambda *a,**kw:Feed.text)
     assert (await server.sync_property(p))[0]['ok'] is True
     issue=await ctx['db'].system_issues.find_one({'route':'Calendar sync '+ctx['p1']})
     assert issue['status']=='recovered'

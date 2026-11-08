@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr, field_validator
 from validation import valid_date, valid_month, month_bounds
 from reservations import claim_nights, release_unused
+from safe_calendar_fetch import fetch_calendar, CalendarFetchError, validate_url
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -58,6 +59,9 @@ class BaseDocument(BaseModel):
     def out(self) -> dict:
         d = self.model_dump()
         d.pop("password_hash", None)
+        for key in list(d):
+            if key.startswith("mfa_"):
+                d.pop(key)
         return d
 
 
@@ -80,6 +84,10 @@ STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_NAME = "britsmaid"
 storage_key = None
+
+
+def delete_object(path):
+    raise HTTPException(503, "Photo deletion storage is not configured")
 
 
 def init_storage():
@@ -118,6 +126,8 @@ def hash_pw(p: str) -> str:
 
 
 def verify_pw(p: str, h: str) -> bool:
+    if len(p.encode()) > 72:
+        return False
     try:
         return bcrypt.checkpw(p.encode(), h.encode())
     except Exception:
@@ -129,12 +139,14 @@ DUMMY_HASH = hash_pw("dummy-password-xyz")
 
 def issue_token(user: dict) -> str:
     n = datetime.now(timezone.utc)
-    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode({"sub": str(user["_id"]), "role": user["role"], "sv": user.get("session_version", 0), "jti": uuid.uuid4().hex, "iat": n, "exp": n + timedelta(days=TOKEN_DAYS)}, JWT_SECRET, algorithm=JWT_ALG)
 
 
 async def user_from_token(token: Optional[str]):
     if not token:
         raise HTTPException(401, "Not authenticated")
+    if await db.revoked_sessions.find_one({"_id": hashlib.sha256(token.encode()).hexdigest()}):
+        raise HTTPException(401, "Session ended. Please sign in again.")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except jwt.InvalidTokenError:
@@ -148,6 +160,12 @@ async def user_from_token(token: Optional[str]):
         if exp < datetime.now(timezone.utc):
             raise HTTPException(401, "Session expired")
         payload = {"sub": sess["user_id"], "sv": sess.get("session_version", 0)}
+    if payload.get("purpose", "access") != "access":
+        raise HTTPException(401, "Invalid token")
+    return await active_token_user(payload)
+
+
+async def active_token_user(payload):
     uid = payload.get("sub")
     if not uid or not ObjectId.is_valid(uid):
         raise HTTPException(401, "Invalid token")
@@ -160,9 +178,31 @@ async def user_from_token(token: Optional[str]):
 
 
 async def current_user(request: Request):
-    auth = request.headers.get("Authorization", "")
-    token = auth[7:] if auth.lower().startswith("bearer ") else None
+    token = request_token(request)
+    if token and not request.headers.get("Authorization") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("origin", "")
+        expected = os.getenv("PUBLIC_APP_URL", str(request.base_url).rstrip("/"))
+        if origin != expected or request.headers.get("sec-fetch-site") == "cross-site":
+            raise HTTPException(403, "Open this action inside Britsmaid and try again.")
     return await user_from_token(token)
+
+
+def request_token(request):
+    auth = request.headers.get("Authorization", "")
+    return auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get("bm_session")
+
+
+@api.post("/auth/logout")
+async def end_session(request: Request, user=Depends(current_user)):
+    token = request_token(request)
+    # Keep revocation beyond the longest supported access-token lifetime.
+    await db.revoked_sessions.update_one(
+        {"_id": hashlib.sha256(token.encode()).hexdigest()},
+        {"$set": {"expires_at": datetime.now(timezone.utc) + timedelta(days=TOKEN_DAYS + 1)}}, upsert=True)
+    await db.user_sessions.delete_many({"session_token": token})
+    response = Response(content='{"ok":true}', media_type="application/json")
+    response.delete_cookie("bm_session", path="/api", secure=True, httponly=True, samesite="strict")
+    return response
 
 
 async def admin_user(user=Depends(current_user)):
@@ -207,25 +247,44 @@ def scope(user, q: dict, field: str = "property_id"):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: str = Field(min_length=1, max_length=254)
     password: str
+    mfa_code: str = Field(default="", max_length=40)
+    browser_session: bool = False
 
 
 class StaffIn(BaseModel):
     name: str
-    email: EmailStr
-    password: str = Field(min_length=6)
+    email: Optional[EmailStr] = None
+    username: str = Field(default="", max_length=40)
+    password: str = Field(min_length=12, max_length=72)
     role: Literal["admin", "cleaner", "supervisor", "owner"] = "cleaner"
     property_ids: List[str] = []
     phone: str = ""
 
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
+
 
 class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(default=None, max_length=40)
     name: Optional[str] = None
     role: Optional[Literal["admin", "cleaner", "supervisor", "owner"]] = None
     phone: Optional[str] = None
     property_ids: Optional[List[str]] = None
-    password: Optional[str] = Field(default=None, min_length=6)
+    password: Optional[str] = Field(default=None, min_length=12, max_length=72)
+
+    @field_validator("password")
+    @classmethod
+    def bounded_password(cls, value):
+        if value is not None and len(value.encode()) > 72:
+            raise ValueError("Password must fit within 72 UTF-8 bytes")
+        return value
 
 
 async def validate_pids(pids: List[str]) -> List[str]:
@@ -239,11 +298,24 @@ async def validate_pids(pids: List[str]) -> List[str]:
 
 @api.post("/auth/login")
 async def login(body: LoginIn):
-    email = body.email.strip().lower()
-    user = await db.users.find_one({"email": email})
+    from login_identifiers import matching_users
+    matches = await matching_users(db, body.email)
+    user = matches[0] if len(matches) == 1 else None
     ok = verify_pw(body.password, user["password_hash"] if user else DUMMY_HASH)
     if not user or not user.get("active") or not ok:
-        raise HTTPException(401, "Incorrect email or password")
+        raise HTTPException(401, "Incorrect login or password")
+    if user.get("mfa_secret"):
+        if not body.mfa_code:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Enter your authenticator or recovery code", "code": "MFA_REQUIRED"}, status_code=401)
+        if not await admin_mfa.verify(user, body.mfa_code):
+            raise HTTPException(401, "Authenticator/recovery code incorrect or already used")
+    if body.browser_session:
+        from fastapi.responses import JSONResponse
+        token = issue_token(user)
+        response = JSONResponse({"cookie_session": True, "user": out(user)})
+        response.set_cookie("bm_session", token, max_age=TOKEN_DAYS * 86400, path="/api", secure=True, httponly=True, samesite="strict")
+        return response
     return {"access_token": issue_token(user), "token_type": "bearer", "user": out(user)}
 
 
@@ -282,14 +354,22 @@ async def list_users(_=Depends(admin_user)):
 
 @api.post("/users")
 async def create_user(body: StaffIn, _=Depends(admin_user)):
-    email = body.email.lower()
-    if await db.users.find_one({"email": email}):
-        raise HTTPException(409, "Email already registered")
+    from login_identifiers import validate_unique
+    email = body.email.lower() if body.email else None
+    login_aliases = await validate_unique(db, {**body.model_dump(), "email": email})
     if body.role == "owner" and not body.property_ids:
         raise HTTPException(400, "Assign at least one villa to the owner")
     pids = await validate_pids(body.property_ids) if body.role != "admin" else []
     doc = {"name": body.name, "email": email, "password_hash": hash_pw(body.password), "role": body.role, "property_ids": pids, "phone": body.phone.strip(), "active": True, "created_at": now_iso()}
-    r = await db.users.insert_one(doc)
+    doc.update(username=body.username.strip().lower(), login_aliases=login_aliases)
+    doc.update({"phone_login": next(a for a in login_aliases if a.startswith("+"))} if body.phone.strip() else {})
+    doc.update({"username_login": body.username.strip().lower()} if body.username.strip() else {})
+    if email is None:
+        doc.pop("email")
+    try:
+        r = await db.users.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "Email, phone or username already belongs to another account")
     if doc.get("role") == "cleaner":
         await training.onboarding({**doc, "_id": r.inserted_id})
     return out(await db.users.find_one({"_id": r.inserted_id}))
@@ -301,6 +381,11 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
     if not u:
         raise HTTPException(404, "User not found")
     changes: dict[str, Any] = {}
+    from login_identifiers import validate_unique
+    for field in ("email", "username"):
+        value = getattr(body, field)
+        if value is not None:
+            changes[field] = value.strip().lower()
     if body.role and body.role != u["role"]:
         if str(admin["_id"]) == uid:
             raise HTTPException(400, "You cannot change your own role")
@@ -326,11 +411,21 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
             raise HTTPException(400, "Assign at least one villa")
         changes["property_ids"] = await validate_pids(body.property_ids)
     if changes:
+        changes["login_aliases"] = await validate_unique(db, {**u, **changes}, u["_id"])
         update = {"$set": changes}
-        if body.password:
+        for field, value in (("phone_login", next((a for a in changes["login_aliases"] if a.startswith("+")), None)),
+                             ("username_login", (changes.get("username", u.get("username")) or "").strip().lower())):
+            if value:
+                changes[field] = value
+            else:
+                update.setdefault("$unset", {})[field] = ""
+        if body.password or body.role or body.property_ids is not None or any(k in changes for k in ("email", "username", "phone")):
             update["$inc"] = {"session_version": 1}
             await db.user_sessions.delete_many({"user_id": str(u["_id"])})
-        await db.users.update_one({"_id": u["_id"]}, update)
+        try:
+            await db.users.update_one({"_id": u["_id"]}, update)
+        except DuplicateKeyError:
+            raise HTTPException(409, "Email, phone or username already belongs to another account")
     updated = await db.users.find_one({"_id": u["_id"]})
     if changes.get("role") == "cleaner":
         await training.onboarding(updated)
@@ -343,7 +438,7 @@ async def reset_password(uid: str, _=Depends(admin_user)):
     if not u:
         raise HTTPException(404, "User not found")
     alphabet = string.ascii_letters + string.digits
-    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(8))
+    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(16))
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}, "$inc": {"session_version": 1}})
     await db.user_sessions.delete_many({"user_id": str(u["_id"])})
     return {"user": out(u), "temp_password": temp}
@@ -353,26 +448,29 @@ async def reset_password(uid: str, _=Depends(admin_user)):
 async def deactivate_user(uid: str, admin=Depends(admin_user)):
     if str(admin["_id"]) == uid:
         raise HTTPException(400, "You cannot remove yourself")
-    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}})
+    await db.users.update_one({"_id": oid(uid)}, {"$set": {"active": False}, "$inc": {"session_version": 1}})
+    await db.user_sessions.delete_many({"user_id": uid})
     return {"ok": True}
 
 # ---------------------------------------------------------------- Media
+photo_processing_lock = asyncio.Semaphore(1)
 @api.post("/upload")
 async def upload(file: UploadFile = File(...), request_key: Optional[str] = Form(None), user=Depends(staff_user)):
     data = await file.read(100 * 1024 * 1024 + 1)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "File too large (max 100MB)")
     ctype = file.content_type or "application/octet-stream"
-    if ctype in ("image/jpeg", "image/png"):
-        from guest_ids import sanitise_image
-        data = await run_in_threadpool(sanitise_image, data)
+    if ctype.startswith("image/") or ctype == "application/octet-stream":
+        from media_images import normalise_photo
+        async with photo_processing_lock:
+            data = await run_in_threadpool(normalise_photo, data)
         ctype, ext = "image/jpeg", "jpg"
     elif ctype == "video/mp4" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mp4"
     elif ctype == "video/quicktime" and len(data) > 12 and data[4:8] == b"ftyp":
         ext = "mov"
     else:
-        raise HTTPException(422, "Choose a real JPEG/PNG photo or MP4/MOV video")
+        raise HTTPException(422, "Choose a supported photo or MP4/MOV video")
     if request_key and not re.fullmatch(r"[A-Za-z0-9_-]{8,120}", request_key):
         raise HTTPException(422, "Invalid upload retry reference")
     digest = hashlib.sha256(data).hexdigest()
@@ -407,25 +505,59 @@ async def stream_media(media_id: str):
     return Response(content=data, media_type=safe_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox"})
 
 
-@api.get("/files/{media_id}")
-async def get_file(media_id: str, request: Request, token: Optional[str] = None):
-    auth = request.headers.get("Authorization", "")
-    user = await user_from_token(auth[7:] if auth.lower().startswith("bearer ") else token)
+async def authorize_media(media_id, user):
     media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
     if not media:
         raise HTTPException(404, "File not found")
     if user["role"] != "admin":
+        cover = await db.properties.find_one({"cover_media_id": media_id, "is_deleted": {"$ne": True},
+            "_id": {"$in": [oid(pid) for pid in owner_pids(user)]}})
+        if cover:
+            return
         cq = scope(user, {"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
         if user["role"] == "cleaner":
             cq["assigned_to"] = str(user["_id"])
         linked = await db.cleaning.find_one(cq)
         if not linked and user["role"] == "owner":
             linked = await db.owner_reports.find_one(scope(user, {"media_ids": media_id}))
+            linked = linked or await db.owner_reports.find_one(scope(user, {"settlement.deduction_items.media_ids": media_id}))
+            linked = linked or await db.expenses.find_one(scope(user, {"$or": [{"media_ids": media_id}, {"change_history.before.media_ids": media_id}, {"change_history.after.media_ids": media_id}]}))
         if not linked:
             linked_elsewhere = await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]})
             linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"media_ids": media_id})
+            linked_elsewhere = linked_elsewhere or await db.owner_reports.find_one({"settlement.deduction_items.media_ids": media_id})
+            linked_elsewhere = linked_elsewhere or await db.expenses.find_one({"$or": [{"media_ids": media_id}, {"change_history.before.media_ids": media_id}, {"change_history.after.media_ids": media_id}]})
             if linked_elsewhere or media.get("owner_id") != str(user["_id"]) or not owner_pids(user):
                 raise HTTPException(404, "File not found")
+
+
+@api.post("/files/{media_id}/ticket")
+async def media_ticket(media_id: str, request: Request, user=Depends(current_user)):
+    await authorize_media(media_id, user)
+    now = datetime.now(timezone.utc)
+    ticket = jwt.encode({"sub": str(user["_id"]), "sv": user.get("session_version", 0),
+        "purpose": "file", "aud": "britsmaid-media", "media_id": media_id,
+        "session_key": hashlib.sha256(request_token(request).encode()).hexdigest(),
+        "iat": now, "exp": now + timedelta(minutes=5)}, JWT_SECRET, algorithm=JWT_ALG)
+    return {"ticket": ticket}
+
+
+@api.get("/files/{media_id}")
+async def get_file(media_id: str, request: Request, ticket: Optional[str] = None):
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        user = await user_from_token(auth[7:])
+    else:
+        try:
+            payload = jwt.decode(ticket or "", JWT_SECRET, algorithms=[JWT_ALG], audience="britsmaid-media")
+            if payload.get("purpose") != "file" or payload.get("media_id") != media_id or not payload.get("session_key"):
+                raise jwt.InvalidTokenError()
+        except jwt.InvalidTokenError:
+            raise HTTPException(401, "Photo link expired. Reopen the photo.") from None
+        if await db.revoked_sessions.find_one({"_id": payload["session_key"]}):
+            raise HTTPException(401, "Session ended. Please sign in again.")
+        user = await active_token_user(payload)
+    await authorize_media(media_id, user)
     return await stream_media(media_id)
 
 # ---------------------------------------------------------------- Properties
@@ -434,7 +566,14 @@ OTAS = ["Airbnb", "Booking.com", "Agoda", "MakeMyTrip", "Expedia", "Vrbo", "Dire
 
 class IcalFeed(BaseModel):
     ota: str
-    url: str
+    url: str = Field(max_length=8192)
+
+    @field_validator("url")
+    @classmethod
+    def public_https_link(cls, value):
+        validate_url(value)
+        return value
+
     last_synced: Optional[str] = None
 
 
@@ -461,8 +600,9 @@ class PropertyIn(BaseModel):
     electricity_mode: Literal["split_half", "owner"] = "owner"
     base_rate: float = Field(default=0, ge=0, allow_inf_nan=False)
     rooms: List[str] = ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"]
-    ical_feeds: List[IcalFeed] = []
+    ical_feeds: List[IcalFeed] = Field(default_factory=list, max_length=32)
     cover_url: str = ""
+    cover_media_id: str = ""
     notes: str = ""
 
     @field_validator("name")
@@ -510,8 +650,23 @@ async def property_status(pid: str, day: str):
             "needs_cleaning": bool(pending), "pending_cleaning_id": str(pending["_id"]) if pending else None}
 
 
+async def validate_property_cover(media_id, user, previous_id=""):
+    if not media_id:
+        return
+    media = await db.media.find_one({"_id": oid(media_id), "is_deleted": False})
+    if not media or media.get("kind") != "image":
+        raise HTTPException(422, "Choose an uploaded photo for the villa cover")
+    if media_id == previous_id:
+        return
+    if media.get("owner_id") != str(user["_id"]) or media.get("attachment_binding"):
+        raise HTTPException(422, "Upload a new villa cover photo from your account")
+    if await db.cleaning.find_one({"$or": [{"rooms.before": media_id}, {"rooms.after": media_id}]}) or await db.owner_reports.find_one({"media_ids": media_id}):
+        raise HTTPException(422, "Upload a separate cover photo instead of a cleaning or report attachment")
+
+
 @api.post("/properties")
 async def create_property(body: PropertyIn, _=Depends(admin_user)):
+    await validate_property_cover(body.cover_media_id, _)
     doc = body.model_dump()
     doc.update({"created_at": now_iso(), "is_deleted": False})
     r = await db.properties.insert_one(doc)
@@ -531,6 +686,10 @@ async def get_property(pid: str, user=Depends(current_user)):
 
 @api.put("/properties/{pid}")
 async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
+    previous = await db.properties.find_one({"_id": oid(pid), "is_deleted": {"$ne": True}})
+    if not previous:
+        raise HTTPException(404, "Property not found")
+    await validate_property_cover(body.cover_media_id, _, previous.get("cover_media_id", ""))
     await db.properties.update_one({"_id": oid(pid)}, {"$set": body.model_dump()})
     return await get_property(pid, _)
 
@@ -542,6 +701,9 @@ async def delete_property(pid: str, _=Depends(admin_user)):
     return {"ok": True}
 
 # ---------------------------------------------------------------- Bookings
+from booking_finance import BookingFinance, ExpenseAllocation, calculate as calculate_booking, booking_totals, expense_shares, allocate, money, percent_amount, expense_view, booking_expense_item
+
+
 class BookingIn(BaseModel):
     property_id: str
     guest_name: str
@@ -553,8 +715,10 @@ class BookingIn(BaseModel):
     check_out: str
     amount: float = Field(default=0, ge=0, allow_inf_nan=False)
     ota_commission: float = Field(default=0, ge=0, allow_inf_nan=False)
+    financials: Optional[BookingFinance] = None
     status: Literal["confirmed", "cancelled", "blocked"] = "confirmed"
     notes: str = ""
+    revision: Optional[int] = Field(default=None, ge=0)
 
 
 async def ensure_cleaning(pid: str, booking_id: str, day: str):
@@ -603,6 +767,10 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
     if body.status != "cancelled":
         await check_overlap(body)
     doc = body.model_dump()
+    doc.pop("revision", None)
+    if body.financials:
+        doc["financials"] = calculate_booking(body.amount, body.financials.model_dump())
+        doc["ota_commission"] = doc["financials"]["platform_fee"]["amount"]
     doc.update({"source": "manual", "created_at": now_iso()})
     doc["_id"] = ObjectId()
     if body.status != "cancelled":
@@ -615,6 +783,21 @@ async def create_booking(body: BookingIn, _=Depends(admin_user)):
     if body.status == "confirmed":
         await ensure_cleaning(body.property_id, str(r.inserted_id), body.check_out)
     return out(await db.bookings.find_one({"_id": r.inserted_id}))
+
+
+@api.get("/system/booking-integrity")
+async def booking_integrity(_=Depends(admin_user)):
+    rows = await db.bookings.find({"$or": [{"calendar_review_required": True},
+        {"status": "blocked", "amount": {"$gt": 0}}]}).sort("check_in", -1).to_list(500)
+    result = []
+    for booking in rows:
+        prop = await db.properties.find_one({"_id": oid(booking["property_id"])})
+        result.append({"id": str(booking["_id"]), "property_name": (prop or {}).get("name", "Property"),
+            "guest_name": booking.get("guest_name", "Booking"), "check_in": booking["check_in"],
+            "status": booking["status"], "amount": booking.get("amount", 0),
+            "reason": "Calendar information differs from saved booking" if booking.get("calendar_review_required")
+                else "Blocked entry has a saved amount; check whether it should be a confirmed booking"})
+    return result
 
 
 @api.get("/bookings/{bid}")
@@ -634,16 +817,38 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     previous = await db.bookings.find_one({"_id": oid(bid)})
     if not previous:
         raise HTTPException(404, "Booking not found")
+    if body.revision is not None and body.revision != (previous.get("revision") or 0):
+        raise HTTPException(409, "Booking changed. Refresh before saving again.")
     validate_dates(body.check_in, body.check_out)
     active_task = await db.cleaning.find_one({"booking_id": bid, "status": {"$in": ["in_progress", "awaiting_review", "completed"]}})
     if active_task and body.status == "confirmed" and (previous["property_id"] != body.property_id or previous["check_out"] != body.check_out):
         raise HTTPException(409, "Cleaning work already exists. Reopen it with an admin reason before changing the property or checkout date.")
     if body.status != "cancelled":
         await check_overlap(body, bid)
+    if body.financials:
+        calculate_booking(body.amount, body.financials.model_dump())
+    elif previous.get("financials"):
+        if "financials" in body.model_fields_set:
+            raise HTTPException(422, "Keep the saved financial breakdown; edit its amounts instead")
+        calculate_booking(body.amount, previous["financials"])
     claimed = []
     if body.status != "cancelled":
         claimed = await claim_nights(db, bid, body.property_id, body.check_in, body.check_out)
-    result = await db.bookings.update_one({"_id": oid(bid), "revision": previous.get("revision")}, {"$set": body.model_dump(), "$inc": {"revision": 1}})
+    changes = body.model_dump(exclude={"revision"})
+    if previous.get("financials") and "financials" not in body.model_fields_set:
+        changes["financials"] = previous["financials"]
+    if previous.get("financials") and changes.get("financials") is None:
+        raise HTTPException(422, "Keep the saved financial breakdown; edit its amounts instead")
+    if changes.get("financials"):
+        changes["financials"] = calculate_booking(body.amount, changes["financials"])
+        changes["ota_commission"] = changes["financials"]["platform_fee"]["amount"]
+    if str(_["_id"]) != "calendar-sync":
+        changes.update(manual_protected=True, manually_updated_at=now_iso(), manually_updated_by=str(_["_id"]))
+        if previous.get("calendar_observation"):
+            changes.update(calendar_reviewed_observation=previous["calendar_observation"], calendar_review_required=False)
+    await db.booking_history.insert_one({"booking_id": bid, "actor_id": str(_["_id"]), "at": now_iso(),
+        "before": {k: v for k, v in previous.items() if k != "_id"}, "requested": changes})
+    result = await db.bookings.update_one({"_id": oid(bid), "revision": previous.get("revision")}, {"$set": changes, "$inc": {"revision": 1}})
     if not result.matched_count:
         await db.reserved_nights.delete_many({"_id": {"$in": claimed}, "booking_id": bid})
         raise HTTPException(409, "Booking changed. Refresh before saving again.")
@@ -698,41 +903,58 @@ async def sync_property(p: dict) -> list:
     report = []
     for f in feeds:
         try:
-            resp = await run_in_threadpool(lambda: requests.get(f["url"], timeout=30, headers={"User-Agent": "Britsmaid/1.0"}))
-            resp.raise_for_status()
-            events = parse_ical(resp.text)
+            text = await run_in_threadpool(fetch_calendar, f["url"])
+            events = parse_ical(text)
         except Exception as e:
-            report.append({"ota": f["ota"], "ok": False, "error": str(e)[:200]})
+            report.append({"ota": f["ota"], "ok": False, "error": str(e) if isinstance(e, CalendarFetchError) else "Calendar feed could not be read. Check its export link and try again."})
             continue
-        added = updated = 0
-        conflicts = 0
-        feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
-        worker = {"_id": "calendar-sync", "role": "admin"}
-        for ev in events:
-            uid = f"{feed_id}:{ev['uid']}"
-            existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
-            if not existing:
-                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
-            if ev["cancelled"] and not existing:
-                continue
-            blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
-            payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
-                       "check_in": ev["check_in"], "check_out": ev["check_out"],
-                       "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
-            try:
-                body = BookingIn(**payload)
-                if existing:
-                    result = await update_booking(str(existing["_id"]), body, worker)
-                    updated += 1
-                else:
-                    result = await create_booking(body, worker)
-                    added += 1
-                await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
-            except Exception:
-                # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
-                conflicts += 1
-        f["last_synced"] = now_iso()
-        report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
+        from service_lease import business_lease
+        async with business_lease(db, seconds=300):
+            added = updated = 0
+            conflicts = 0
+            feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
+            worker = {"_id": "calendar-sync", "role": "admin"}
+            for ev in events:
+                if ev["uid"].endswith("@calendar.britsmaid"):
+                    continue  # Do not import our own availability blocks back through an OTA.
+                uid = f"{feed_id}:{ev['uid']}"
+                existing = await db.bookings.find_one({"property_id": pid, "ical_uid": uid})
+                if not existing:
+                    existing = await db.bookings.find_one({"property_id": pid, "ical_uid": ev["uid"], "ota": f["ota"], "ical_feed_id": {"$exists": False}})
+                if ev["cancelled"] and not existing:
+                    continue
+                blocked = any(w in ev["summary"].lower() for w in ["not available", "blocked", "closed"])
+                # Calendar feeds are availability observations, never the authority for
+                # an admin's entered booking or financial records.
+                desired_status = "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"
+                if existing and (existing.get("source") != "ical" or existing.get("manual_protected")
+                        or existing.get("amount", 0) or existing.get("ota_commission", 0)):
+                    observation = {"guest_name": ev["summary"], "check_in": ev["check_in"],
+                        "check_out": ev["check_out"], "status": desired_status, "ota": f["ota"]}
+                    differs = (any(existing.get(k) != v for k, v in observation.items())
+                        and existing.get("calendar_reviewed_observation") != observation)
+                    await db.bookings.update_one({"_id": existing["_id"]}, {"$set": {
+                        "calendar_observation": observation, "calendar_observed_at": now_iso(),
+                        "calendar_review_required": differs}})
+                    conflicts += int(differs)
+                    continue
+                payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
+                           "check_in": ev["check_in"], "check_out": ev["check_out"],
+                           "status": "cancelled" if ev["cancelled"] else "blocked" if blocked else "confirmed"}
+                try:
+                    body = BookingIn(**payload)
+                    if existing:
+                        result = await update_booking(str(existing["_id"]), body, worker)
+                        updated += 1
+                    else:
+                        result = await create_booking(body, worker)
+                        added += 1
+                    await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
+                except Exception:
+                    # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
+                    conflicts += 1
+            f["last_synced"] = now_iso()
+            report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
     await issue_tracker.record("Calendar sync " + pid, any(not item["ok"] for item in report))
     return report
@@ -748,10 +970,14 @@ async def ical_sync(pid: str, _=Depends(admin_user)):
     return {"results": await sync_property(p)}
 
 
-SYNC_INTERVAL_SECONDS = 3600
+SYNC_INTERVAL_SECONDS = 600
 
 
-async def sync_all(trigger: str):
+async def sync_all(*args, **kwargs):
+    return await _sync_all_unlocked(*args, **kwargs)
+
+
+async def _sync_all_unlocked(trigger: str):
     props = await db.properties.find({"is_deleted": {"$ne": True}, "ical_feeds.0": {"$exists": True}}).to_list(500)
     added = errors = 0
     for p in props:
@@ -776,10 +1002,10 @@ async def auto_sync_loop():
                 due = (datetime.now(timezone.utc) - datetime.fromisoformat(last["last_run"])).total_seconds() >= SYNC_INTERVAL_SECONDS
             if due:
                 st = await sync_all("auto")
-                logger.info(f"Hourly OTA sync: {st}")
+                logger.info(f"10-minute OTA import: {st}")
         except Exception as e:
             logger.error(f"Auto sync loop error: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(30)
 
 
 @api.get("/sync/status")
@@ -811,7 +1037,7 @@ async def calendar(month: str, property_id: Optional[str] = None, user=Depends(f
     scope(user, q)
     scope(user, cq)
     bookings = [out(b) for b in await db.bookings.find(q, {"admin_history": 0} if user["role"] != "admin" else None).to_list(3000)]
-    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0}).to_list(3000)]
+    cleanings = [out(c) for c in await db.cleaning.find(cq, {"rooms": 0, **({"admin_history": 0} if user["role"] != "admin" else {})}).to_list(3000)]
     return {"bookings": bookings, "cleanings": cleanings}
 
 # ---------------------------------------------------------------- Cleaning
@@ -910,7 +1136,7 @@ async def cleaning_admin_action(cid: str, body: CleaningAdminAction, user=Depend
     else:
         # Preserve old evidence in history; rework must collect fresh evidence.
         changes["rooms"] = [{"name": r["name"], "before": [], "after": [], "checked": []} for r in c.get("rooms", [])]
-        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by")}
+        update["$unset"] = {k: "" for k in ("completed_at", "reviewed_at", "reviewed_by", "submitted_at", "submitted_by", "photos_ready_at")}
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, update)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
@@ -949,6 +1175,9 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
 
 async def enrich_cleaning(c: dict):
     o = out(c)
+    ids = [oid(mid) for mid in cleaning_retention.evidence_ids(c) if ObjectId.is_valid(mid)]
+    expired = await db.media.find({"_id": {"$in": ids}, "is_deleted": True, "expiry_reason": {"$in": ["older_cleaning_set", "cleaning-photo-45-days-v1"]}}, {"_id": 1}).to_list(None)
+    o["expired_media_ids"] = sorted(set(o.get("expired_media_ids", [])) | {str(row["_id"]) for row in expired})
     p = await db.properties.find_one({"_id": ObjectId(o["property_id"])}, {"name": 1, "location": 1})
     o["property_name"] = p["name"] if p else "Unknown"
     if o.get("assigned_to") and ObjectId.is_valid(o["assigned_to"]):
@@ -1030,6 +1259,7 @@ async def add_room_media(cid: str, idx: int, body: RoomMediaIn, user=Depends(sta
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, upd)
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
+    await cleaning_retention.mark_ready(c["_id"])
     return await get_cleaning(cid, user)
 
 
@@ -1070,34 +1300,152 @@ async def update_cleaning(cid: str, body: CleaningUpdate, user=Depends(staff_use
             raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
 
-# ---------------------------------------------------------------- Expenses (electricity)
+# ---------------------------------------------------------------- Expenses
 class ExpenseIn(BaseModel):
     property_id: str
-    month: str  # YYYY-MM
-    type: Literal["electricity", "other"] = "electricity"
+    month: str
+    type: Literal["electricity", "other", "pre_split"] = "electricity"  # legacy clients
+    treatment: Optional[Literal["before_split", "after_split", "reference"]] = None
     amount: float = Field(ge=0, allow_inf_nan=False)
-    notes: str = ""
+    notes: str = Field(default="", max_length=2000)
+    title: str = Field(default="", max_length=150)
+    allocation: Optional[ExpenseAllocation] = None
+    media_ids: list[str] = Field(default_factory=list, max_length=10)
+    revision: Optional[int] = Field(None, ge=0)
+    change_reason: str = Field(default="", max_length=1000)
+    request_key: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,120}$")
     _month = field_validator("month")(valid_month)
+
+
+def expense_snapshot(e, prop):
+    view = expense_view(e, prop)
+    return {key: view.get(key) for key in ("property_id", "month", "type", "treatment", "title", "amount", "notes", "allocation", "media_ids", "revision", "owner_amount", "britsmaid_amount")}
+
+
+async def expense_payload(body, actor, previous=None):
+    await validate_pids([body.property_id])
+    doc = body.model_dump(exclude={"request_key", "revision", "change_reason"})
+    prop = await db.properties.find_one({"_id": oid(body.property_id)})
+    if body.treatment:
+        if not body.title.strip():
+            raise HTTPException(422, "Enter an expense title or description")
+        if body.amount <= 0:
+            raise HTTPException(422, "Expense amount must be greater than zero")
+        if body.treatment == "reference":
+            if not previous or expense_view(previous, prop)["treatment"] != "reference":
+                raise HTTPException(422, "Reference-only treatment is reserved for existing owner-paid records")
+            doc["type"] = previous["type"]
+        else:
+            doc["type"] = "pre_split" if body.treatment == "before_split" else "other"
+        if body.treatment == "after_split" and not body.allocation:
+            raise HTTPException(422, "Choose who bears this after-split expense")
+        if body.treatment != "after_split" and body.allocation:
+            raise HTTPException(422, "Allocation only applies to expenses deducted after the split")
+    elif body.type == "pre_split" and (not body.title.strip() or not body.notes.strip()):
+        raise HTTPException(422, "Enter a deduction title and note explaining the cost before the split")
+    if doc["type"] == "pre_split" and body.allocation:
+        raise HTTPException(422, "A before-split expense cannot also be allocated after the split")
+    doc["title"] = doc["title"].strip()
+    doc["amount"] = money(body.amount)
+    if body.treatment and doc["amount"] <= 0:
+        raise HTTPException(422, "Expense amount must be at least 0.01")
+    if body.allocation:
+        doc["allocation"] = allocate(body.amount, body.allocation.model_dump())
+    doc["media_ids"] = list(dict.fromkeys(body.media_ids))
+    for mid in doc["media_ids"]:
+        media = await db.media.find_one({"_id": oid(mid), "is_deleted": False})
+        retained = previous and mid in previous.get("media_ids", [])
+        if not media or (not retained and media.get("owner_id") != str(actor["_id"])):
+            raise HTTPException(422, "Choose an available attachment uploaded by your account")
+    return doc, prop
 
 
 @api.get("/expenses")
 async def list_expenses(property_id: str, user=Depends(finance_user)):
     check_pid(user, property_id)
-    return [out(e) for e in await db.expenses.find({"property_id": property_id}).sort("month", -1).to_list(500)]
+    prop = await db.properties.find_one({"_id": oid(property_id)}) or {}
+    rows = [out(expense_view(e, prop)) for e in await db.expenses.find({"property_id": property_id, "is_deleted": {"$ne": True}}).sort("month", -1).to_list(500)]
+    for booking in await db.bookings.find({"property_id": property_id, "status": "confirmed", "financials.misc_amount": {"$gt": 0}}).to_list(1000):
+        rows.append(booking_expense_item(booking))
+    return sorted(rows, key=lambda item: item["month"], reverse=True)
+
+
+@api.get("/expenses/{eid}/history")
+async def expense_history(eid: str, user=Depends(finance_user)):
+    e = await db.expenses.find_one({"_id": oid(eid)})
+    if not e:
+        raise HTTPException(404, "Expense not found")
+    check_pid(user, e["property_id"])
+    return {"current_revision": e.get("revision", 0), "is_deleted": bool(e.get("is_deleted")),
+            "entries": [{"at": h["at"], "reason": h["reason"], "action": h.get("action", "edited"),
+                "before": h["before"], "after": h.get("after")} for h in e.get("change_history", [])]}
 
 
 @api.post("/expenses")
 async def create_expense(body: ExpenseIn, _=Depends(admin_user)):
-    await validate_pids([body.property_id])
-    doc = body.model_dump()
-    doc["created_at"] = now_iso()
-    r = await db.expenses.insert_one(doc)
-    return out(await db.expenses.find_one({"_id": r.inserted_id}))
+    doc, prop = await expense_payload(body, _)
+    digest = hashlib.sha256(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+    doc.update(created_at=now_iso(), created_by=str(_["_id"]), revision=0,
+               tds_policy_trigger=bool(doc.get("allocation")))
+    if body.request_key:
+        doc["_id"] = ObjectId(hashlib.sha256(f"expense:{_['_id']}:{body.request_key}".encode()).hexdigest()[:24])
+        doc["request_digest"] = digest
+    try:
+        r = await db.expenses.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await db.expenses.find_one({"_id": doc["_id"]})
+        if not existing or existing.get("is_deleted") or existing.get("request_digest") != digest or existing.get("revision", 0):
+            raise HTTPException(409, "This expense changed or was removed. Refresh before entering it again.")
+        return out(expense_view(existing, prop))
+    return out(expense_view(await db.expenses.find_one({"_id": r.inserted_id}), prop))
+
+
+@api.put("/expenses/{eid}")
+async def update_expense(eid: str, body: ExpenseIn, user=Depends(admin_user)):
+    previous = await db.expenses.find_one({"_id": oid(eid), "is_deleted": {"$ne": True}})
+    if not previous:
+        raise HTTPException(404, "Expense not found or already removed")
+    if body.property_id != previous["property_id"]:
+        raise HTTPException(422, "An expense cannot be moved to another property")
+    if body.revision is None or body.revision != previous.get("revision", 0):
+        raise HTTPException(409, "Expense changed. Refresh before editing again.")
+    if not body.change_reason.strip():
+        raise HTTPException(422, "Enter a reason for this expense change")
+    doc, prop = await expense_payload(body, user, previous)
+    doc["tds_policy_trigger"] = previous.get("tds_policy_trigger", bool(previous.get("allocation")))
+    stamp = now_iso()
+    history = {"at": stamp, "reason": body.change_reason.strip(), "actor_id": str(user["_id"]),
+               "before": expense_snapshot(previous, prop), "after": expense_snapshot(dict(doc, revision=body.revision + 1), prop)}
+    doc.update(updated_at=stamp, last_change_reason=body.change_reason.strip())
+    result = await db.expenses.update_one({"_id": previous["_id"], "revision": previous.get("revision"), "is_deleted": {"$ne": True}},
+        {"$set": doc, "$inc": {"revision": 1}, "$push": {"change_history": history}})
+    if not result.matched_count:
+        raise HTTPException(409, "Expense changed. Refresh before editing again.")
+    return out(expense_view(await db.expenses.find_one({"_id": previous["_id"]}), prop))
+
+
+class ExpenseRemoval(BaseModel):
+    revision: Optional[int] = Field(None, ge=0)
+    change_reason: str = Field(default="Expense removed by admin", max_length=1000)
 
 
 @api.delete("/expenses/{eid}")
-async def delete_expense(eid: str, _=Depends(admin_user)):
-    await db.expenses.delete_one({"_id": oid(eid)})
+async def delete_expense(eid: str, body: Optional[ExpenseRemoval] = None, _=Depends(admin_user)):
+    e = await db.expenses.find_one({"_id": oid(eid), "is_deleted": {"$ne": True}})
+    if not e:
+        raise HTTPException(404, "Expense not found or already removed")
+    if body and body.revision is not None and body.revision != e.get("revision", 0):
+        raise HTTPException(409, "Expense changed. Refresh before removing it.")
+    reason = (body.change_reason if body else "Expense removed by admin").strip()
+    if not reason:
+        raise HTTPException(422, "Enter a reason for removing this expense")
+    prop = await db.properties.find_one({"_id": oid(e["property_id"])}) or {}
+    stamp = now_iso()
+    result = await db.expenses.update_one({"_id": e["_id"], "revision": e.get("revision"), "is_deleted": {"$ne": True}},
+        {"$set": {"is_deleted": True, "deleted_at": stamp, "deleted_by": str(_["_id"])}, "$inc": {"revision": 1},
+         "$push": {"change_history": {"at": stamp, "reason": reason, "action": "removed", "actor_id": str(_["_id"]), "before": expense_snapshot(e, prop), "after": None}}})
+    if not result.matched_count:
+        raise HTTPException(409, "Expense changed. Refresh before removing it.")
     return {"ok": True}
 
 # ---------------------------------------------------------------- Settlement & reports
@@ -1114,35 +1462,43 @@ def shift_month(month: str, delta: int) -> str:
 async def compute_settlement(p: dict, month: str):
     start, end = month_range(month)
     bookings = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$gte": start, "$lt": end}}).sort("check_in", 1).to_list(1000)
-    gross = sum(b.get("amount", 0) for b in bookings)
-    commission = sum(b.get("ota_commission", 0) for b in bookings)
-    net = gross - commission
+    totals = [booking_totals(b) for b in bookings]
+    gross = money(sum(t["gross"] for t in totals))
+    commission = money(sum(t["commission"] for t in totals))
+    gst_total = money(sum(t["gst"] for t in totals))
+    platform_tax = money(sum(t["platform_tax"] for t in totals))
+    booking_misc = money(sum(t["misc"] for t in totals))
+    exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month, "is_deleted": {"$ne": True}}).to_list(None)
+    pre_split = sum(e["amount"] for e in exps if e["type"] == "pre_split")
+    net = money(gross - commission - gst_total - platform_tax - booking_misc - pre_split)
     pct = p.get("owner_share_percent", 70)
-    owner_share = round(net * pct / 100, 2)
-    bm_share = round(net - owner_share, 2)
-    exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month}).to_list(100)
+    owner_share = percent_amount(net, pct)
+    bm_share = money(net - owner_share)
     elec = sum(e["amount"] for e in exps if e["type"] == "electricity")
-    other = sum(e["amount"] for e in exps if e["type"] == "other")
+    other = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "other"))
+    bm_other = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "other"))
     mode = p.get("electricity_mode", "owner")
-    if mode == "split_half":
-        owner_elec, bm_elec = round(elec / 2, 2), round(elec / 2, 2)
-    else:
-        owner_elec, bm_elec = 0, 0  # paid directly by owner
-    owner_payout = round(owner_share - owner_elec - other, 2)
-    bm_net = round(bm_share - bm_elec, 2)
+    owner_elec = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "electricity"))
+    bm_elec = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "electricity"))
+    owner_before_tds = money(owner_share - owner_elec - other)
+    # Current statements use the same policy for every property and booking format.
+    owner_tds = percent_amount(max(owner_before_tds, 0), 2)
+    owner_payout = money(owner_before_tds - owner_tds)
+    bm_net = money(bm_share - bm_elec - bm_other)
     nights = 0
     occupied = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$lt": end}, "check_out": {"$gt": start}}).to_list(5000)
     nights = sum((min(date.fromisoformat(b["check_out"]), date.fromisoformat(end)) - max(date.fromisoformat(b["check_in"]), date.fromisoformat(start))).days for b in occupied)
     by_ota: dict[str, dict] = {}
-    for b in bookings:
+    for b, t in zip(bookings, totals):
         n = (date.fromisoformat(b["check_out"]) - date.fromisoformat(b["check_in"])).days
         o = by_ota.setdefault(b["ota"], {"ota": b["ota"], "bookings": 0, "nights": 0, "gross": 0, "commission": 0})
         o["bookings"] += 1
         o["nights"] += n
-        o["gross"] += b.get("amount", 0)
-        o["commission"] += b.get("ota_commission", 0)
+        o["gross"] += t["gross"]
+        o["commission"] += t["commission"]
+        o["deductions"] = money(o.get("deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
     for o in by_ota.values():
-        o["net"] = o["gross"] - o["commission"]
+        o["net"] = money(o["gross"] - o["commission"] - o["deductions"])
     y, m = map(int, month.split("-"))
     days_in_month = (date.fromisoformat(end) - date.fromisoformat(start)).days
     return {
@@ -1150,11 +1506,22 @@ async def compute_settlement(p: dict, month: str):
         "owner_share_percent": pct, "britsmaid_share_percent": 100 - pct, "electricity_mode": mode,
         "gross": gross, "ota_commission": commission, "net_revenue": net, "owner_share": owner_share, "britsmaid_share": bm_share,
         "electricity_total": elec, "owner_electricity": owner_elec, "britsmaid_electricity": bm_elec, "other_deductions": other,
+        "pre_split_deductions": pre_split,
+        "gst_total": gst_total, "platform_tax": platform_tax, "booking_misc": booking_misc,
+        "owner_before_tds": owner_before_tds, "owner_tds": owner_tds, "owner_tds_percent": 2,
+        "britsmaid_other_expenses": bm_other,
+        "expense_before_total": money(pre_split + booking_misc),
+        "expense_after_total": money(sum(e["amount"] for e in exps if expense_view(e, p)["treatment"] == "after_split")),
+        "expense_reference_total": money(sum(e["amount"] for e in exps if expense_view(e, p)["treatment"] == "reference")),
+        "owner_after_expenses": money(owner_elec + other), "britsmaid_after_expenses": money(bm_elec + bm_other),
+        "deduction_items": [dict(expense_snapshot(e, p), id=str(e["_id"]), updated_at=e.get("updated_at"), last_change_reason=e.get("last_change_reason")) for e in exps]
+            + [item for b in bookings if (item := booking_expense_item(b))],
         "owner_payout": owner_payout, "britsmaid_net": bm_net, "nights": nights,
         "occupancy_percent": round(min(nights, days_in_month) / days_in_month * 100, 1),
         "by_ota": sorted(by_ota.values(), key=lambda x: -x["gross"]),
         "bookings": [{"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "check_in": b["check_in"], "check_out": b["check_out"],
-                      "amount": b.get("amount", 0), "ota_commission": b.get("ota_commission", 0)} for b in bookings],
+                      "amount": t["gross"], "ota_commission": t["commission"], "financials": b.get("financials"),
+                      "net_revenue": t["net"]} for b, t in zip(bookings, totals)],
     }
 
 
@@ -1198,8 +1565,18 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
     ctr = await db.counters.find_one_and_update({"_id": "payout"}, {"$inc": {"seq": 1}}, upsert=True, return_document=True)
     doc = body.model_dump()
     doc.update({"receipt_number": f"BM-PAY-{datetime.now().year}-{ctr['seq']:04d}", "property_name": p["name"], "owner_name": p.get("owner_name", ""),
+                "net_revenue": snap["net_revenue"], "britsmaid_share": snap["britsmaid_share"], "britsmaid_share_percent": snap["britsmaid_share_percent"], "britsmaid_net": snap["britsmaid_net"],
+                "electricity_total": snap["electricity_total"], "britsmaid_electricity": snap["britsmaid_electricity"],
                 "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
                 "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
+                "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
+                "owner_tds": snap["owner_tds"], "owner_before_tds": snap["owner_before_tds"],
+                "owner_tds_percent": snap["owner_tds_percent"],
+                "expense_before_total": snap["expense_before_total"], "expense_after_total": snap["expense_after_total"],
+                "expense_reference_total": snap["expense_reference_total"],
+                "owner_after_expenses": snap["owner_after_expenses"], "britsmaid_after_expenses": snap["britsmaid_after_expenses"],
+                "gst_total": snap["gst_total"], "platform_tax": snap["platform_tax"], "booking_misc": snap["booking_misc"],
+                "britsmaid_other_expenses": snap["britsmaid_other_expenses"],
                 "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
     r = await db.payouts.insert_one(doc)
     return out(await db.payouts.find_one({"_id": r.inserted_id}))
@@ -1229,16 +1606,18 @@ async def ota_report(month: str, property_id: Optional[str] = None, _=Depends(ad
     rows: dict[str, dict] = {}
     for b in bookings:
         n = (date.fromisoformat(b["check_out"]) - date.fromisoformat(b["check_in"])).days
+        t = booking_totals(b)
         r = rows.setdefault(b["ota"], {"ota": b["ota"], "bookings": 0, "nights": 0, "gross": 0, "commission": 0, "properties": {}})
         r["bookings"] += 1
         r["nights"] += n
-        r["gross"] += b.get("amount", 0)
-        r["commission"] += b.get("ota_commission", 0)
+        r["gross"] += t["gross"]
+        r["commission"] += t["commission"]
+        r["other_deductions"] = money(r.get("other_deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
         pn = props.get(b["property_id"], "Unknown")
-        r["properties"][pn] = r["properties"].get(pn, 0) + b.get("amount", 0)
+        r["properties"][pn] = r["properties"].get(pn, 0) + t["gross"]
     result = []
     for r in rows.values():
-        r["net"] = r["gross"] - r["commission"]
+        r["net"] = money(r["gross"] - r["commission"] - r.get("other_deductions", 0))
         r["adr"] = round(r["gross"] / r["nights"], 2) if r["nights"] else 0
         r["properties"] = [{"name": k, "gross": v} for k, v in sorted(r["properties"].items(), key=lambda x: -x[1])]
         result.append(r)
@@ -1296,13 +1675,16 @@ async def delete_owner_report(rid: str, _=Depends(admin_user)):
 @api.get("/public/reports/{token}/media/{media_id}")
 async def public_media(token: str, media_id: str):
     r = await db.owner_reports.find_one({"share_token": token})
-    if not r or media_id not in r.get("media_ids", []):
+    allowed = set((r or {}).get("media_ids", []))
+    for item in (r or {}).get("settlement", {}).get("deduction_items", []):
+        allowed.update(item.get("media_ids", []))
+    if not r or media_id not in allowed:
         raise HTTPException(404, "Not found")
     return await stream_media(media_id)
 
 
 def inr(v):
-    return "₹" + f"{v:,.0f}"
+    return "₹" + f"{v:,.2f}"
 
 
 @api.get("/public/reports/{token}", response_class=HTMLResponse)
@@ -1313,35 +1695,54 @@ async def public_report(token: str):
     s = r["settlement"]
     medias = await db.media.find({"_id": {"$in": [ObjectId(m) for m in r.get("media_ids", []) if ObjectId.is_valid(m)]}}).to_list(100)
     e = html.escape
+    from report_presentation import public_payout_sections
+    presentation, calculation_html, expenses_html, britsmaid_html = public_payout_sections(s, inr, token)
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
-    ota_rows = "".join(f'<details><summary><b>{e(o["ota"])}</b><span>{inr(o["gross"])}</span></summary><div class="row"><span>Bookings</span><span>{o["bookings"]}</span></div><div class="row"><span>Nights</span><span>{o["nights"]}</span></div><div class="row"><span>OTA commission</span><span>-{inr(o["commission"])}</span></div><div class="row"><span>Net</span><span>{inr(o["net"])}</span></div></details>' for o in s["by_ota"])
+    def ota_detail(o):
+        booking_expenses = money(sum((b.get('financials') or {}).get('misc_amount', 0) for b in s['bookings'] if b['ota'] == o['ota']))
+        taxes_commission = money(o['gross'] - o['net'] - booking_expenses)
+        deduction_sign = "-" if taxes_commission else ""
+        other = f'<div class="row"><span>Other booking expenses</span><span>-{inr(booking_expenses)}</span></div>' if booking_expenses else ''
+        return (f'<details><summary><b>{e(o["ota"])}</b><span>{inr(o["gross"])}</span></summary>'
+                f'<div class="row"><span>Bookings</span><span>{o["bookings"]}</span></div>'
+                f'<div class="row"><span>Nights</span><span>{o["nights"]}</span></div>'
+                f'<div class="row"><span>Gross guest payments</span><span>{inr(o["gross"])}</span></div>'
+                f'<div class="row"><span>Taxes &amp; commission</span><span>{deduction_sign}{inr(taxes_commission)}</span></div>{other}'
+                f'<div class="row"><span>Revenue available to split</span><span>{inr(o["net"])}</span></div>'
+                '<small>Before property expenses and owner TDS. Any property expenses entered before the split are also deducted in the payout calculation.</small></details>')
+    ota_rows = "".join(ota_detail(o) for o in s["by_ota"])
     bk_rows = "".join(f'<tr><td>{e(b["guest_name"])}<br><small>{e(b["ota"])} · {b["check_in"]} → {b["check_out"]}</small></td><td align="right">{inr(b["amount"])}</td></tr>' for b in s["bookings"])
-    elec_line = (f'<div class="row"><span>Electricity (50% of {inr(s["electricity_total"])})</span><span>-{inr(s["owner_electricity"])}</span></div>'
-                 if s["electricity_mode"] == "split_half" else '<div class="row"><span>Electricity</span><span>Managed by owner</span></div>')
-    maxv = max([s["owner_share"], s["britsmaid_share"], s["ota_commission"], 1])
-    bars = "".join(f'<div class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{v / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></div>'
-                   for lbl, v, c in [("Owner share", s["owner_share"], "#1B3A6B"), ("Britsmaid share", s["britsmaid_share"], "#375B96"), ("OTA commission", s["ota_commission"], "#9CA3AF")])
+    for b in s['bookings']:
+        f = b.get('financials')
+        if not f:
+            bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary><p>Tax details were not recorded. Saved guest payment and OTA commission retained; no tax has been inferred.</p><div class="row"><span>Gross guest payment</span><span>{inr(b["amount"])}</span></div><div class="row"><span>Platform fee</span><span>{inr(b.get("ota_commission", 0))}</span></div><b>Net booking revenue: {inr(b.get("net_revenue", b["amount"] - b.get("ota_commission", 0)))}</b></details></td></tr>'
+            continue
+        lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Other tax deductions')])
+        bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary>{lines}<p>{e(f.get("misc_title") or "Other booking expense")}: {inr(f.get("misc_amount", 0))}<br>{e(f.get("misc_notes") or "")}</p><b>Net booking revenue: {inr(b.get("net_revenue", 0))}</b></details></td></tr>'
+    maxv = max([s["owner_share"], s["britsmaid_share"], 1])
+    bars = "".join(f'<button type="button" class="bar" onclick="this.classList.toggle(\'on\')"><label>{lbl}</label><div class="track"><div class="fill" style="width:{max(v, 0) / maxv * 100:.0f}%;background:{c}"></div></div><em>{inr(v)}</em></button>'
+                   for lbl, v, c in [("Owner allocated share", s["owner_share"], "#1B3A6B"), ("Britsmaid allocated share", s["britsmaid_share"], "#375B96")]) if s.get('net_revenue', 0) > 0 else '<p>No positive revenue available to split. See the payout calculation below.</p>'
+    overview = ''.join(f'<div class="row"><span>{label}</span><span>{inr(value)}</span></div>' for label, value in [('OTA commissions', s.get('ota_commission', 0)), ('Booking taxes', presentation['bookingTaxes']), ('Expenses', presentation['totalExpenses'])] if value or (label == 'Expenses' and presentation['groups']))
+    if presentation['groups']:
+        overview += '<small>See the detailed expense breakdown.</small>'
     return f"""<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(r['title'])}</title>
 <style>body{{font-family:-apple-system,Segoe UI,sans-serif;margin:0;background:#F3F4F6;color:#111827}}header{{background:#1B3A6B;color:#fff;padding:24px 20px}}
 h1{{margin:0;font-size:22px}}.wrap{{padding:16px;max-width:720px;margin:auto}}.card{{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;border:1px solid #E5E7EB}}
 .big{{font-size:34px;font-weight:700;color:#1B3A6B}}.row{{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #F3F4F6}}
-details{{border-bottom:1px solid #E5E7EB;padding:10px 0}}summary{{display:flex;justify-content:space-between;cursor:pointer}}
-.bar{{display:grid;grid-template-columns:120px 1fr 90px;align-items:center;gap:8px;margin:10px 0;cursor:pointer}}.track{{background:#E8EDF4;border-radius:6px;height:14px}}
+details{{border-bottom:1px solid #E5E7EB;padding:10px 0}}summary{{display:flex;justify-content:space-between;cursor:pointer;gap:12px}}summary>span:first-child{{min-width:0;overflow-wrap:anywhere}}summary>span:last-child{{white-space:nowrap}}.row{{gap:12px}}.row>span:first-child{{min-width:0;overflow-wrap:anywhere}}.row>span:last-child{{white-space:nowrap}}p{{overflow-wrap:anywhere}}
+.bar{{border:0;padding:0;background:transparent;color:inherit;font:inherit;width:100%;display:grid;grid-template-columns:120px 1fr 90px;align-items:center;gap:8px;margin:10px 0;cursor:pointer}}.track{{background:#E8EDF4;border-radius:6px;height:14px}}
 .fill{{height:14px;border-radius:6px;transition:width .6s}}.bar em{{font-style:normal;text-align:right}}.bar.on label{{font-weight:700}}
 .grid{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}.grid img,.grid video{{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;cursor:zoom-in}}
 #z{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);align-items:center;justify-content:center}}#z img{{max-width:95%;max-height:95%}}
 table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px solid #F3F4F6}}small{{color:#6B7280}}</style></head><body>
-<header><div style="opacity:.8">BRITSMAID · Owner Statement</div><h1>{e(r['title'])}</h1><div>{e(s['owner_name'])} · {s['month']}</div></header>
-<div class="wrap"><div class="card"><div>Your payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
-<div class="card"><b>Revenue split</b><small> (tap bars)</small>{bars}</div>
-<div class="card"><b>How your payout is calculated</b><div class="row"><span>Gross booking revenue</span><span>{inr(s['gross'])}</span></div>
-<div class="row"><span>OTA commissions</span><span>-{inr(s['ota_commission'])}</span></div><div class="row"><span>Net revenue</span><span>{inr(s['net_revenue'])}</span></div>
-<div class="row"><span>Your share ({s['owner_share_percent']:.0f}%)</span><span>{inr(s['owner_share'])}</span></div>{elec_line}
-{f'<div class="row"><span>Other deductions</span><span>-{inr(s["other_deductions"])}</span></div>' if s['other_deductions'] else ''}
-<div class="row"><b>Payout</b><b>{inr(s['owner_payout'])}</b></div></div>
-<div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
+<header><div style="opacity:.8">Britsmaid · Owner statement</div><h1>{e(r['title'])}</h1><div>{e(s['owner_name'])} · {s['month']}</div></header>
+<div class="wrap"><div class="card"><div>Owner final payout</div><div class="big">{inr(s['owner_payout'])}</div><small>{s['nights']} nights · {s['occupancy_percent']}% occupancy · {s['owner_share_percent']:.0f}/{s['britsmaid_share_percent']:.0f} split</small></div>
+<div class="card"><b>Revenue split</b><small> (tap bars)</small><div class="row"><span>Revenue available to split</span><span>{inr(s['net_revenue'])}</span></div>{bars}{overview}</div>
+<div class="card"><b>How the payout is calculated</b>{calculation_html}</div>
+{expenses_html}{britsmaid_html}
+<div class="card"><b>Revenue by OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>
 <div class="card"><b>Property condition</b><p>{e(r.get('condition_notes') or '')}</p><div class="grid">{gallery}</div></div></div>
 <div id="z" onclick="this.style.display='none'"><img id="zi"/></div><script>function zoom(s){{document.getElementById('zi').src=s;document.getElementById('z').style.display='flex'}}</script></body></html>"""
@@ -1462,7 +1863,7 @@ async def dashboard(_=Depends(admin_user)):
         return {"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "property_name": pmap.get(b["property_id"], "—"), "check_in": b["check_in"], "check_out": b["check_out"]}
     return {
         "month": month, "properties": len(props), "occupied_today": occupied,
-        "month_gross": sum(b.get("amount", 0) for b in month_b), "month_bookings": len(month_b),
+        "month_gross": money(sum(booking_totals(b)["gross"] for b in month_b)), "month_bookings": len(month_b),
         "arrivals": [bk(b) for b in arrivals], "departures": [bk(b) for b in departures],
         "pending_cleaning": [{"id": str(c["_id"]), "property_name": pmap.get(c["property_id"], "—"), "date": c["date"], "status": c["status"]} for c in pending_clean],
         "unpaid_invoices": len(unpaid), "unpaid_total": sum(i.get("total", 0) for i in unpaid),
@@ -1482,7 +1883,7 @@ async def owner_dashboard(user=Depends(finance_user)):
         s = await compute_settlement(p, month)
         upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
         last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
-        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""),
+        o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""), "cover_media_id": p.get("cover_media_id", ""),
              "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
@@ -1510,9 +1911,38 @@ issue_tracker.register(api, admin_user)
 from training import Training
 training = Training(db, oid, out)
 training.register(api, admin_user, current_user)
+from calendar_export import register_calendar_exports
+register_calendar_exports(api, db, admin_user, oid, now_iso, OTAS)
+from cleaning_retention import CleaningRetention
+cleaning_retention = CleaningRetention(db, lambda path: delete_object(path), now_iso)
+cleaning_retention.register(api, admin_user)
+from backups import Backups
+backup_service = Backups(db, None, lambda path: get_object(path))
+backup_service.register(api, admin_user)
+from media_migration import MediaMigration
+media_migration = MediaMigration(db)
+media_migration.register(api, admin_user)
+
+
+@api.get("/system/readiness")
+async def service_readiness(user=Depends(admin_user)):
+    last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+    return {"media_provider": os.getenv("MEDIA_PROVIDER", "mongo"), "last_backup": last.get("created_at") if last else None,
+        "backup_configured": backup_service.store is not None, "external_monitor_configured": os.getenv("EXTERNAL_MONITOR_ENABLED", "false").lower() == "true",
+        "app_environment": os.getenv("APP_ENV", "pilot"), "public_app_url": os.getenv("PUBLIC_APP_URL", ""),
+        "admins_without_mfa": await db.users.count_documents({"role": "admin", "active": True, "mfa_secret": {"$exists": False}})}
+from admin_mfa import AdminMFA
+admin_mfa = AdminMFA(db, JWT_SECRET, verify_pw)
+admin_mfa.register(api, admin_user, issue_token)
 app.include_router(api)
+from media_reference_guard import MediaReferenceGuard
+app.add_middleware(MediaReferenceGuard, db=db, authenticate=current_user)
 app.add_middleware(BoundedGuestUploads)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+from request_limits import BoundedAPIBodies
+app.add_middleware(BoundedAPIBodies)
+app.add_middleware(CORSMiddleware, allow_credentials=True,
+    allow_origins=[x.strip() for x in os.getenv("CORS_ORIGINS", "*").split(",") if x.strip()],
+    allow_methods=["*"], allow_headers=["*"])
 
 
 @app.middleware("http")
@@ -1542,7 +1972,9 @@ async def private_guest_responses(request: Request, call_next):
 async def training_loop():
     while True:
         try:
-            await training.schedule()
+            from service_lease import business_lease
+            async with business_lease(db):
+                await training.schedule()
             await issue_tracker.record("Background training scheduler", False)
         except Exception:
             logger.error("Training scheduling failed; retrying")
@@ -1553,7 +1985,9 @@ async def training_loop():
 async def guest_retention_loop():
     while True:
         try:
-            await purge_guest_ids({"_id": "retention-worker"})
+            from service_lease import business_lease
+            async with business_lease(db):
+                await purge_guest_ids({"_id": "retention-worker"})
             await issue_tracker.record("Background guest ID cleanup", False)
         except Exception:
             logger.error("Guest ID retention purge failed; retrying next hour")
@@ -1561,10 +1995,62 @@ async def guest_retention_loop():
         await asyncio.sleep(3600)
 
 
+async def cleaning_retention_loop():
+    while True:
+        try:
+            await cleaning_retention.run("scheduled-cleanup", "Expire eligible cleaning photos after 45 days; per-property admin opt-in")
+            await issue_tracker.record("Cleaning photo retention", False)
+        except Exception:
+            await issue_tracker.record("Cleaning photo retention", True)
+        await asyncio.sleep(3600)
+
+
+async def backup_loop():
+    while True:
+        try:
+            if backup_service.store:
+                last = await db.backup_runs.find_one({"database_verified": True, "media_verified": True}, sort=[("created_at", -1)])
+                requested = await db.settings.find_one({"_id": "backup_requested", "requested": True})
+                hour = datetime.now(ZoneInfo("Asia/Kolkata")).hour
+                due = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 20 * 3600
+                overdue = not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["created_at"])).total_seconds() >= 26 * 3600
+                if requested or overdue or (hour == 2 and due):
+                    await backup_service.run()
+                    await db.settings.update_one({"_id": "backup_requested"}, {"$set": {"requested": False}}, upsert=True)
+                    await issue_tracker.record("Encrypted backup verification", False)
+        except Exception:
+            await issue_tracker.record("Encrypted backup verification", True)
+        await asyncio.sleep(60)
+
+
+async def media_migration_loop():
+    while True:
+        try:
+            requested = await db.settings.find_one({"_id": "media_migration", "requested": True})
+            if requested:
+                from service_lease import business_lease
+                async with business_lease(db, seconds=300):
+                    moved = await media_migration.batch()
+                if not moved:
+                    await db.settings.update_one({"_id": "media_migration"}, {"$set": {"requested": False}})
+                await issue_tracker.record("Private photo migration", False)
+        except Exception:
+            await issue_tracker.record("Private photo migration", True)
+        await asyncio.sleep(60)
+
+
 @app.on_event("startup")
 async def startup():
     await training.indexes()
-    await db.users.create_index("email", unique=True)
+    await db.login_attempts.create_index("expires_at", expireAfterSeconds=0)
+    # Replace the original non-sparse index before accepting phone-only accounts.
+    for name, index in (await db.users.index_information()).items():
+        if index.get("key") == [("email", 1)] and not index.get("sparse"):
+            await db.users.drop_index(name)
+    await db.users.create_index("email", unique=True, sparse=True)
+    await db.users.create_index("login_aliases")
+    await db.users.create_index("phone_login", unique=True, sparse=True)
+    await db.users.create_index("username_login", unique=True, sparse=True)
     await db.guest_links.create_index("token_hash", unique=True)
     await db.guest_ids.create_index([("booking_id", 1), ("status", 1)])
     await db.guest_ids.create_index("delete_after")
@@ -1574,14 +2060,19 @@ async def startup():
     await db.user_sessions.create_index("session_token", unique=True)
     await db.user_sessions.create_index("user_id")
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
+    await db.revoked_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
+    await db.calendar_exports.create_index("token", unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())
+    app.state.cleaning_retention_task = asyncio.create_task(cleaning_retention_loop())
+    app.state.backup_task = asyncio.create_task(backup_loop())
+    app.state.media_migration_task = asyncio.create_task(media_migration_loop())
     app.state.training_task = asyncio.create_task(training_loop())
     for email, pw, name, role in [(os.environ["ADMIN_EMAIL"], os.environ["ADMIN_PASSWORD"], "Britsmaid Admin", "admin"),
                                   (os.environ["ADMIN2_EMAIL"], os.environ["ADMIN2_PASSWORD"], "Ashik", "admin"),
-                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], "Priya (Cleaning)", "cleaner")]:
+                                  (os.environ["CLEANER_EMAIL"], os.environ["CLEANER_PASSWORD"], os.getenv("CLEANER_NAME", "Priya (Cleaning)"), "cleaner")]:
         existing = await db.users.find_one({"email": email.lower()})
         if not existing:
             await db.users.insert_one({"email": email.lower(), "name": name, "password_hash": hash_pw(pw), "role": role, "active": True, "created_at": now_iso()})
@@ -1594,7 +2085,7 @@ async def startup():
     owner_email = os.environ["OWNER_EMAIL"].lower()
     if not await db.users.find_one({"email": owner_email}):
         first = await db.properties.find_one({"name": "Villa Azure"}) or await db.properties.find_one({})
-        await db.users.insert_one({"email": owner_email, "name": "Rahul Mehta (Owner)", "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
+        await db.users.insert_one({"email": owner_email, "name": os.getenv("OWNER_NAME", "Rahul Mehta (Owner)"), "password_hash": hash_pw(os.environ["OWNER_PASSWORD"]), "role": "owner",
                                    "property_ids": [str(first["_id"])] if first else [], "active": True, "created_at": now_iso()})
     try:
         init_storage()
@@ -1638,7 +2129,7 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "training_task")]
+    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "cleaning_retention_task", "training_task", "backup_task", "media_migration_task")]
     for task in tasks:
         if task:
             task.cancel()

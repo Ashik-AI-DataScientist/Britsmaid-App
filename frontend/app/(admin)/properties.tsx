@@ -1,6 +1,6 @@
+import { PropertyCover } from "@/src/components/PropertyCover";
 import React from "react";
 import { FlatList, RefreshControl, View } from "react-native";
-import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -9,14 +9,14 @@ import Animated, { FadeInDown } from "react-native-reanimated";
 import { api } from "@/src/api";
 import { usesNativeTabs } from "@/src/navigation";
 import { Badge, Button, Card, Empty, ErrorState, Loading, Txt } from "@/src/ui";
-import { spacing, radius, useTheme } from "@/src/theme";
+import { spacing, useTheme } from "@/src/theme";
 
 export default function Properties() {
   const insets = useSafeAreaInsets();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
   const router = useRouter();
   const { colors } = useTheme();
-  const q = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties") });
+  const q = useQuery({ queryKey: ["properties"], queryFn: () => api.get<any[]>("/properties"), refetchInterval: 30000 });
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
@@ -38,7 +38,7 @@ export default function Properties() {
             <Animated.View entering={FadeInDown.delay(index * 60)}>
               <Card testID={`property-card-${p.id}`} onPress={() => router.push(`/property/${p.id}`)} style={{ padding: 0, overflow: "hidden" }}>
                 <View style={{ height: 150, backgroundColor: colors.brandTertiary }}>
-                  {p.cover_url ? <Image source={{ uri: p.cover_url }} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={200} /> : null}
+                  <PropertyCover property={p} />
                   <LinearGradient colors={["transparent", colors.scrim]} style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 100 }} />
                   <View style={{ position: "absolute", left: spacing.lg, bottom: spacing.md, right: spacing.lg }}>
                     <Txt v="title" color={colors.onSurfaceInverse}>{p.name}</Txt>
@@ -57,12 +57,6 @@ export default function Properties() {
                   <View>
                     <Txt v="caption">Owner / BM</Txt>
                     <Txt v="mono">{p.owner_share_percent}/{100 - p.owner_share_percent}</Txt>
-                  </View>
-                  <View>
-                    <Txt v="caption">Electricity</Txt>
-                    <View style={{ marginTop: 2, borderRadius: radius.pill }}>
-                      <Badge label={p.electricity_mode === "split_half" ? "50/50" : "Owner"} tone="brand" />
-                    </View>
                   </View>
                 </View>
               </Card>

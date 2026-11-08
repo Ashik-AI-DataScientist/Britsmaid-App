@@ -17,7 +17,7 @@ export function PayoutStatusCard({ s, canMark, onChange }: { s: any; canMark?: b
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState({ amount: String(Math.max(0, Math.round(s.owner_payout))), paid_on: todayISO(), method: "Bank transfer", reference: "", notes: "" });
+  const [f, setF] = useState({ amount: String(Math.max(0, s.owner_payout)), paid_on: todayISO(), method: "Bank transfer", reference: "", notes: "" });
   const p = s.payout;
 
   const save = async () => {
@@ -45,6 +45,7 @@ export function PayoutStatusCard({ s, canMark, onChange }: { s: any; canMark?: b
         <>
           <Txt v="body">{inr(p.amount)} paid on {fmtDate(p.paid_on)} via {p.method}{p.reference ? ` · Ref ${p.reference}` : ""}</Txt>
           <Txt v="caption">Receipt {p.receipt_number}</Txt>
+          {Number(p.amount) !== Number(s.owner_payout) ? <Txt v="caption">The recorded payment differs from the current calculated payout. Open the receipt to see the figures saved when payment was recorded.</Txt> : null}
           <Button testID="payout-receipt-button" small variant="secondary" icon="download-outline" title="Download receipt" onPress={() => downloadReceipt(p).catch((e) => toast(e.message, "error"))} />
         </>
       ) : (
