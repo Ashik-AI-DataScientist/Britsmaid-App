@@ -27,7 +27,9 @@ export default function Settlement() {
   const share = async () => {
     setBusy(true);
     try {
-      await sharePdf(settlementHtml(q.data));
+      const latest = await q.refetch();
+      if (latest.error) throw latest.error;
+      await sharePdf(settlementHtml(latest.data));
     } catch (e: any) {
       toast(e.message, "error");
     } finally {

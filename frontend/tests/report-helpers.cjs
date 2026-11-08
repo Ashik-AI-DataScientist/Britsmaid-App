@@ -12,3 +12,5 @@ function load(name) {
   return scope.exports;
 }
 module.exports = load('expense-presentation');
+
+module.exports.finance = load("booking-finance");

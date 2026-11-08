@@ -2,6 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
 const ts = require('../node_modules/typescript');
 const scope = {exports: {}, require: name => {
+  if (name === '@/src/booking-finance') return require('./report-helpers.cjs').finance;
   if (name === '@/src/expense-presentation') return require('./report-helpers.cjs');
   if (name === '@/src/format') return {inr: n => `INR ${n}`, fmtDate: d => d, monthLabel: m => m};
   if (name === '@/src/api') return {LOGO_URL: 'data:image/png;base64,TEST'};

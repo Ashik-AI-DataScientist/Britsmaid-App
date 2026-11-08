@@ -2,7 +2,7 @@
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict');
 const ts = require('../node_modules/typescript');
 const presentation = require('./report-helpers.cjs');
-const scope = { exports: {}, require: name => name === '@/src/expense-presentation' ? presentation : name === '@/src/format' ? { inr:n=>`INR ${n}`,fmtDate:d=>d,monthLabel:m=>m } : name === '@/src/api' ? {LOGO_URL:'logo'} : {} };
+const scope = { exports: {}, require: name => name === '@/src/booking-finance' ? require('./report-helpers.cjs').finance : name === '@/src/expense-presentation' ? presentation : name === '@/src/format' ? { inr:n=>`INR ${n}`,fmtDate:d=>d,monthLabel:m=>m } : name === '@/src/api' ? {LOGO_URL:'logo'} : {} };
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/pdf.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,scope);
 let count=0;
 for (const before of [0,.01,.03,4000,100000]) for (const after of [0,.01,.03,2000,100000]) for (const costShare of [0,30,50,100]) for (const split of [0,1,30,70,99,100]) {

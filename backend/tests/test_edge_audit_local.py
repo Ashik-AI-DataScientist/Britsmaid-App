@@ -144,7 +144,7 @@ async def test_owner_report_and_dashboard_are_scoped(ctx):
     r=await ctx['client'].get('/api/owner/dashboard',headers=auth(ctx,'owner'))
     assert r.status_code == 200 and [v['id'] for v in r.json()['villas']] == [ctx['p1']]
     r=await ctx['client'].get('/api/reports/settlement',params={'property_id':ctx['p1'],'month':month},headers=auth(ctx,'owner'))
-    assert r.status_code == 200 and r.json()['gross'] == 1000 and r.json()['owner_payout'] == 700
+    assert r.status_code == 200 and r.json()['gross'] == 1000 and r.json()['owner_payout'] == 686
     assert (await ctx['client'].get('/api/reports/settlement',params={'property_id':ctx['p2'],'month':month},headers=auth(ctx,'owner'))).status_code == 404
 
 @pytest.mark.asyncio

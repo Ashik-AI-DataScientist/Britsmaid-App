@@ -1,6 +1,6 @@
 import React from "react";
 import { View } from "react-native";
-import { Button, Chip, Input, Row, Txt } from "@/src/ui";
+import { Chip, Input, Row, Txt } from "@/src/ui";
 import { bookingMath, money, newFinancials, percentAmount } from "@/src/booking-finance";
 import { inr } from "@/src/format";
 import { spacing } from "@/src/theme";
@@ -8,13 +8,12 @@ import { spacing } from "@/src/theme";
 export function BookingAmounts({ gross, value, onChange, ownerPercent = 70, readOnly = false, commission = 0 }: {
   gross: number; value: any; onChange?: (v: any) => void; ownerPercent?: number; readOnly?: boolean; commission?: number;
 }) {
-  if (!value) return <View style={{ gap: spacing.sm }}><Txt>Saved with the original amount / commission calculation.</Txt>
-    {!readOnly ? <Button title="Add detailed amounts (optional)" onPress={() => onChange?.(newFinancials(commission))} /> : null}</View>;
-  const f = value;
+  const f = value || newFinancials(commission);
   const t = bookingMath(gross, f);
   const owner = percentAmount(t.net, ownerPercent);
   return <View style={{ gap: spacing.md }}>
     <Txt v="subtitle">Booking amount breakdown</Txt>
+    {!value ? <Txt v="caption">Tax details were not recorded for this booking. The saved guest payment and platform fee are retained; no tax has been inferred.</Txt> : null}
     <Txt v="caption">{readOnly ? 'Saved booking breakdown. Monthly property expenses and TDS are shown separately below or in the monthly statement.' : 'Optional. Enter either a percentage or an amount: the other field calculates automatically. The last field you edit controls the calculation.'}</Txt>
     {!readOnly ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <Chip label="Payment includes GST" selected={f.gst_included} onPress={() => onChange?.({ ...f, gst_included: true })} />

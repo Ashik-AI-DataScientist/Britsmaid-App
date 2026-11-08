@@ -1469,23 +1469,20 @@ async def compute_settlement(p: dict, month: str):
     platform_tax = money(sum(t["platform_tax"] for t in totals))
     booking_misc = money(sum(t["misc"] for t in totals))
     exps = await db.expenses.find({"property_id": str(p["_id"]), "month": month, "is_deleted": {"$ne": True}}).to_list(None)
-    tds_enabled = any(b.get("financials") for b in bookings) or any(e.get("allocation") and e.get("tds_policy_trigger", True) for e in exps)
     pre_split = sum(e["amount"] for e in exps if e["type"] == "pre_split")
     net = money(gross - commission - gst_total - platform_tax - booking_misc - pre_split)
     pct = p.get("owner_share_percent", 70)
-    owner_share = percent_amount(net, pct) if tds_enabled else round(net * pct / 100, 2)
+    owner_share = percent_amount(net, pct)
     bm_share = money(net - owner_share)
     elec = sum(e["amount"] for e in exps if e["type"] == "electricity")
     other = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "other"))
     bm_other = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "other"))
     mode = p.get("electricity_mode", "owner")
-    legacy_elec = sum(e["amount"] for e in exps if e["type"] == "electricity" and not e.get("allocation"))
-    legacy_half = round(legacy_elec / 2, 2) if mode == "split_half" else 0
-    owner_elec = money(legacy_half + sum(expense_shares(e, p)[0] for e in exps if e["type"] == "electricity" and e.get("allocation")))
-    bm_elec = money(legacy_half + sum(expense_shares(e, p)[1] for e in exps if e["type"] == "electricity" and e.get("allocation")))
+    owner_elec = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "electricity"))
+    bm_elec = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "electricity"))
     owner_before_tds = money(owner_share - owner_elec - other)
-    # Opt-in through the new financial entry preserves untouched historical statements.
-    owner_tds = percent_amount(max(owner_before_tds, 0), 2) if tds_enabled else 0
+    # Current statements use the same policy for every property and booking format.
+    owner_tds = percent_amount(max(owner_before_tds, 0), 2)
     owner_payout = money(owner_before_tds - owner_tds)
     bm_net = money(bm_share - bm_elec - bm_other)
     nights = 0
@@ -1511,7 +1508,7 @@ async def compute_settlement(p: dict, month: str):
         "electricity_total": elec, "owner_electricity": owner_elec, "britsmaid_electricity": bm_elec, "other_deductions": other,
         "pre_split_deductions": pre_split,
         "gst_total": gst_total, "platform_tax": platform_tax, "booking_misc": booking_misc,
-        "owner_before_tds": owner_before_tds, "owner_tds": owner_tds, "owner_tds_percent": 2 if tds_enabled else 0,
+        "owner_before_tds": owner_before_tds, "owner_tds": owner_tds, "owner_tds_percent": 2,
         "britsmaid_other_expenses": bm_other,
         "expense_before_total": money(pre_split + booking_misc),
         "expense_after_total": money(sum(e["amount"] for e in exps if expense_view(e, p)["treatment"] == "after_split")),
@@ -1708,6 +1705,7 @@ async def public_report(token: str):
     for b in s['bookings']:
         f = b.get('financials')
         if not f:
+            bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary><p>Tax details were not recorded. Saved guest payment and OTA commission retained; no tax has been inferred.</p><div class="row"><span>Gross guest payment</span><span>{inr(b["amount"])}</span></div><div class="row"><span>Platform fee</span><span>{inr(b.get("ota_commission", 0))}</span></div><b>Net booking revenue: {inr(b.get("net_revenue", b["amount"] - b.get("ota_commission", 0)))}</b></details></td></tr>'
             continue
         lines = ''.join(f'<div class="row"><span>{label} ({e(str(f[key].get("percent") if f[key].get("percent") is not None else "not entered"))}%){" - adjusted" if f[key].get("manual") else ""}</span><span>{inr(f[key]["amount"])}</span></div>' for key, label in [('gst', 'GST'), ('platform_fee', 'Platform fee'), ('platform_tax', 'Other tax deductions')])
         bk_rows += f'<tr><td colspan="2"><details><summary>{e(b["guest_name"])} - financial breakdown</summary>{lines}<p>{e(f.get("misc_title") or "Other booking expense")}: {inr(f.get("misc_amount", 0))}<br>{e(f.get("misc_notes") or "")}</p><b>Net booking revenue: {inr(b.get("net_revenue", 0))}</b></details></td></tr>'

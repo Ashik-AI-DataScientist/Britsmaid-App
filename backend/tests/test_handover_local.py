@@ -66,7 +66,7 @@ async def test_deduction_arithmetic_notes_scope_and_soft_delete(ctx):
     assert admin == owner
     assert owner["net_revenue"] == 8000
     assert owner["owner_share"] == 5600
-    assert owner["owner_payout"] == 5300
+    assert owner["owner_payout"] == 5194
     assert owner["britsmaid_net"] == 2400
     assert owner["deduction_items"][0]["notes"] == "Agreed shared property cost"
     assert (await ctx["client"].get(url, headers=auth(ctx, "other_owner"))).status_code == 404

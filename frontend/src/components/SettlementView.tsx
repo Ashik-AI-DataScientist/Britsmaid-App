@@ -208,7 +208,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
           </Pressable>
           {openBooking === b.id ? <>
             <Pressable onPress={() => router.push(`/booking/${b.id}`)}><Txt color={colors.brandPrimary}>Open booking details →</Txt></Pressable>
-            <BookingAmounts gross={b.financials?.gst_included === false ? b.amount - b.financials.gst.amount : b.amount} value={b.financials} ownerPercent={s.owner_share_percent} readOnly />
+            <BookingAmounts gross={b.financials?.gst_included === false ? b.amount - b.financials.gst.amount : b.amount} value={b.financials} commission={b.ota_commission || 0} ownerPercent={s.owner_share_percent} readOnly />
           </> : null}
           </View>
         ))}

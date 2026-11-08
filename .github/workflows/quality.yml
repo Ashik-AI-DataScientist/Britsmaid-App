@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r backend/requirements-runtime.txt -r backend/requirements-test.txt
-      - run: python -m pytest backend/tests/test_report_clarity_local.py backend/tests/test_flexible_expenses_local.py backend/tests/test_booking_finance_local.py backend/tests/test_branded_domain_local.py backend/tests/test_handover_local.py backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py backend/tests/test_camera_training_local.py backend/tests/test_hosted_local.py backend/tests/test_property_photos_local.py backend/tests/test_calendar_photo_release_local.py backend/tests/test_free_security_local.py backend/tests/test_production_services_local.py backend/tests/test_production_load_local.py -q
+      - run: python -m pytest backend/tests/test_uniform_reporting_local.py backend/tests/test_report_clarity_local.py backend/tests/test_flexible_expenses_local.py backend/tests/test_booking_finance_local.py backend/tests/test_branded_domain_local.py backend/tests/test_handover_local.py backend/tests/test_role_security_local.py backend/tests/test_edge_audit_local.py backend/tests/test_camera_training_local.py backend/tests/test_hosted_local.py backend/tests/test_property_photos_local.py backend/tests/test_calendar_photo_release_local.py backend/tests/test_free_security_local.py backend/tests/test_production_services_local.py backend/tests/test_production_load_local.py -q
   frontend:
     runs-on: ubuntu-latest
     steps:

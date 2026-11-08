@@ -14,7 +14,7 @@ assert.equal(bookingMath(10500, f).fee, 1200);
 f.platform_fee.base = 'gross'; assert.equal(bookingMath(10500, f).fee, 1260);
 f.gst_included = false; assert.equal(bookingMath(10000, f).gross, 10500);
 assert.equal(financialPayload({...f, misc_amount: ''}).misc_amount, 0);
-const pdfScope = {exports: {}, require: name => name === '@/src/expense-presentation' ? require('./report-helpers.cjs') : name === '@/src/format' ? {inr:n=>`INR ${n}`, fmtDate:d=>d, monthLabel:m=>m} : name === '@/src/api' ? {LOGO_URL:'logo'} : {}};
+const pdfScope = {exports: {}, require: name => name === '@/src/booking-finance' ? require('./report-helpers.cjs').finance : name === '@/src/expense-presentation' ? require('./report-helpers.cjs') : name === '@/src/format' ? {inr:n=>`INR ${n}`, fmtDate:d=>d, monthLabel:m=>m} : name === '@/src/api' ? {LOGO_URL:'logo'} : {}};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/pdf.ts'), 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText, pdfScope);
 const s = {by_ota:[], bookings:[], month:'2026-11', owner_tds:111.2, owner_tds_percent:2, owner_before_tds:5560, owner_payout:5448.8, gst_total:500, platform_tax:100, booking_misc:100};
 const html = pdfScope.exports.settlementHtml(s);

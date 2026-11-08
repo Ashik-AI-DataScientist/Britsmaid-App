@@ -141,4 +141,4 @@ async def test_legacy_expense_keeps_old_policy_until_explicitly_changed(ctx):
     edit=dict(e,amount=1200,revision=0,change_reason='Correct the reference bill')
     r=await c.put('/api/expenses/'+str(eid),headers=auth(ctx),json=edit); assert r.status_code==200,r.text
     s=(await c.get(f"/api/reports/settlement?property_id={ctx['p1']}&month={month}",headers=auth(ctx,'owner'))).json()
-    assert s['owner_payout']==7000 and s['owner_tds']==0 and s['expense_reference_total']==1200
+    assert s['owner_payout']==6860 and s['owner_tds']==140 and s['expense_reference_total']==1200

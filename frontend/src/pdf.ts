@@ -1,3 +1,4 @@
+import { money, percentAmount } from "@/src/booking-finance";
 import { Platform } from "react-native";
 import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
@@ -58,22 +59,37 @@ ${inv.tax_percent ? `<tr><td colspan="3" class="r">GST (${inv.tax_percent}%)</td
 ${inv.notes ? `<div class="box">${esc(inv.notes)}</div>` : ""}`);
 }
 
+function statementShell(title: string, body: string) {
+  const html = shell(title, body);
+  return html.replace('</style>', `@page{size:A4 landscape;margin:14mm;@bottom-center{content:"Britsmaid Property Management Kerala Private Limited";font-family:Arial;font-size:8px;color:#4c6075}}body{margin:0;font-size:13px;color:#162639}h1{font-size:24px}h3{color:#19365c;margin-top:22px;break-after:avoid}h4{color:#19365c;break-after:avoid}th{background:#19365c;color:white}td,th{padding:7px}tr{break-inside:avoid}.payment-section{break-inside:avoid}.booking-ledger tbody{break-inside:avoid}thead{display:table-header-group}.top{break-inside:avoid}.box{background:#19365c;color:white}.box .muted,.box .big{color:white}.booking-ledger{font-size:11px}.booking-ledger th{font-size:10px}.booking-ledger td:first-child{min-width:130px}.booking-note td{font-size:10px;color:#4c6075;padding-bottom:12px}small{font-size:10px}.r{white-space:nowrap}</style>`)
+    .replace('<p class="muted" style="margin-top:32px;text-align:center">Britsmaid Property Management · Thank you for your partnership</p>', '');
+}
+
 export function settlementHtml(s: any, extra?: { title?: string; notes?: string; photos?: string[] }) {
   const ota = s.by_ota.map((o: any) => `<tr><td>${esc(o.ota)}</td><td class="r">${o.bookings}</td><td class="r">${o.nights}</td><td class="r">${inr(o.gross)}</td><td class="r">-${inr(o.commission)}</td><td class="r">${inr(o.net)}</td></tr>`).join("");
-  const bk = s.bookings.map((b: any) => `<tr><td>${esc(b.guest_name)}</td><td>${esc(b.ota)}</td><td>${fmtDate(b.check_in)} → ${fmtDate(b.check_out)}</td><td class="r">${inr(b.amount)}</td></tr>`).join("");
-  const breakdowns = s.bookings.filter((b: any) => b.financials).map((b: any) => {
+  const rate = (line: any) => line?.percent == null ? '' : `${esc(line.percent)}%`;
+  const bk = (s.bookings || []).map((b: any) => {
     const f = b.financials;
-    const lines = [['GST', f.gst], ['Platform fee', f.platform_fee], ['Other tax deductions', f.platform_tax]].map(([label, line]: any[]) => `<tr><td>${label}${line.manual ? ' (adjusted)' : ''}</td><td>${line.percent == null ? 'Not entered' : `${esc(line.percent)}%`}</td><td class="r">${inr(line.amount)}</td></tr>`).join('');
-    return `<h4>${esc(b.guest_name)} · ${esc(b.ota)}</h4><table><tr><th>Booking breakdown</th><th>Percentage</th><th>Amount</th></tr><tr><td>Gross guest payment</td><td></td><td>${inr(b.amount)}</td></tr>${lines}<tr><td>${esc(f.misc_title || 'Other booking expense')}<br>${esc(f.misc_notes)}</td><td></td><td>${inr(f.misc_amount)}</td></tr><tr><td>Net booking revenue</td><td></td><td>${inr(b.net_revenue)}</td></tr></table>`;
+    const gst = f?.gst?.amount || 0, fee = f?.platform_fee?.amount ?? b.ota_commission ?? 0;
+    const tax = f?.platform_tax?.amount || 0, misc = f?.misc_amount || 0;
+    const net = b.net_revenue ?? (b.amount - gst - fee - tax - misc);
+    const owner = percentAmount(net, s.owner_share_percent ?? 70);
+    const bm = money(net - owner);
+    const cell = (amount: number, line?: any) => `<td class="r">${inr(amount)}<br><small>${rate(line)}</small></td>`;
+    return `<tbody><tr><td><b>${esc(b.guest_name)}</b><br><small>${esc(b.ota)} · ${fmtDate(b.check_in)} → ${fmtDate(b.check_out)}</small></td>${cell(b.amount)}${cell(gst, f?.gst)}${cell(fee, f?.platform_fee)}${cell(tax, f?.platform_tax)}${cell(misc)}${cell(net)}${cell(owner)}${cell(bm)}</tr>`
+      + `<tr class="booking-note"><td colspan="9">${f ? `${f.gst_included ? 'GST included in guest payment' : 'Guest payment includes added GST'}. Platform fee base: ${f.platform_fee?.base === 'gross' ? 'guest total' : 'amount excluding GST'}; other tax base: ${f.platform_tax?.base === 'gross' ? 'guest total' : 'amount excluding GST'}.${f.gst?.manual || f.platform_fee?.manual || f.platform_tax?.manual ? ' Includes directly entered amounts.' : ''}${misc ? ` Other booking expense: ${esc(f.misc_title)}. ${esc(f.misc_notes)}` : ''}` : 'Tax details were not recorded. Saved guest payment and OTA commission retained; no tax has been inferred.'}</td></tr></tbody>`;
   }).join('');
+  const payout = s.payout;
+  const payment = payout ? `<h3>Payout status: PAID</h3><table>${amountRow('Amount paid', payout.amount, false, true)}<tr><td>Paid on</td><td class="r">${esc(fmtDate(payout.paid_on))}</td></tr><tr><td>Method</td><td class="r">${esc(payout.method)}</td></tr><tr><td>Reference / UTR</td><td class="r">${esc(payout.reference || 'Not recorded')}</td></tr><tr><td>Receipt number</td><td class="r">${esc(payout.receipt_number || 'Not recorded')}</td></tr></table>${payout.notes ? `<p>Payment note: ${esc(payout.notes)}</p>` : ''}${Number(payout.amount) !== Number(s.owner_payout) ? `<p>Recorded payment differs from the current calculated payout. Payment receipt figures are retained as recorded.</p>` : ''}` : '<p>Payout pending: no owner payment has been recorded for this month.</p>';
   const photos = (extra?.photos ?? []).map((u) => `<img src="${u}" style="width:31%;margin:1%;border-radius:6px;aspect-ratio:1;object-fit:cover"/>`).join("");
-  return shell("Owner statement", `<div class="top"><div><h1>${esc(extra?.title || "Owner Statement")}</h1><div class="muted">${esc(s.property_name)} · ${esc(s.owner_name)} · ${monthLabel(s.month)}</div></div><img class="logo" src="${LOGO_URL}"/></div>
+  return statementShell("Owner statement", `<div class="top"><div><h1>${esc(extra?.title || "Owner Statement")}</h1><div class="muted">${esc(s.property_name)} · ${esc(s.owner_name)} · ${monthLabel(s.month)}</div></div><img class="logo" src="${LOGO_URL}"/></div>
 <div class="box"><div class="muted">Owner final payout</div><div class="big">${inr(s.owner_payout)}</div><div class="muted">${s.nights} nights · ${s.occupancy_percent}% occupancy · Split ${s.owner_share_percent}% owner / ${s.britsmaid_share_percent}% Britsmaid</div></div>
 <h3>How the payout is calculated</h3><table><tr><th>Calculation</th><th class="r">Amount</th></tr>${calculationRows(s)}</table>
+<div class="payment-section">${payment}</div>
 ${supportingRows(s)}
 <h3>Revenue by OTA</h3><table><tr><th>OTA</th><th class="r">Bookings</th><th class="r">Nights</th><th class="r">Gross</th><th class="r">Commission</th><th class="r">Net</th></tr>${ota}</table>
-<h3>Bookings</h3><table><tr><th>Guest</th><th>OTA</th><th>Stay</th><th class="r">Amount</th></tr>${bk}</table>
-${breakdowns}${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
+<h3>Booking-by-booking breakdown</h3><table class="booking-ledger"><thead><tr><th>Guest / channel / stay</th><th class="r">Gross</th><th class="r">GST</th><th class="r">OTA fee</th><th class="r">Other tax</th><th class="r">Other expense</th><th class="r">Net</th><th class="r">Owner</th><th class="r">Britsmaid</th></tr></thead>${bk}</table>
+<p class="muted">Booking allocations use the statement split before monthly property expenses and TDS. Individually rounded allocations may differ by a few paise from the monthly split of total revenue. Property expenses and owner TDS are deducted once in the monthly calculation.</p>${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
 }
 
 export function payoutReceiptHtml(p: any) {

@@ -6,7 +6,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { DateField } from "@/src/components/DateField";
-import { Badge, Button, Card, Chip, ChipRow, ConfirmSheet, ErrorState, Header, IconButton, Input, Loading, Txt, useToast } from "@/src/ui";
+import { Button, Card, Chip, ChipRow, ConfirmSheet, ErrorState, Header, IconButton, Input, Loading, Txt, useToast } from "@/src/ui";
 import { OTAS, addDays, inr, nightsBetween, otaColor, todayISO } from "@/src/format";
 import { spacing, useTheme } from "@/src/theme";
 import { BookingAmounts } from "@/src/components/BookingAmounts";
@@ -35,7 +35,7 @@ export default function BookingForm() {
     let alive = true;
     api.get(`/bookings/${id}`).then((b) => {
       if (!alive) return;
-      setFinancials(b.financials || null);
+      setFinancials(b.financials || newFinancials(b.ota_commission || 0));
       setF({ ...b, revision: b.revision || 0, guests: String(b.guests), amount: String(b.amount || ""), ota_commission: String(b.ota_commission || "") });
       setLoading(false);
     }).catch((e) => { if (alive) { setLoadError(e.message); setLoading(false); } });
@@ -119,14 +119,7 @@ export default function BookingForm() {
         <Card style={{ gap: spacing.md }}>
           <View style={{ flexDirection: "row", gap: spacing.md }}>
             <View style={{ flex: 1 }}><Input testID="booking-amount-input" label={financials?.gst_included === false ? "Booking amount before GST ₹" : "Gross guest payment ₹"} keyboardType="numeric" value={f.amount} onChangeText={set("amount")} /></View>
-            {!financials ? <View style={{ flex: 1 }}><Input testID="booking-commission-input" label="OTA commission ₹" keyboardType="numeric" value={f.ota_commission} onChangeText={set("ota_commission")} /></View> : null}
           </View>
-          {prop && !financials ? (
-            <View style={{ flexDirection: "row", gap: spacing.sm, flexWrap: "wrap" }}>
-              <Badge tone="brand" label={`Owner ${inr(((Number(f.amount) || 0) - (Number(f.ota_commission) || 0)) * prop.owner_share_percent / 100)}`} />
-              <Badge tone="info" label={`Britsmaid ${inr(((Number(f.amount) || 0) - (Number(f.ota_commission) || 0)) * (100 - prop.owner_share_percent) / 100)}`} />
-            </View>
-          ) : null}
           <BookingAmounts gross={Number(f.amount) || 0} value={financials} onChange={setFinancials} ownerPercent={prop?.owner_share_percent ?? 70} commission={Number(f.ota_commission) || 0} />
           <Input testID="booking-notes-input" label="Notes" multiline value={f.notes} onChangeText={set("notes")} />
         </Card>

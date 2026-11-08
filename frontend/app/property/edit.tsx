@@ -107,7 +107,7 @@ export default function EditProperty() {
           <Input testID="property-owner-alt-phone-input" label="Alternate phone" keyboardType="phone-pad" value={f.owner_alt_phone} onChangeText={set("owner_alt_phone")} />
           <Input testID="property-owner-address-input" label="Owner address" value={f.owner_address} onChangeText={set("owner_address")} />
           <Input testID="property-share-input" label="Owner share %" keyboardType="numeric" value={f.owner_share_percent} onChangeText={set("owner_share_percent")} />
-          <Txt v="caption">Britsmaid keeps {100 - (Number(f.owner_share_percent) || 0)}% of net revenue (after OTA commissions).</Txt>
+          <Txt v="caption">Britsmaid keeps {100 - (Number(f.owner_share_percent) || 0)}% of revenue available to split after booking deductions and before-split expenses. Current statements recalculate using this split; issued reports and payment receipts keep their saved figures.</Txt>
         </Card>
         <Card style={{ gap: spacing.md }}>
           <Txt v="label">Emergency & other contacts</Txt>
