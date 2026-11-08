@@ -1700,7 +1700,19 @@ async def public_report(token: str):
     gallery = "".join(
         f'<video controls src="{token}/media/{m["_id"]}"></video>' if m.get("kind") == "video" else f'<img onclick="zoom(this.src)" src="{token}/media/{m["_id"]}"/>'
         for m in medias)
-    ota_rows = "".join(f'<details><summary><b>{e(o["ota"])}</b><span>{inr(o["gross"])}</span></summary><div class="row"><span>Bookings</span><span>{o["bookings"]}</span></div><div class="row"><span>Nights</span><span>{o["nights"]}</span></div><div class="row"><span>OTA commission</span><span>-{inr(o["commission"])}</span></div><div class="row"><span>Net</span><span>{inr(o["net"])}</span></div></details>' for o in s["by_ota"])
+    def ota_detail(o):
+        booking_expenses = money(sum((b.get('financials') or {}).get('misc_amount', 0) for b in s['bookings'] if b['ota'] == o['ota']))
+        taxes_commission = money(o['gross'] - o['net'] - booking_expenses)
+        deduction_sign = "-" if taxes_commission else ""
+        other = f'<div class="row"><span>Other booking expenses</span><span>-{inr(booking_expenses)}</span></div>' if booking_expenses else ''
+        return (f'<details><summary><b>{e(o["ota"])}</b><span>{inr(o["gross"])}</span></summary>'
+                f'<div class="row"><span>Bookings</span><span>{o["bookings"]}</span></div>'
+                f'<div class="row"><span>Nights</span><span>{o["nights"]}</span></div>'
+                f'<div class="row"><span>Gross guest payments</span><span>{inr(o["gross"])}</span></div>'
+                f'<div class="row"><span>Taxes &amp; commission</span><span>{deduction_sign}{inr(taxes_commission)}</span></div>{other}'
+                f'<div class="row"><span>Revenue available to split</span><span>{inr(o["net"])}</span></div>'
+                '<small>Before property expenses and owner TDS. Any property expenses entered before the split are also deducted in the payout calculation.</small></details>')
+    ota_rows = "".join(ota_detail(o) for o in s["by_ota"])
     bk_rows = "".join(f'<tr><td>{e(b["guest_name"])}<br><small>{e(b["ota"])} · {b["check_in"]} → {b["check_out"]}</small></td><td align="right">{inr(b["amount"])}</td></tr>' for b in s["bookings"])
     for b in s['bookings']:
         f = b.get('financials')
@@ -1730,7 +1742,7 @@ table{{width:100%;border-collapse:collapse}}td{{padding:8px 0;border-bottom:1px 
 <div class="card"><b>Revenue split</b><small> (tap bars)</small><div class="row"><span>Revenue available to split</span><span>{inr(s['net_revenue'])}</span></div>{bars}{overview}</div>
 <div class="card"><b>How the payout is calculated</b>{calculation_html}</div>
 {expenses_html}{britsmaid_html}
-<div class="card"><b>By OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
+<div class="card"><b>Revenue by OTA</b>{ota_rows or '<p><small>No bookings this month</small></p>'}</div>
 <div class="card"><b>Bookings</b><table>{bk_rows}</table></div>
 <div class="card"><b>Property condition</b><p>{e(r.get('condition_notes') or '')}</p><div class="grid">{gallery}</div></div></div>
 <div id="z" onclick="this.style.display='none'"><img id="zi"/></div><script>function zoom(s){{document.getElementById('zi').src=s;document.getElementById('z').style.display='flex'}}</script></body></html>"""

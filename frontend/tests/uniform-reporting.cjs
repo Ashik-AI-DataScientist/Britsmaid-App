@@ -23,3 +23,22 @@ const legacyForm=helpers.finance.newFinancials(6419.53);
 assert.equal(helpers.finance.bookingMath(37564,legacyForm).net,31144.47);
 assert.equal(helpers.finance.bookingMath(37564,legacyForm).fee,6419.53);
 console.log(`PASS ${cases} uniform detailed PDF cases: older/new/mixed/empty bookings, split boundaries, pending/paid reference and notes, mismatched payment, escaped data and immutable input`);
+
+// Channel rows must explain every deduction without counting booking expenses as taxes.
+for (const misc of [0,.01,100]) {
+ const b={...detailed,financials:{...f,misc_amount:misc}};
+ const row={ota:'Direct',gross:10500,commission:1000,net:8900-misc,bookings:1,nights:1};
+ const breakdown=helpers.otaBreakdown(row,[b]);
+ assert.equal(breakdown.taxesAndCommission,1600);
+ assert.equal(breakdown.bookingExpenses,misc);
+ assert.equal(helpers.finance.money(row.gross-breakdown.taxesAndCommission-breakdown.bookingExpenses),row.net);
+ const html=scope.exports.settlementHtml({month:'2026-10',by_ota:[row],bookings:[b],owner_share_percent:70,britsmaid_share_percent:30});
+ const section=html.split('<h3>Revenue by OTA</h3>')[1].split('<h3>Booking-by-booking')[0];
+ assert(section.includes('Taxes &amp; commission'));
+ assert(section.includes('Revenue available to split'));
+ assert(section.includes('INR 1600.00'));
+ assert.equal(section.includes('<th class="r">Other booking expenses</th>'),misc>0);
+ assert(!section.includes('>Net</th>') && !section.includes('>Commission</th>'));
+}
+assert.equal(helpers.otaBreakdown({ota:'Direct',gross:1000,net:900},[legacy]).taxesAndCommission,100);
+console.log('PASS OTA reconciliation for taxes, commission, zero/paise/positive booking expenses and older saved rows');

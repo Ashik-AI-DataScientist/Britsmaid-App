@@ -4,7 +4,7 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { LOGO_URL } from "@/src/api";
 import { fmtDate, inr, monthLabel } from "@/src/format";
-import { reportPresentation } from '@/src/expense-presentation';
+import { otaBreakdown, reportPresentation } from '@/src/expense-presentation';
 
 const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
 
@@ -61,12 +61,16 @@ ${inv.notes ? `<div class="box">${esc(inv.notes)}</div>` : ""}`);
 
 function statementShell(title: string, body: string) {
   const html = shell(title, body);
-  return html.replace('</style>', `@page{size:A4 landscape;margin:14mm;@bottom-center{content:"Britsmaid Property Management Kerala Private Limited";font-family:Arial;font-size:8px;color:#4c6075}}body{margin:0;font-size:13px;color:#162639}h1{font-size:24px}h3{color:#19365c;margin-top:22px;break-after:avoid}h4{color:#19365c;break-after:avoid}th{background:#19365c;color:white}td,th{padding:7px}tr{break-inside:avoid}.payment-section{break-inside:avoid}.booking-ledger tbody{break-inside:avoid}thead{display:table-header-group}.top{break-inside:avoid}.box{background:#19365c;color:white}.box .muted,.box .big{color:white}.booking-ledger{font-size:11px}.booking-ledger th{font-size:10px}.booking-ledger td:first-child{min-width:130px}.booking-note td{font-size:10px;color:#4c6075;padding-bottom:12px}small{font-size:10px}.r{white-space:nowrap}</style>`)
+  return html.replace('</style>', `@page{size:A4 landscape;margin:14mm;@bottom-center{content:"Britsmaid Property Management Kerala Private Limited";font-family:Arial;font-size:8px;color:#4c6075}}body{margin:0;font-size:13px;color:#162639}h1{font-size:24px}h3{color:#19365c;margin-top:22px;break-after:avoid}h4{color:#19365c;break-after:avoid}th{background:#19365c;color:white}td,th{padding:7px}tr{break-inside:avoid}.payment-section{break-inside:avoid}.booking-ledger tbody{break-inside:avoid}thead{display:table-header-group}.top{break-inside:avoid}.box{background:#19365c;color:white}.box .muted,.box .big{color:white}.ota-summary td,.ota-summary th{padding:6px}.ota-note{font-size:11px;margin:3px 0}.booking-ledger{font-size:11px}.booking-ledger th{font-size:10px}.booking-ledger td:first-child{min-width:130px}.booking-note td{font-size:10px;color:#4c6075;padding-bottom:12px}small{font-size:10px}.r{white-space:nowrap}</style>`)
     .replace('<p class="muted" style="margin-top:32px;text-align:center">Britsmaid Property Management · Thank you for your partnership</p>', '');
 }
 
 export function settlementHtml(s: any, extra?: { title?: string; notes?: string; photos?: string[] }) {
-  const ota = s.by_ota.map((o: any) => `<tr><td>${esc(o.ota)}</td><td class="r">${o.bookings}</td><td class="r">${o.nights}</td><td class="r">${inr(o.gross)}</td><td class="r">-${inr(o.commission)}</td><td class="r">${inr(o.net)}</td></tr>`).join("");
+  const hasBookingExpenses = s.by_ota.some((o: any) => otaBreakdown(o, s.bookings).bookingExpenses > 0);
+  const ota = s.by_ota.map((o: any) => {
+    const breakdown = otaBreakdown(o, s.bookings);
+    return `<tr><td>${esc(o.ota)}</td><td class="r">${o.bookings}</td><td class="r">${o.nights}</td><td class="r">${inr(o.gross)}</td><td class="r">${breakdown.taxesAndCommission ? '-' : ''}${inr(breakdown.taxesAndCommission)}</td>${hasBookingExpenses ? `<td class="r">${breakdown.bookingExpenses ? '-' : ''}${inr(breakdown.bookingExpenses)}</td>` : ''}<td class="r">${inr(o.net)}</td></tr>`;
+  }).join('');
   const rate = (line: any) => line?.percent == null ? '' : `${esc(line.percent)}%`;
   const bk = (s.bookings || []).map((b: any) => {
     const f = b.financials;
@@ -87,7 +91,7 @@ export function settlementHtml(s: any, extra?: { title?: string; notes?: string;
 <h3>How the payout is calculated</h3><table><tr><th>Calculation</th><th class="r">Amount</th></tr>${calculationRows(s)}</table>
 <div class="payment-section">${payment}</div>
 ${supportingRows(s)}
-<h3>Revenue by OTA</h3><table><tr><th>OTA</th><th class="r">Bookings</th><th class="r">Nights</th><th class="r">Gross</th><th class="r">Commission</th><th class="r">Net</th></tr>${ota}</table>
+<h3>Revenue by OTA</h3><table class="ota-summary"><tr><th>OTA</th><th class="r">Bookings</th><th class="r">Nights</th><th class="r">Gross guest payments</th><th class="r">Taxes &amp; commission</th>${hasBookingExpenses ? '<th class="r">Other booking expenses</th>' : ''}<th class="r">Revenue available to split</th></tr>${ota}</table><p class="muted ota-note">Channel totals are before property expenses and owner TDS. Any property expenses entered before the split are also deducted in the payout calculation.</p>
 <h3>Booking-by-booking breakdown</h3><table class="booking-ledger"><thead><tr><th>Guest / channel / stay</th><th class="r">Gross</th><th class="r">GST</th><th class="r">OTA fee</th><th class="r">Other tax</th><th class="r">Other expense</th><th class="r">Net</th><th class="r">Owner</th><th class="r">Britsmaid</th></tr></thead>${bk}</table>
 <p class="muted">Booking allocations use the statement split before monthly property expenses and TDS. Individually rounded allocations may differ by a few paise from the monthly split of total revenue. Property expenses and owner TDS are deducted once in the monthly calculation.</p>${extra?.notes ? `<h3>Property condition</h3><div class="box">${esc(extra.notes)}</div>` : ""}${photos ? `<div>${photos}</div>` : ""}`);
 }

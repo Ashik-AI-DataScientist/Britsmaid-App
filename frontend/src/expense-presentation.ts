@@ -36,3 +36,11 @@ export function reportPresentation(s: any) {
     before: definitions[0].total, after: definitions[1].total, reference: definitions[2].total,
     totalExpenses: money(definitions.reduce((total, g) => total + g.total, 0)) };
 }
+
+// Channel revenue precedes property-level expenses and monthly owner TDS.
+export function otaBreakdown(row: any, bookings: any[] = []) {
+  const bookingExpenses = money(bookings.filter(b => b.ota === row.ota)
+    .reduce((total, b) => total + amount(b.financials?.misc_amount), 0));
+  return { bookingExpenses,
+    taxesAndCommission: money(amount(row.gross) - amount(row.net) - bookingExpenses) };
+}

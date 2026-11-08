@@ -91,3 +91,17 @@ async def test_older_shared_electricity_paise_matches_display_and_conserves_cost
     item=s['deduction_items'][0]
     assert s['owner_electricity']==item['owner_amount']
     assert s['britsmaid_electricity']==item['britsmaid_amount']
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('misc',[0,.01,100])
+async def test_shared_ota_breakdown_explains_taxes_and_misc_separately(ctx,misc):
+    b=await ctx['db'].bookings.find_one({'_id':ObjectId(ctx['bid'])})
+    f=server.calculate_booking(10500,{'gst':{'percent':5},'platform_fee':{'percent':10},'platform_tax':{'percent':1},'misc_amount':misc,'misc_title':'Linen'})
+    await ctx['db'].bookings.update_one({'_id':b['_id']},{'$set':{'ota':'Direct','amount':10500,'financials':f}})
+    report=await ctx['client'].post('/api/owner-reports',headers=auth(ctx),json={'property_id':ctx['p1'],'month':b['check_in'][:7]})
+    assert report.status_code==200,report.text
+    html=(await ctx['client'].get('/api/public/reports/'+report.json()['share_token'])).text
+    section=html.split('<b>Revenue by OTA</b>')[1].split('<b>Bookings</b>')[0]
+    assert 'Taxes &amp; commission' in section and 'Revenue available to split' in section
+    assert '1,600' in section
+    assert ('Other booking expenses' in section)==bool(misc)

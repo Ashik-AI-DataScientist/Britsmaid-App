@@ -30,3 +30,11 @@ Both browser-control tools failed during startup with `failed to write kernel as
 No live bookings, expenses, property splits, payouts or other production data were changed. No production database migration was run. No deployment branch was pushed and Render was not deployed. The separate sample PDFs contain fictional test data and are for layout review only.
 
 PDF statements use A4 landscape to accommodate the expanded financial columns. The browser print dialog can offer Save as PDF on web. A standalone native build uses Expo's PDF/share workflow. Some print layout features, such as margin footers, depend on the device printing engine and require the pending phone checks.
+
+## OTA clarity revision
+
+The Revenue by OTA section now shows gross guest payments, combined taxes and commission, and revenue available to split. When recorded, other booking expenses appear separately so they are not mislabelled as taxes. The channel total is explicitly identified as being before property expenses and owner TDS, and zero deductions display without a minus sign. The same presentation is used in admin/owner statements, PDF exports and shared owner reports.
+
+Validation for this revision: 148 targeted backend/report tests passed, including three new OTA cases for zero, one-paisa and positive booking expenses. The frontend edge suite and 659 report/PDF scenarios passed. Revised paid/pending PDF samples and the long-report sample passed content/bounds checks and visual inspection of the updated table. TypeScript, lint and the local web build were checked. Retired booking editor prompts and the old OTA Commission/Net label pair were checked for absence from current application source. This revision is a descendant of the previously reviewed local release, retaining those changes.
+
+Interactive browser and physical phone checks remain outstanding because the browser-control tools cannot start. Deployment still requires the user's confirmation.

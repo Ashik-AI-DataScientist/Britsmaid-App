@@ -6,7 +6,7 @@ import { fmtShort, inr, monthLabel, monthShort, otaColor } from "@/src/format";
 import { fonts, radius, spacing, useTheme } from "@/src/theme";
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/src/auth';
-import { reportPresentation } from '@/src/expense-presentation';
+import { otaBreakdown, reportPresentation } from '@/src/expense-presentation';
 import { ExpenseDetails } from '@/src/components/ExpenseDetails';
 import { BookingAmounts } from '@/src/components/BookingAmounts';
 
@@ -172,6 +172,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         {s.by_ota.length === 0 ? <Txt v="caption">No bookings this month</Txt> : null}
         {s.by_ota.map((o: any) => {
           const open = openOta === o.ota;
+          const breakdown = otaBreakdown(o, s.bookings);
           return (
             <Animated.View key={o.ota} layout={LinearTransition}>
               <Pressable testID={`ota-row-${o.ota}`} onPress={() => setOpenOta(open ? null : o.ota)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
@@ -184,8 +185,11 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
                 <View style={{ paddingLeft: spacing.lg, paddingBottom: spacing.sm }}>
                   <Row label="Bookings" value={String(o.bookings)} />
                   <Row label="Nights" value={String(o.nights)} />
-                  <Row label="Commission" value={`-${inr(o.commission)}`} />
-                  <Row label="Net" value={inr(o.net)} />
+                  <Row label="Gross guest payments" value={inr(o.gross)} />
+                  <Row label="Taxes & commission" value={`${breakdown.taxesAndCommission ? '-' : ''}${inr(breakdown.taxesAndCommission)}`} />
+                  {breakdown.bookingExpenses > 0 ? <Row label="Other booking expenses" value={`-${inr(breakdown.bookingExpenses)}`} /> : null}
+                  <Row strong label="Revenue available to split" value={inr(o.net)} />
+                  <Txt v="caption">Before property expenses and owner TDS. Any property expenses entered before the split are also deducted in the payout calculation.</Txt>
                 </View>
               ) : null}
             </Animated.View>
