@@ -143,13 +143,18 @@ class ActivityMiddleware:
             if message['type'] == 'http.response.start':
                 status = message['status']
             if message['type'] == 'http.response.body' and len(payload) < 262144:
-                payload.extend(message.get('body', b''))
+                payload.extend(message.get('body', b'')[:262144 - len(payload)])
             await send(message)
 
         await self.app(scope, receive, observe)
         if 200 <= status < 300:
             try:
-                data = json.loads(payload or b'{}')
+                try:
+                    data = json.loads(payload or b'{}')
+                except (ValueError, UnicodeDecodeError):
+                    # Oversized/non-JSON acknowledgements still represent a
+                    # successful activity; never retain their response content.
+                    data = {}
                 signature = hashlib.sha256((method + path + json.dumps(data, sort_keys=True)).encode()).hexdigest()
                 state_id = method + path
                 previous = await self.activity.db.activity_state.find_one({'_id': state_id})

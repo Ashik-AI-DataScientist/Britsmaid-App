@@ -354,3 +354,20 @@ async def test_shared_link_seven_guests_can_upload_separately(ctx):
     assert [r.status_code for r in responses] == [200] * 7
     roster = (await ctx['client'].get('/api/guest/check-in', headers=headers)).json()['documents']
     assert len(roster) == 7 and all(set(row) == {'guest_name', 'guest_number'} for row in roster)
+
+
+@pytest.mark.asyncio
+async def test_large_success_response_still_records_activity_without_content(ctx):
+    from activity import Activity, ActivityMiddleware
+    async def application(scope, receive, send):
+        await send({'type': 'http.response.start', 'status': 200, 'headers': []})
+        await send({'type': 'http.response.body', 'body': b'{"private":"' + b'x' * 300000 + b'"}', 'more_body': False})
+    async def send(message):
+        pass
+    async def receive():
+        return {'type': 'http.request', 'body': b''}
+    middleware = ActivityMiddleware(application, Activity(ctx['db']))
+    await middleware({'type': 'http', 'method': 'PUT', 'path': '/api/cleaning/example'}, receive, send)
+    row = await ctx['db'].activities.find_one({})
+    assert row and set(row) == {'_id', 'title', 'url', 'created_at'}
+    assert row['title'] == 'Updated cleaning'
