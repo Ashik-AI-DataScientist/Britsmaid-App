@@ -2,7 +2,7 @@
 // Render real owner/property components with synthetic data; no browser or services.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const ts=require('../node_modules/typescript'),React=require('../node_modules/react'),{renderToStaticMarkup}=require('../node_modules/react-dom/server');
-let role='owner',pid='villa-one',mode='earnings',feeds=[],segments=['owner'];
+let role='owner',pid='villa-one',mode='earnings',feeds=[],segments=['owner'],stayRows=[];
 const native=({children,testID})=>React.createElement('div',{'data-testid':testID},children);
 const button=({children,title,label,testID})=>React.createElement('button',{'data-testid':testID},title||label||children);
 const ui={Txt:native,Card:native,Button:button,IconButton:button,Icon:native,Loading:native,Badge:button,Chip:button,Input:()=>React.createElement('input'),Row:({label,value})=>React.createElement('div',null,label,' ',value),Header:({title,right})=>React.createElement('header',null,title,right),HomeButton:button,ErrorState:native,Empty:native,useToast:()=>()=>{},ConfirmSheet:({visible})=>visible?React.createElement('div',null,'DELETE CONFIRMATION'):null,Segmented:({options})=>React.createElement('nav',null,...options.map(o=>React.createElement('span',{key:o.value},o.label)))};
@@ -14,7 +14,7 @@ function load(relative,expanded=false){
  const mocks={react:expanded?{...mockReact,useState:initial=>[typeof initial==='boolean'?true:initial,()=>{}]}:{...mockReact,useState:initial=>[initial==='earnings'?mode:typeof initial==='function'?initial():initial,()=>{}]},
   'react-native':{LogBox:{ignoreLogs:()=>{}},View:native,ScrollView:native,RefreshControl:()=>null,Pressable:button,Platform:{OS:'web'}},
   'expo-router':{Stack:()=>React.createElement('div',{'data-testid':'router-stack'}),useSegments:()=>segments,useRouter:()=>({push:()=>{},back:()=>{}}),useLocalSearchParams:()=>({id:pid,deduction:'expense',expense_id:expense().id})},
-  '@tanstack/react-query':{QueryClientProvider:native,useQuery:({queryKey})=>({data:queryKey[0]==='property'?prop():queryKey[0]==='settlement'?statement():queryKey[0]==='expenses'?[expense()]:[],refetch:()=>{},isLoading:false,isError:false}),useQueryClient:()=>({})},
+  '@tanstack/react-query':{QueryClientProvider:native,useQuery:({queryKey})=>({data:queryKey[0]==='property'?prop():queryKey[0]==='settlement'?statement():queryKey[0]==='expenses'?[expense()]:queryKey[0]==='bookings'?stayRows:[],refetch:()=>{},isLoading:false,isError:false}),useQueryClient:()=>({})},
   'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,bottom:0})},
   'react-native-reanimated':{__esModule:true,default:{View:native},FadeInDown:{delay:()=>({})}},
   'expo-linear-gradient':{LinearGradient:native},
@@ -70,3 +70,21 @@ for(role of ['owner','admin']) for(segments of [['property','edit'],['booking','
 }
 console.log('PASS 26 route renders: owner editor/admin routes withheld before redirect; view routes remain available; admin routes retained');
 
+
+role='owner';mode='stays';
+for (const [status,start,end,label] of [
+ ['blocked','2026-11-07','2026-11-09','Unavailable'],
+ ['blocked','2026-11-09','2026-11-10','Unavailable'],
+ ['confirmed','2026-11-07','2026-11-08','Completed'],
+ ['confirmed','2026-11-07','2026-11-09','Staying now'],
+ ['confirmed','2026-11-09','2026-11-10','Upcoming']
+]) {
+ stayRows=[{id:'synthetic-stay',status,check_in:start,check_out:end,guest_name:'Synthetic guest',ota:'Direct'}];
+ const html=renderToStaticMarkup(React.createElement(load('app/owner/[id].tsx').default));
+ assert(html.includes('>'+label+'</button>'),status+' '+end);
+ assert.equal(html.includes('Staying now'),label==='Staying now');
+ assert.equal(html.includes('Current &amp; upcoming (0)'),end==='2026-11-08');
+ assert(!html.includes('Edit booking')&&!html.includes('Cancel booking'));
+}
+stayRows=[];
+console.log('PASS owner stay status: current/future blocks unavailable, checkout today completed, active/future confirmed stays and read-only actions');

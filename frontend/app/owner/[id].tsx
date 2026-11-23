@@ -30,9 +30,9 @@ export default function OwnerVilla() {
   const cleans = useQuery({ queryKey: ["cleaning", "completed", id], queryFn: () => api.get<any[]>(`/cleaning?status=completed&property_id=${id}`), enabled: tab === "updates" });
   const payouts = useQuery({ queryKey: ["payouts", id], queryFn: () => api.get<any[]>(`/payouts?property_id=${id}`), enabled: tab === "payouts" });
 
-  if (prop.isError) return <View style={{ flex: 1 }}><Header back title="Villa" /><ErrorState message="Villa not available" onRetry={prop.refetch} /></View>;
-  const upcoming = (bookings.data ?? []).filter((b) => b.check_out >= todayISO() && b.status !== "cancelled");
-  const past = (bookings.data ?? []).filter((b) => b.check_out < todayISO() && b.status === "confirmed").reverse().slice(0, 10);
+  if (prop.isError) return <View style={{ flex: 1 }}><Header back title="Property" /><ErrorState message="Property not available" onRetry={prop.refetch} /></View>;
+  const upcoming = (bookings.data ?? []).filter((b) => b.check_out > todayISO() && b.status !== "cancelled");
+  const past = (bookings.data ?? []).filter((b) => b.check_out <= todayISO() && b.status === "confirmed").reverse().slice(0, 10);
 
   const share = async () => {
     setBusy(true);
@@ -50,7 +50,7 @@ export default function OwnerVilla() {
         <Txt v="subtitle" style={{ fontSize: 15 }}>{fmtShort(b.check_in)} → {fmtShort(b.check_out)}</Txt>
         <Txt v="caption">{b.status === "blocked" ? "Blocked" : `${b.guest_name} · ${b.ota}`}</Txt>
       </View>
-      <Badge label={b.check_in <= todayISO() && b.check_out > todayISO() ? "Staying now" : b.check_out < todayISO() ? "Completed" : "Upcoming"} tone={b.check_out < todayISO() ? "neutral" : "brand"} />
+      <Badge label={b.status === "blocked" ? "Unavailable" : b.check_in <= todayISO() && b.check_out > todayISO() ? "Staying now" : b.check_out <= todayISO() ? "Completed" : "Upcoming"} tone={b.status === "blocked" || b.check_out <= todayISO() ? "neutral" : "brand"} />
     </Card>
   );
 
