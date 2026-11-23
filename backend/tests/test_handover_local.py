@@ -237,3 +237,25 @@ async def test_calendar_waits_for_short_competing_background_write(ctx, monkeypa
         assert results[0]['added']==0
     finally:
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('meaningful', [False, True])
+async def test_rolling_feed_refreshes_cached_cosmetic_not_real_conflicts(ctx, monkeypatch, meaningful):
+    prop = await imported(ctx)
+    bid = ObjectId(ctx['bid'])
+    before = await ctx['db'].bookings.find_one({'_id':bid})
+    observation = {key:before.get(key) for key in ('guest_name','check_in','check_out','status','ota')}
+    observation['guest_name']='Different actual guest' if meaningful else 'Reserved'
+    await ctx['db'].bookings.update_one({'_id':bid},{'$set':{'calendar_review_required':True,'calendar_observation':observation}})
+    monkeypatch.setattr(server,'fetch_calendar',lambda _: 'synthetic')
+    monkeypatch.setattr(server,'parse_ical',lambda _: [])
+    for _ in range(2):
+        result = (await server.sync_property(prop))[0]
+        assert result['ok'] == (not meaningful)
+        assert result['conflicts'] == int(meaningful)
+    after = await ctx['db'].bookings.find_one({'_id':bid})
+    assert after['calendar_review_required'] == meaningful
+    assert after['calendar_observation'] == observation
+    for key,value in before.items():
+        assert after[key] == value,key

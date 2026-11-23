@@ -946,6 +946,7 @@ async def sync_property(p: dict) -> list:
         async with business_lease(db, seconds=300, wait_seconds=8):
             added = updated = 0
             conflicts = 0
+            review_ids = set()
             feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
             worker = {"_id": "calendar-sync", "role": "admin"}
             for ev in events:
@@ -970,7 +971,8 @@ async def sync_property(p: dict) -> list:
                     await db.bookings.update_one({"_id": existing["_id"]}, {"$set": {
                         "calendar_observation": observation, "calendar_observed_at": now_iso(),
                         "calendar_review_required": differs}})
-                    conflicts += int(differs)
+                    if differs:
+                        review_ids.add(str(existing["_id"]))
                     continue
                 payload = {**(existing or {}), "property_id": pid, "guest_name": ev["summary"], "ota": f["ota"],
                            "check_in": ev["check_in"], "check_out": ev["check_out"],
@@ -992,6 +994,19 @@ async def sync_property(p: dict) -> list:
                 except Exception:
                     # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
                     conflicts += 1
+            # Providers may drop historical events from rolling exports. Refresh
+            # cached review metadata too, without editing the saved booking.
+            cached_reviews = await db.bookings.find({"property_id": pid, "calendar_review_required": True,
+                "calendar_observation.ota": f["ota"]}).to_list(None)
+            for cached in cached_reviews:
+                observed = cached.get("calendar_observation")
+                if isinstance(observed, dict) and (not review_differences(cached, observed)
+                        or cached.get("calendar_reviewed_observation") == observed):
+                    await db.bookings.update_one({"_id": cached["_id"], "revision": cached.get("revision"),
+                        "calendar_observation": observed}, {"$set": {"calendar_review_required": False}})
+                else:
+                    review_ids.add(str(cached["_id"]))
+            conflicts += len(review_ids)
             f["last_synced"] = now_iso()
             report.append({"ota": f["ota"], "ok": not conflicts, "added": added, "updated": updated, "events": len(events), "conflicts": conflicts, **({"error": "Some events conflict with existing work or contain invalid dates. Review the calendar before retrying."} if conflicts else {})})
     await db.properties.update_one({"_id": p["_id"]}, {"$set": {"ical_feeds": feeds}})
