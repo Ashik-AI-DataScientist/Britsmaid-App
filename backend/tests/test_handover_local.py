@@ -213,3 +213,27 @@ def test_only_exact_generic_calendar_labels_are_ignored(name):
     from calendar_reconciliation import review_differences
     saved = dict(guest_name='Entered guest',check_in='2026-11-01',check_out='2026-11-03',status='confirmed',ota='Airbnb')
     assert 'guest_name' in review_differences(saved,{**saved,'guest_name':name})
+
+
+@pytest.mark.asyncio
+async def test_calendar_waits_for_short_competing_background_write(ctx, monkeypatch):
+    import asyncio
+    from service_lease import business_lease
+    prop = await imported(ctx)
+    before = await ctx['db'].bookings.find_one({'_id':ObjectId(ctx['bid'])})
+    monkeypatch.setattr(server,'fetch_calendar',lambda _: 'synthetic')
+    monkeypatch.setattr(server,'parse_ical',lambda _: [{'uid':'test-event','summary':'Reserved',
+        'check_in':before['check_in'],'check_out':before['check_out'],'cancelled':False}])
+    acquired=asyncio.Event()
+    async def competing_job():
+        async with business_lease(ctx['db']):
+            acquired.set()
+            await asyncio.sleep(.15)
+    task=asyncio.create_task(competing_job())
+    await acquired.wait()
+    try:
+        results=await server.sync_property(prop)
+        assert results[0]['ok'] and results[0]['conflicts']==0
+        assert results[0]['added']==0
+    finally:
+        await task

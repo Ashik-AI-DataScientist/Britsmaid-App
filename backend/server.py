@@ -943,7 +943,7 @@ async def sync_property(p: dict) -> list:
             report.append({"ota": f["ota"], "ok": False, "error": str(e) if isinstance(e, CalendarFetchError) else "Calendar feed could not be read. Check its export link and try again."})
             continue
         from service_lease import business_lease
-        async with business_lease(db, seconds=300):
+        async with business_lease(db, seconds=300, wait_seconds=8):
             added = updated = 0
             conflicts = 0
             feed_id = hashlib.sha256(f["url"].encode()).hexdigest()[:16]
