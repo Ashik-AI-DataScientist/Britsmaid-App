@@ -371,3 +371,34 @@ async def test_large_success_response_still_records_activity_without_content(ctx
     row = await ctx['db'].activities.find_one({})
     assert row and set(row) == {'_id', 'title', 'url', 'created_at'}
     assert row['title'] == 'Updated cleaning'
+
+
+@pytest.mark.asyncio
+async def test_guest_cleanup_retries_busy_job_without_false_storage_alarm(ctx, monkeypatch):
+    from contextlib import asynccontextmanager
+    import service_lease
+    records = []
+    async def record(route, failed):
+        records.append((route, failed))
+    monkeypatch.setattr(server.issue_tracker, 'record', record)
+    @asynccontextmanager
+    async def busy(*args, **kwargs):
+        raise HTTPException(409, 'Busy', headers={'X-Britsmaid-Error': 'WRITE_BUSY'})
+        yield
+    monkeypatch.setattr(service_lease, 'business_lease', busy)
+    assert await server.guest_retention_step() == 60
+    assert not records
+    @asynccontextmanager
+    async def available(*args, **kwargs):
+        yield
+    monkeypatch.setattr(service_lease, 'business_lease', available)
+    async def purge(user):
+        return {'deleted': 0}
+    monkeypatch.setattr(server, 'purge_guest_ids', purge)
+    assert await server.guest_retention_step() == 3600
+    assert records == [('Background guest ID cleanup', False)]
+    async def failed_purge(user):
+        raise HTTPException(503, 'Synthetic storage failure')
+    monkeypatch.setattr(server, 'purge_guest_ids', failed_purge)
+    assert await server.guest_retention_step() == 3600
+    assert records[-1] == ('Background guest ID cleanup', True)

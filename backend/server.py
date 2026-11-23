@@ -2061,17 +2061,28 @@ async def training_loop():
         await asyncio.sleep(60)
 
 
+async def guest_retention_step():
+    try:
+        from service_lease import business_lease
+        async with business_lease(db, wait_seconds=8):
+            await purge_guest_ids({"_id": "retention-worker"})
+        await issue_tracker.record("Background guest ID cleanup", False)
+    except HTTPException as error:
+        if (error.headers or {}).get("X-Britsmaid-Error") == "WRITE_BUSY":
+            # Calendar imports and snapshots can overlap this hourly job. A
+            # busy lease is not a document-storage failure; retry promptly.
+            return 60
+        logger.error("Guest ID retention purge failed; retrying next hour")
+        await issue_tracker.record("Background guest ID cleanup", True)
+    except Exception:
+        logger.error("Guest ID retention purge failed; retrying next hour")
+        await issue_tracker.record("Background guest ID cleanup", True)
+    return 3600
+
+
 async def guest_retention_loop():
     while True:
-        try:
-            from service_lease import business_lease
-            async with business_lease(db):
-                await purge_guest_ids({"_id": "retention-worker"})
-            await issue_tracker.record("Background guest ID cleanup", False)
-        except Exception:
-            logger.error("Guest ID retention purge failed; retrying next hour")
-            await issue_tracker.record("Background guest ID cleanup", True)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(await guest_retention_step())
 
 
 async def cleaning_retention_loop():
