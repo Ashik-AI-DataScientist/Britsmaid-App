@@ -8,4 +8,6 @@ A confirmed Direct booking with the identical date range is consistent with an e
 
 The comparison does not change booking amounts, commissions, financial breakdowns, guest counts, notes, revisions, payments or history. There is no bulk migration. Existing notices are recalculated by the next ordinary sync, and service notices recover after a successful sync.
 
-Validation: the explicit isolated backend suite contains 817 cases. New regressions cover exact placeholders, meaningful names, real dates/status/channels, repeat sync, Direct availability bounds and unchanged records/settlements. The hosted-container smoke, frontend and backend CI gates must pass before deployment.
+Validation: the explicit isolated backend suite contains 818 cases. New regressions cover exact placeholders, meaningful names, real dates/status/channels, repeat sync, Direct availability bounds and unchanged records/settlements. The hosted-container smoke, frontend and backend CI gates must pass before deployment.
+
+Calendar imports wait up to eight seconds for a competing write lease. This prevents short startup/background-job collisions from immediately skipping a property. The lease still bounds concurrency, and failures beyond that wait remain visible. A separate-task contention regression covers this path.
