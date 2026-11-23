@@ -42,7 +42,7 @@ export default function Login() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={{ flexGrow: 1, paddingTop: insets.top + spacing.xxl, paddingBottom: insets.bottom + spacing.xl, paddingHorizontal: spacing.xl, justifyContent: "center" }} keyboardShouldPersistTaps="handled">
         <Animated.View entering={FadeInDown.duration(500)} style={{ alignItems: "center" }}>
-          <Image source={require("../assets/images/logo.jpg")} alt="Britsmaid logo" style={{ width: 180, height: 180 }} contentFit="contain" />
+          <Image source={require("../assets/images/logo-stacked-v2.png")} alt="Britsmaid logo" style={{ width: 180, height: 180 }} contentFit="contain" />
         </Animated.View>
         <Animated.View entering={FadeInDown.delay(150).duration(500)} style={{ gap: spacing.lg, marginTop: spacing.xl }}>
           <View>

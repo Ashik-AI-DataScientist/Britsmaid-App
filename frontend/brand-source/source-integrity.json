@@ -1,0 +1,16 @@
+{
+  "source": "original-logo.png",
+  "sha256": "0d9a58e0587873c18302f8f4411248200d1cf83bf1ff4caafe50d896b9d397d8",
+  "emblemViewBox": [
+    300,
+    220,
+    680,
+    700
+  ],
+  "wordmark": "Britsmaid",
+  "font": "Geist-SemiBold.ttf",
+  "headerBoxUnchanged": [
+    44,
+    44
+  ]
+}

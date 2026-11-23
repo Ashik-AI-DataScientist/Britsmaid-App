@@ -46,7 +46,7 @@ export default function Dashboard() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
-        <Image source={require("../../assets/images/logo.jpg")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
+        <Image source={require("../../assets/images/logo-stacked-v2.png")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
         <View style={{ flex: 1 }}>
           <Txt v="caption">Hello, {user?.name?.split(" ")[0]}</Txt>
           <Txt v="title">Britsmaid</Txt>

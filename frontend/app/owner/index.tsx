@@ -23,7 +23,7 @@ export default function OwnerHome() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
-        <Image source={require("../../assets/images/logo.jpg")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
+        <Image source={require("../../assets/images/logo-stacked-v2.png")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
         <View style={{ flex: 1 }}>
           <Txt v="caption">Owner portal</Txt>
           <Txt v="title" numberOfLines={1}>{user?.name?.replace(/\s*\(Owner\)/, "")}</Txt>

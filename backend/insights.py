@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from fastapi import Depends, HTTPException
 from booking_finance import booking_totals, money
 from additional_revenue import period_revenue, revenue_totals
+from owner_finance import owner_items
 
 
 def register_insights(api, db, finance_user, check_pid, owner_pids, oid):
@@ -41,7 +42,10 @@ def register_insights(api, db, finance_user, check_pid, owner_pids, oid):
             buckets[key]['gross'] += totals['gross']
             buckets[key]['net'] += totals['net']
             buckets[key]['bookings'] += 1
-        for item in await period_revenue(db, {'$in': pids}, start, until):
+        additions = await period_revenue(db, {'$in': pids}, start, until)
+        if user['role'] == 'owner':
+            additions = owner_items(additions)
+        for item in additions:
             totals = revenue_totals([item])
             key = item['service_date'] if interval == 'day' else item['service_date'][:7]
             buckets[key]['gross'] += totals['gross']

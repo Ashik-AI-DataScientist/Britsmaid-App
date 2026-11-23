@@ -22,7 +22,7 @@ const metadata = `<!-- Britsmaid home-screen metadata -->
 <meta name="apple-mobile-web-app-title" content="Britsmaid">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" sizes="180x180" href="/icons/britsmaid-180-v1.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/britsmaid-180-v2.png">
 <!-- End Britsmaid home-screen metadata -->
 `;
 document = document.replace('</head>', metadata + '</head>');

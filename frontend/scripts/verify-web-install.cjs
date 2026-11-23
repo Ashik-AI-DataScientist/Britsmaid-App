@@ -19,13 +19,13 @@ for (const icon of manifest.icons) {
   assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
   assert.equal(`${bytes.readUInt32BE(16)}x${bytes.readUInt32BE(20)}`, icon.sizes);
 }
-const apple = fs.readFileSync(path.join(root, 'icons/britsmaid-180-v1.png'));
+const apple = fs.readFileSync(path.join(root, 'icons/britsmaid-180-v2.png'));
 assert.equal(apple.readUInt32BE(16), 180);
 assert.equal(apple.readUInt32BE(20), 180);
 for (const file of ['index.html', 'install.html']) {
   const document = fs.readFileSync(path.join(root, file), 'utf8');
   assert.match(document, /rel="manifest"[^>]*href="\/manifest\.webmanifest"/);
-  assert.match(document, /rel="apple-touch-icon"[^>]*href="\/icons\/britsmaid-180-v1\.png"/);
+  assert.match(document, /rel="apple-touch-icon"[^>]*href="\/icons\/britsmaid-180-v2\.png"/);
   assert.match(document, /name="apple-mobile-web-app-title"[^>]*content="Britsmaid"/);
   assert.match(document, /name="apple-mobile-web-app-capable"[^>]*content="yes"/);
   assert.match(document, /viewport-fit=cover/);

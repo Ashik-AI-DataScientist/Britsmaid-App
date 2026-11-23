@@ -9,6 +9,7 @@ from validation import valid_date, valid_month, month_bounds
 from reservations import claim_nights, release_unused
 from safe_calendar_fetch import fetch_calendar, CalendarFetchError, validate_url
 from calendar_reconciliation import review_differences
+from owner_finance import owner_booking, owner_statement, owner_report as owner_report_view
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -764,7 +765,7 @@ async def list_bookings(property_id: Optional[str] = None, start: Optional[str] 
         q["check_in"] = {"$lt": end}
         q["check_out"] = {"$gt": start}
     projection = {"admin_history": 0} if user["role"] != "admin" else None
-    return [out(b) for b in await db.bookings.find(q, projection).sort("check_in", 1).to_list(2000)]
+    return [out(owner_booking(b) if user["role"] == "owner" else b) for b in await db.bookings.find(q, projection).sort("check_in", 1).to_list(2000)]
 
 
 @api.post("/bookings")
@@ -815,7 +816,7 @@ async def get_booking(bid: str, user=Depends(finance_user)):
     check_pid(user, b["property_id"])
     if user["role"] != "admin":
         b.pop("admin_history", None)
-    return out(b)
+    return out(owner_booking(b) if user["role"] == "owner" else b)
 
 
 @api.put("/bookings/{bid}")
@@ -1600,19 +1601,25 @@ async def compute_settlement(p: dict, month: str):
 
 
 @api.get("/reports/settlement")
-async def settlement(property_id: str, month: str, months: int = 1, user=Depends(finance_user)):
+async def settlement(property_id: str, month: str, months: int = 1, audience: Literal["", "owner"] = "", user=Depends(finance_user)):
     check_pid(user, property_id)
     p = await db.properties.find_one({"_id": oid(property_id)})
     if not p:
         raise HTTPException(404, "Property not found")
+    owner_view = user["role"] == "owner" or audience == "owner"
     main = await compute_settlement(p, month)
+    if owner_view:
+        main = owner_statement(main)
     trend = []
     for i in range(5, -1, -1):
         mm = shift_month(month, -i)
         s = main if mm == month else await compute_settlement(p, mm)
+        if owner_view:
+            s = owner_statement(s)
         trend.append({"month": mm, "gross": s["gross"], "owner_payout": s["owner_payout"], "britsmaid_net": s["britsmaid_net"], "nights": s["nights"]})
     main["trend"] = trend
-    main["payout"] = out(await db.payouts.find_one({"property_id": property_id, "month": month}))
+    payment = out(await db.payouts.find_one({"property_id": property_id, "month": month}))
+    main["payout"] = owner_statement(payment) if payment else None
     return main
 
 
@@ -1655,14 +1662,14 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
                 "britsmaid_other_expenses": snap["britsmaid_other_expenses"],
                 "nights": snap["nights"], "recorded_by": str(user["_id"]), "created_at": now_iso()})
     r = await db.payouts.insert_one(doc)
-    return out(await db.payouts.find_one({"_id": r.inserted_id}))
+    return owner_statement(out(await db.payouts.find_one({"_id": r.inserted_id})))
 
 
 @api.get("/payouts")
 async def list_payouts(property_id: Optional[str] = None, user=Depends(finance_user)):
     q: dict[str, Any] = {"property_id": property_id} if property_id else {}
     scope(user, q)
-    return [out(x) for x in await db.payouts.find(q).sort("month", -1).to_list(500)]
+    return [owner_statement(out(x)) for x in await db.payouts.find(q).sort("month", -1).to_list(500)]
 
 
 @api.delete("/payouts/{pid}")
@@ -1734,14 +1741,14 @@ async def create_owner_report(body: OwnerReportIn, user=Depends(admin_user)):
     doc.update({"title": body.title or f"{p['name']} — {body.month}", "settlement": snap, "share_token": secrets.token_urlsafe(16),
                 "created_by": str(user["_id"]), "created_at": now_iso()})
     r = await db.owner_reports.insert_one(doc)
-    return out(await db.owner_reports.find_one({"_id": r.inserted_id}))
+    return owner_report_view(out(await db.owner_reports.find_one({"_id": r.inserted_id})))
 
 
 @api.get("/owner-reports")
 async def list_owner_reports(property_id: Optional[str] = None, user=Depends(finance_user)):
     q: dict[str, Any] = {"property_id": property_id} if property_id else {}
     scope(user, q)
-    return [out(r) for r in await db.owner_reports.find(q, {"settlement.bookings": 0}).sort("created_at", -1).to_list(500)]
+    return [owner_report_view(out(r)) for r in await db.owner_reports.find(q, {"settlement.bookings": 0}).sort("created_at", -1).to_list(500)]
 
 
 @api.get("/owner-reports/{rid}")
@@ -1750,7 +1757,7 @@ async def get_owner_report(rid: str, user=Depends(finance_user)):
     if not r:
         raise HTTPException(404, "Report not found")
     check_pid(user, r["property_id"])
-    return out(r)
+    return owner_report_view(out(r))
 
 
 @api.delete("/owner-reports/{rid}")
@@ -1779,7 +1786,7 @@ async def public_report(token: str):
     r = await db.owner_reports.find_one({"share_token": token})
     if not r:
         raise HTTPException(404, "Report not found")
-    s = r["settlement"]
+    s = owner_statement(r["settlement"])
     medias = await db.media.find({"_id": {"$in": [ObjectId(m) for m in r.get("media_ids", []) if ObjectId.is_valid(m)]}}).to_list(100)
     e = html.escape
     from report_presentation import public_payout_sections
@@ -1968,7 +1975,7 @@ async def owner_dashboard(user=Depends(finance_user)):
     villas = []
     for p in await db.properties.find(q).sort("name", 1).to_list(100):
         pid = str(p["_id"])
-        s = await compute_settlement(p, month)
+        s = owner_statement(await compute_settlement(p, month))
         upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
         last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
         o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""), "cover_media_id": p.get("cover_media_id", ""),

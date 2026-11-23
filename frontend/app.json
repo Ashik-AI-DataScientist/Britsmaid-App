@@ -4,7 +4,7 @@
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo-stacked-v2.png",
     "scheme": "frontend",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -18,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./public/icons/britsmaid-maskable-512-v2.png",
         "backgroundColor": "#FFFFFF"
       },
       "package": "com.emergent.britsmaidrevshare.ixdi3x",
@@ -30,7 +30,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./public/icons/britsmaid-64-v1.png"
+      "favicon": "./public/icons/britsmaid-64-v2.png"
     },
     "plugins": [
       "expo-router",

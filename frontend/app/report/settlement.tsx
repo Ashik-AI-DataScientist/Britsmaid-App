@@ -29,7 +29,8 @@ export default function Settlement() {
     try {
       const latest = await q.refetch();
       if (latest.error) throw latest.error;
-      await sharePdf(settlementHtml(latest.data));
+      const ownerStatement = await api.get(`/reports/settlement?property_id=${property_id}&month=${month}&audience=owner`);
+      await sharePdf(settlementHtml(ownerStatement));
     } catch (e: any) {
       toast(e.message, "error");
     } finally {

@@ -10,8 +10,8 @@
   "background_color": "#ffffff",
   "theme_color": "#1c3963",
   "icons": [
-    { "src": "/icons/britsmaid-192-v1.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/britsmaid-512-v1.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/britsmaid-maskable-512-v1.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/icons/britsmaid-192-v2.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/britsmaid-512-v2.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/britsmaid-maskable-512-v2.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/src/auth';
@@ -43,10 +44,10 @@ export function AdditionalRevenue({ booking, ownerPercent = 70 }: { booking: any
       {user?.role === 'admin' ? <Button small title="Correct / refund entry" variant="secondary" onPress={() => open(item)} /> : null}
     </View>)}
     {user?.role === 'admin' && booking.status === 'confirmed' ? <Button title="Add additional revenue" onPress={() => open()} /> : null}
-    <Sheet visible={!!form} title="Additional revenue" onClose={() => { if (!busy) setForm(null); }}>
-      {form ? <View style={{ gap: 12 }}>
-        <Input label="Service / extra person" value={form.title} onChangeText={set('title')} />
-        <Input label="Gross amount ₹" value={String(form.amount)} onChangeText={set('amount')} keyboardType="decimal-pad" />
+    <Sheet testID="additional-revenue-sheet" visible={!!form} title="Additional revenue" onClose={() => { if (!busy) setForm(null); }}>
+      {form ? <KeyboardAwareScrollView testID="additional-revenue-scroll" bottomOffset={24} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" style={{ flexShrink: 1 }} contentContainerStyle={{ gap: 12, paddingBottom: 32 }}>
+        <Input testID="revenue-title" label="Service / extra person" value={form.title} onChangeText={set('title')} />
+        <Input testID="revenue-amount" label="Gross amount ₹" value={String(form.amount)} onChangeText={set('amount')} keyboardType="decimal-pad" />
         <Input label="Tax included ₹ (if recorded)" value={String(form.tax)} onChangeText={set('tax')} keyboardType="decimal-pad" />
         <Input label="Collection fee ₹ (if recorded)" value={String(form.fee)} onChangeText={set('fee')} keyboardType="decimal-pad" />
         <DateField testID="revenue-date" label="Service date / statement period" value={form.service_date} onChange={set('service_date')} />
@@ -59,9 +60,9 @@ export function AdditionalRevenue({ booking, ownerPercent = 70 }: { booking: any
         <Txt>Net {inr(net)} · Owner {inr(owner)} · Britsmaid {inr(money(net - owner))}</Txt>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{['received', 'pending', 'refunded'].map(status =>
           <Chip key={status} label={status[0].toUpperCase() + status.slice(1)} selected={form.status === status} onPress={() => set('status')(status)} />)}</View>
-        <Input label="Notes / correction reason" multiline value={form.notes} onChangeText={set('notes')} />
-        <Button title="Save additional revenue" loading={busy} disabled={!form.title.trim() || net < 0 || owner < 0 || owner > net} onPress={save} />
-      </View> : null}
+        <Input testID="revenue-notes" label="Notes / correction reason" multiline value={form.notes} onChangeText={set('notes')} />
+        <Button testID="revenue-save" title="Save additional revenue" loading={busy} disabled={!form.title.trim() || net < 0 || owner < 0 || owner > net} onPress={save} />
+      </KeyboardAwareScrollView> : null}
     </Sheet>
   </Card>;
 }
