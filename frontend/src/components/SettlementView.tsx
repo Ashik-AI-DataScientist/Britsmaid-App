@@ -111,7 +111,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         {presentation.groups.some(g => g.key === 'before_split') ? disclosure('before-summary', 'Expenses before revenue split', `-${inr(presentation.before)}`, expenseItems('before_split')) : null}
         {s.additional_totals?.deductions ? <Row label="Additional revenue taxes / collection fees" value={`-${inr(s.additional_totals.deductions)}`} /> : null}
         <Row strong label="Revenue available to split" value={inr(s.net_revenue)} />
-        <Row label={s.additional_totals?.gross ? `Owner allocation (rental ${s.owner_share_percent}%; add-ons individually)` : `Owner allocated share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
+        <Row label={s.additional_totals?.gross ? "Owner allocation (rental and add-ons)" : `Owner allocated share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
         {presentation.ownerAfter > 0 ? disclosure('owner-after', 'Owner expenses after split', `-${inr(presentation.ownerAfter)}`, <>
           {expenseItems('after_split')}
           <Txt v="caption">Expense entries show the full costs. Only the owner contribution above is deducted from the owner share.</Txt>
@@ -137,7 +137,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
 
       <Card testID="statement-britsmaid-card">
         {disclosure('britsmaid-breakdown', 'Britsmaid breakdown', undefined, <>
-          <Row label={s.additional_totals?.gross ? `Britsmaid allocation (rental ${s.britsmaid_share_percent}%; add-ons individually)` : `Britsmaid allocated share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
+          <Row label={s.additional_totals?.gross ? "Britsmaid allocation" : `Britsmaid allocated share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
           {presentation.bmAfter > 0 ? disclosure('britsmaid-after', 'Britsmaid expenses after split', `-${inr(presentation.bmAfter)}`, expenseItems('after_split')) : null}
           <Row strong label="Britsmaid net earnings" value={inr(s.britsmaid_net)} />
         </>)}

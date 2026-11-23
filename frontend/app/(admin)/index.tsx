@@ -1,5 +1,5 @@
 import React from "react";
-import { RefreshControl, ScrollView, View, Pressable } from "react-native";
+import { RefreshControl, ScrollView, View, Pressable, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -14,6 +14,7 @@ import { fonts, radius, spacing, useTheme } from "@/src/theme";
 
 export default function Dashboard() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
   const router = useRouter();
   const { colors } = useTheme();
@@ -24,11 +25,11 @@ export default function Dashboard() {
   const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 
   const metric = (label: string, value: string, icon: IconName, testID: string, onPress?: () => void) => (
-    <Card testID={testID} onPress={onPress} style={{ flex: 1, padding: spacing.md, gap: spacing.sm }}>
+    <Card testID={testID} onPress={onPress} style={{ flex: 1, minWidth: 0, padding: spacing.md, gap: spacing.sm }}>
       <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" }}>
         <Icon name={icon} size={18} color={colors.brandPrimary} />
       </View>
-      <Txt v="mono" style={{ fontSize: 20, fontFamily: fonts.display }}>{value}</Txt>
+      <Txt v="mono" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: Math.min(20, Math.max(11, (width - 124) / (2 * Math.max(value.length, 1) * 0.62))), fontFamily: fonts.display }}>{value}</Txt>
       <Txt v="caption">{label}</Txt>
     </Card>
   );
@@ -71,6 +72,10 @@ export default function Dashboard() {
             <View style={{ flexDirection: "row", gap: spacing.md, marginTop: spacing.md }}>
               {metric("Occupied today", `${d.occupied_today}/${d.properties}`, "home-outline", "metric-occupied", () => router.push("/(admin)/properties"))}
               {metric(`Unpaid (${d.unpaid_invoices})`, inr(d.unpaid_total), "receipt-outline", "metric-unpaid", () => router.push("/(admin)/finance"))}
+            </View>
+            <View style={{ flexDirection: "row", gap: spacing.md, marginTop: spacing.md }}>
+              {metric("Total Owner Payout", inr(d.total_owner_payout), "wallet-outline", "metric-owner-payout", () => router.push("/(admin)/finance"))}
+              {metric("Total Britsmaid earnings", inr(d.total_britsmaid_earnings), "cash-outline", "metric-britsmaid-earnings", () => router.push("/(admin)/finance"))}
             </View>
           </Animated.View>
 

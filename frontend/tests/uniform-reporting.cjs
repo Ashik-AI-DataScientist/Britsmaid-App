@@ -50,9 +50,24 @@ for (const ownerAmount of [null, 235]) {
  const before=JSON.stringify(s),html=scope.exports.settlementHtml(s);
  assert(html.includes('Extra &lt;guest&gt;') && html.includes('Approved &lt;note&gt;'));
  assert(html.includes('Additional revenue taxes / collection fees'));
- assert(html.includes('Owner allocation (rental 70%; add-ons individually)'));
- assert(html.includes('Britsmaid allocation (rental 30%; add-ons individually)'));
+ assert(html.includes('Owner allocation (rental and add-ons)'));
+ assert(html.includes('Britsmaid allocation'));
  assert.equal(JSON.stringify(s),before);
  assert(!html.includes('undefined'));
 }
 console.log('PASS additional-revenue PDF allocation, deductions, escaping and immutable records');
+
+// Owner add-on allocations include both amounts and effective rates, in the requested column order.
+for (const [allocation, expected] of [[{owner_percent:25,owner_amount:null},'25%'],[{owner_percent:70,owner_amount:235},'25%']]) {
+ const item={title:'Shared add-on',amount:1000,tax:50,fee:10,status:'received',...allocation};
+ const html=scope.exports.settlementHtml({month:'2026-11',by_ota:[],bookings:[],additional_revenue:[item]});
+ const table=html.split('<table class="additional-revenue">')[1].split('</table>')[0];
+ assert(table.indexOf('>Gross</th>')<table.indexOf('>Tax / fee</th>') && table.indexOf('>Tax / fee</th>')<table.indexOf('>Allocation</th>'));
+ assert(table.includes('Owner: INR 235.00 ('+expected+')') && table.includes('Britsmaid: INR 705.00 (75%)'));
+ assert(!html.includes('individually') && !html.includes('Only received revenue'));
+}
+for (const item of [{amount:100,owner_percent:0},{amount:100,owner_percent:70,owner_amount:0},{amount:.01,owner_percent:.01},{amount:100,tax:100,owner_percent:70}]) {
+ const html=scope.exports.settlementHtml({month:'2026-11',by_ota:[],bookings:[],additional_revenue:[{title:'PRIVATE',...item}]});
+ assert(!html.includes('<h3>Additional revenue</h3>') && !html.includes('PRIVATE'));
+}
+console.log('PASS add-on column order, amount/rate allocations, zero-share omission and concise wording');

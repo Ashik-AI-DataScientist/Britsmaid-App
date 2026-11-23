@@ -1953,11 +1953,14 @@ async def dashboard(_=Depends(admin_user)):
     pending_clean = await db.cleaning.find({"status": {"$nin": ["completed", "cancelled"]}, "date": {"$lte": today}}).sort("date", 1).to_list(50)
     additional = revenue_totals(await period_revenue(db, {"$in": list(pmap)}, start, end))
     unpaid = await db.invoices.find({"status": "unpaid"}).to_list(1000)
+    statements = [await compute_settlement(p, month) for p in props]
 
     def bk(b):
         return {"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "property_name": pmap.get(b["property_id"], "—"), "check_in": b["check_in"], "check_out": b["check_out"]}
     return {
         "month": month, "properties": len(props), "occupied_today": occupied,
+        "total_owner_payout": money(sum(s["owner_payout"] for s in statements)),
+        "total_britsmaid_earnings": money(sum(s["britsmaid_net"] for s in statements)),
         "month_gross": money(sum(booking_totals(b)["gross"] for b in month_b) + additional["gross"]), "month_bookings": len(month_b),
         "arrivals": [bk(b) for b in arrivals], "departures": [bk(b) for b in departures],
         "pending_cleaning": [{"id": str(c["_id"]), "property_name": pmap.get(c["property_id"], "—"), "date": c["date"], "status": c["status"]} for c in pending_clean],

@@ -114,3 +114,31 @@ async def test_expense_registration_retry_and_owner_deductions_reconcile(ctx,own
     assert after['britsmaid_net']==before['britsmaid_net']-(200-owner_cost)
     assert owner['owner_payout']==after['owner_payout']
     assert owner['deduction_items'][0]['amount']==200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('expense',[0,200,2000])
+async def test_admin_dashboard_net_tiles_reconcile_after_expenses_and_tds(ctx,expense):
+    await seed(ctx)
+    c=ctx['client'];month=date.today().isoformat()[:7]
+    if expense:
+        await ctx['db'].expenses.insert_one(dict(property_id=ctx['p1'],month=month,type='other',amount=expense,allocation={'owner_amount':expense/4,'britsmaid_amount':expense*3/4,'owner_percent':25,'britsmaid_percent':75},treatment='after_split'))
+    d=(await c.get('/api/dashboard',headers=auth(ctx))).json()
+    owner_before=750-expense/4
+    expected_owner=round(owner_before-round(max(owner_before,0)*.02,2),2)
+    assert d['total_owner_payout']==expected_owner
+    assert d['total_britsmaid_earnings']==1550-expense*3/4
+    assert d['month_gross']==2334
+    assert (await c.get('/api/dashboard',headers=auth(ctx,'owner'))).status_code==403
+
+
+@pytest.mark.asyncio
+async def test_dashboard_net_totals_exclude_deleted_properties_and_include_loss_balances(ctx):
+    await ctx['db'].bookings.update_one({'_id':ObjectId(ctx['bid'])},{'$set':{'ota':'Direct'}})
+    c=ctx['client'];month=date.today().isoformat()[:7]
+    await ctx['db'].expenses.insert_one(dict(property_id=ctx['p1'],month=month,type='other',amount=4000,allocation={'owner_amount':1000,'britsmaid_amount':3000,'owner_percent':25,'britsmaid_percent':75},treatment='after_split'))
+    d=(await c.get('/api/dashboard',headers=auth(ctx))).json()
+    assert d['total_owner_payout']==-300 and d['total_britsmaid_earnings']==-2700
+    await ctx['db'].properties.update_one({'_id':ObjectId(ctx['p1'])},{'$set':{'is_deleted':True}})
+    d=(await c.get('/api/dashboard',headers=auth(ctx))).json()
+    assert d['total_owner_payout']==0 and d['total_britsmaid_earnings']==0

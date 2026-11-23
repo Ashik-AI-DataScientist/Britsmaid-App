@@ -2,7 +2,7 @@
 import math
 from html import escape
 from urllib.parse import quote
-from booking_finance import money
+from booking_finance import money, percent_amount
 
 
 def amount(value):
@@ -96,7 +96,7 @@ def public_payout_sections(s, currency, token):
     extra = s.get('additional_totals') or {}
     if extra.get('deductions'):
         calculation += row('Additional revenue taxes / collection fees', extra['deductions'], True)
-    calculation += row('Revenue available to split', s.get('net_revenue', 0)) + row('Owner allocated share (rental % + individual add-ons)' if extra.get("gross") else f'Owner allocated share ({s.get("owner_share_percent", 0):g}%)', s.get('owner_share', 0))
+    calculation += row('Revenue available to split', s.get('net_revenue', 0)) + row('Owner allocation (rental and add-ons)' if extra.get("gross") else f'Owner allocated share ({s.get("owner_share_percent", 0):g}%)', s.get('owner_share', 0))
     if p['ownerAfter'] > 0:
         calculation += disclosure('Owner expenses after split', p['ownerAfter'], records('after_split') + '<small>Only the owner contribution above is deducted from the owner share.</small>', True)
     if s.get('owner_before_tds') is not None:
@@ -108,7 +108,10 @@ def public_payout_sections(s, currency, token):
     if s.get('additional_revenue'):
         expenses = '<div class="card"><h2>Additional revenue</h2>'
         for item in s['additional_revenue']:
-            allocation = currency(item['owner_amount']) if item.get('owner_amount') is not None else str(item['owner_percent']) + '%'
+            net = money(item['amount'] - item.get('tax', 0) - item.get('fee', 0))
+            allocated = money(item['owner_amount']) if item.get('owner_amount') is not None else percent_amount(net, item['owner_percent'])
+            percent = money(allocated / net * 100) if item.get('owner_amount') is not None and net > 0 else item.get('owner_percent', 0)
+            allocation = currency(allocated) + f' ({percent:g}%)'
             expenses += '<details><summary>' + escape(item['title']) + ' · ' + currency(item['amount']) + '</summary><p>' + escape(item['service_date'] + ' · ' + item['status'] + ' · ' + item.get('notes', '')) + '</p><p>Owner allocation: ' + escape(allocation) + '</p></details>'
         expenses += '</div>'
     if p['groups']:
@@ -119,7 +122,7 @@ def public_payout_sections(s, currency, token):
                 shares = ''.join(row(label, p[key]) for key, label in [('ownerAfter', 'Owner contribution'), ('bmAfter', 'Britsmaid contribution')] if p[key] > 0)
             expenses += disclosure(group['label'], group['total'], shares + records(group['key']))
         expenses += '</div>'
-    bm = row('Britsmaid allocated share (rental % + individual add-ons)' if extra.get("gross") else f'Britsmaid allocated share ({s.get("britsmaid_share_percent", 0):g}%)', s.get('britsmaid_share', 0))
+    bm = row('Britsmaid allocation' if extra.get("gross") else f'Britsmaid allocated share ({s.get("britsmaid_share_percent", 0):g}%)', s.get('britsmaid_share', 0))
     if p['bmAfter'] > 0:
         bm += disclosure('Britsmaid expenses after split', p['bmAfter'], records('after_split'), True)
     bm += row('Britsmaid net earnings', s.get('britsmaid_net', 0))

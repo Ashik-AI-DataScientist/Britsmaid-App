@@ -12,7 +12,7 @@ export async function previewWebPdf(html: string): Promise<void> {
   toolbar.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px;background:#19365c;color:white;font:14px Arial,sans-serif';
   const title = document.createElement('span');
   title.textContent = 'PDF preview — choose Save as PDF in the print dialog';
-  title.style.flex = '1';
+  title.style.cssText = 'flex:1 1 100%;line-height:1.4';
   const print = document.createElement('button');
   print.textContent = 'Print / Save PDF';
   print.disabled = true;
@@ -27,7 +27,8 @@ export async function previewWebPdf(html: string): Promise<void> {
   frame.style.cssText = 'flex:1;width:100%;border:0;background:white';
   let closed = false;
   let finish = () => {};
-  const dismiss = () => { closed = true; finish(); overlay.remove(); previousFocus?.focus(); };
+  let releasePrint = () => {};
+  const dismiss = () => { closed = true; finish(); releasePrint(); overlay.remove(); previousFocus?.focus(); };
   close.onclick = dismiss;
   overlay.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') dismiss();
@@ -38,8 +39,34 @@ export async function previewWebPdf(html: string): Promise<void> {
     }
   });
   print.onclick = () => {
-    frame.contentWindow?.focus();
-    frame.contentWindow?.print();
+    const doc = frame.contentDocument;
+    if (!doc?.body || closed) return;
+    releasePrint();
+    // Print the report as normal top-level flow, never a fixed-height iframe.
+    // Stay in this tab so mobile installation and pop-up settings do not matter.
+    const printRoot = document.createElement('div');
+    printRoot.id = 'britsmaid-print-document';
+    printRoot.style.display = 'none';
+    printRoot.innerHTML = doc.body.innerHTML;
+    const printStyles = document.createElement('style');
+    printStyles.media = 'print';
+    printStyles.textContent = Array.from(doc.querySelectorAll('style')).map(style => style.textContent || '').join('\n') + `
+      html,body{height:auto!important;min-height:0!important;overflow:visible!important;position:static!important;display:block!important}
+      body>:not(#britsmaid-print-document){display:none!important}
+      body>#britsmaid-print-document{display:block!important;position:static!important;height:auto!important;width:auto!important;overflow:visible!important}
+    `;
+    const originalTitle = document.title;
+    const cleanup = () => {
+      printRoot.remove(); printStyles.remove(); document.title = originalTitle;
+      window.removeEventListener('afterprint', cleanup);
+    };
+    releasePrint = cleanup;
+    document.head.append(printStyles);
+    document.body.append(printRoot);
+    document.title = doc.title || 'Britsmaid report';
+    window.addEventListener('afterprint', cleanup, { once: true });
+    try { window.focus(); window.print(); }
+    catch { cleanup(); title.textContent = 'Could not open printing. Please try again.'; }
   };
   toolbar.append(title, print, close);
   overlay.append(toolbar, frame);
