@@ -10,6 +10,7 @@ The admin dashboard adds Total Owner Payout and Total Britsmaid earnings for the
 
 ## Verification
 
+- The backend CI runner uses Asia/Kolkata, matching the production container, so India-date fixtures and process-date queries remain consistent across midnight.
 - 842 isolated backend tests passed. Added dashboard cases cover expenses, owner TDS, private add-ons, negative balances, deleted properties and non-admin denial. Existing expense, booking, owner access and reporting tests pass.
 - Frontend typecheck, lint, edge suites and production web export passed, including report wording, column ordering, effective allocation, zero-share omission, print isolation and afterprint/close/error cleanup.
 - Chrome local PDF renderer: synthetic A4 and Letter reports are two pages and use full-height portrait flow. First-page body reaches 775.5/841.9 points (A4) and 676.9/792 points (Letter), compared with the supplied PDF content ending around halfway down the page.

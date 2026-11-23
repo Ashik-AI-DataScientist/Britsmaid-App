@@ -26,6 +26,8 @@ jobs:
         run: docker compose -f compose.staging.yml down
   backend:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Kolkata
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
