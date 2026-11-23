@@ -13,7 +13,7 @@ import { CalendarExport } from "@/src/components/CalendarExport";
 import { CaptureSheet } from "@/src/components/CaptureSheet";
 import { PropertyCover } from "@/src/components/PropertyCover";
 
-const blank = { name: "", location: "", owner_name: "", owner_email: "", owner_phone: "", owner_alt_phone: "", owner_address: "", contacts: [] as Contact[], owner_share_percent: "70", electricity_mode: "owner" as "owner" | "split_half", base_rate: "", rooms: ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"], ical_feeds: [] as { ota: string; url: string; last_synced?: string | null }[], cover_url: "", notes: "" };
+const blank = { property_type: null as null | "villa" | "apartment" | "resort", name: "", location: "", owner_name: "", owner_email: "", owner_phone: "", owner_alt_phone: "", owner_address: "", contacts: [] as Contact[], owner_share_percent: "70", electricity_mode: "owner" as "owner" | "split_half", base_rate: "", rooms: ["Living Room", "Kitchen", "Bedroom 1", "Bathroom 1"], ical_feeds: [] as { ota: string; url: string; last_synced?: string | null }[], cover_url: "", notes: "" };
 
 export default function EditProperty() {
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -87,12 +87,13 @@ export default function EditProperty() {
       <Header back title={id ? "Edit property" : "New property"} />
       <KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: spacing.lg, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }}>
         <Card style={{ gap: spacing.md }}>
-          <Txt v="label">Villa</Txt>
+          <Txt v="label">Property</Txt>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm }}>{(["villa", "apartment", "resort"] as const).map(type => <Chip key={type} label={type[0].toUpperCase() + type.slice(1)} selected={f.property_type === type} onPress={() => set("property_type")(type)} />)}</View>
           <Input testID="property-name-input" label="Name" value={f.name} onChangeText={set("name")} placeholder="Villa Azure" />
           <Input testID="property-location-input" label="Location" value={f.location} onChangeText={set("location")} placeholder="Candolim, Goa" />
           <Input testID="property-rate-input" label="Base nightly rate ₹" keyboardType="numeric" value={f.base_rate} onChangeText={set("base_rate")} />
-          <Txt v="label">Villa cover photo (optional)</Txt>
-          {coverId || f.cover_url ? <View style={{ height: 180, overflow: "hidden", borderRadius: 12 }}><PropertyCover property={{ cover_media_id: coverId, cover_url: f.cover_url }} /></View> : <Txt v="caption">Choose a photo of this villa, or take one with your camera.</Txt>}
+          <Txt v="label">Property cover photo (optional)</Txt>
+          {coverId || f.cover_url ? <View style={{ height: 180, overflow: "hidden", borderRadius: 12 }}><PropertyCover property={{ cover_media_id: coverId, cover_url: f.cover_url }} /></View> : <Txt v="caption">Choose a photo of this property, or take one with your camera.</Txt>}
           <Button testID="property-cover-add" title={coverId || f.cover_url ? "Change cover photo" : "Add cover photo"} icon="camera" disabled={saving} onPress={() => setCaptureCover(true)} />
           {coverId || f.cover_url ? <Button title="Remove cover photo" variant="ghost" disabled={saving} onPress={() => { setCoverId(""); set("cover_url")(""); }} /> : null}
           <Txt v="caption">After choosing your photo, tap {id ? "Save changes" : "Add property"} below to save it.</Txt>
@@ -160,7 +161,7 @@ export default function EditProperty() {
         <Button testID="property-save-button" title={id ? "Save changes" : "Add property"} onPress={save} loading={saving} />
         {id ? <Button testID="property-delete-from-edit" variant="danger" icon="trash-outline" title="Delete property" onPress={() => setDel(true)} /> : null}
       </KeyboardAwareScrollView>
-      <CaptureSheet visible={captureCover} onClose={() => setCaptureCover(false)} singleSelection testID="property-cover-picker" destination={{ key: `property-cover:${id || "new"}`, label: "Villa cover photo" }} purpose="Take a villa photo or choose one from your gallery." successMessage="Cover photo ready. Save the property below to keep it." onUploaded={async (media, target) => {
+      <CaptureSheet visible={captureCover} onClose={() => setCaptureCover(false)} singleSelection testID="property-cover-picker" destination={{ key: `property-cover:${id || "new"}`, label: "Property cover photo" }} purpose="Take a villa photo or choose one from your gallery." successMessage="Cover photo ready. Save the property below to keep it." onUploaded={async (media, target) => {
         if (target.key !== `property-cover:${id || "new"}` || media.length !== 1 || media[0].kind !== "image") throw new Error("Return to the original villa and choose one photo.");
         setCoverId(media[0].id); set("cover_url")("");
       }} />

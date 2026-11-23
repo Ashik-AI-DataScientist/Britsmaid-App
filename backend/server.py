@@ -590,6 +590,7 @@ class ContactIn(BaseModel):
 class PropertyIn(BaseModel):
     name: str = Field(min_length=1, max_length=180)
     location: str = ""
+    property_type: Optional[Literal["villa", "apartment", "resort"]] = None
     owner_name: str = ""
     owner_email: str = ""
     owner_phone: str = ""
@@ -639,14 +640,15 @@ async def list_properties(user=Depends(current_user)):
 
 def property_view(p, user):
     if user["role"] in ("cleaner", "supervisor"):
-        return {k: v for k, v in p.items() if k in ("id", "name", "location", "rooms", "occupied", "needs_cleaning", "pending_cleaning_id")}
+        return {k: v for k, v in p.items() if k in ("id", "name", "location", "rooms", "property_type", "occupied", "unavailable", "needs_cleaning", "pending_cleaning_id")}
     return p
 
 
 async def property_status(pid: str, day: str):
-    occ = await db.bookings.find_one({"property_id": pid, "status": {"$ne": "cancelled"}, "check_in": {"$lte": day}, "check_out": {"$gt": day}})
+    occ = await db.bookings.find_one({"property_id": pid, "status": "confirmed", "check_in": {"$lte": day}, "check_out": {"$gt": day}})
+    blocked = await db.bookings.find_one({"property_id": pid, "status": "blocked", "check_in": {"$lte": day}, "check_out": {"$gt": day}})
     pending = await db.cleaning.find_one({"property_id": pid, "status": {"$nin": ["completed", "cancelled"]}, "date": {"$lte": day}})
-    return {"occupied": bool(occ), "current_guest": occ.get("guest_name") if occ else None,
+    return {"occupied": bool(occ), "unavailable": bool(blocked) and not bool(occ), "current_guest": occ.get("guest_name") if occ else None,
             "needs_cleaning": bool(pending), "pending_cleaning_id": str(pending["_id"]) if pending else None}
 
 
@@ -690,7 +692,10 @@ async def update_property(pid: str, body: PropertyIn, _=Depends(admin_user)):
     if not previous:
         raise HTTPException(404, "Property not found")
     await validate_property_cover(body.cover_media_id, _, previous.get("cover_media_id", ""))
-    await db.properties.update_one({"_id": oid(pid)}, {"$set": body.model_dump()})
+    changes = body.model_dump()
+    if "property_type" not in body.model_fields_set:
+        changes.pop("property_type", None)
+    await db.properties.update_one({"_id": oid(pid)}, {"$set": changes})
     return await get_property(pid, _)
 
 
@@ -717,6 +722,7 @@ class BookingIn(BaseModel):
     ota_commission: float = Field(default=0, ge=0, allow_inf_nan=False)
     financials: Optional[BookingFinance] = None
     status: Literal["confirmed", "cancelled", "blocked"] = "confirmed"
+    cancellation_reason: str = Field(default="", max_length=1000)
     notes: str = ""
     revision: Optional[int] = Field(default=None, ge=0)
 
@@ -835,6 +841,8 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     if body.status != "cancelled":
         claimed = await claim_nights(db, bid, body.property_id, body.check_in, body.check_out)
     changes = body.model_dump(exclude={"revision"})
+    if "cancellation_reason" not in body.model_fields_set:
+        changes["cancellation_reason"] = previous.get("cancellation_reason", "")
     if previous.get("financials") and "financials" not in body.model_fields_set:
         changes["financials"] = previous["financials"]
     if previous.get("financials") and changes.get("financials") is None:
@@ -853,6 +861,12 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
         await db.reserved_nights.delete_many({"_id": {"$in": claimed}, "booking_id": bid})
         raise HTTPException(409, "Booking changed. Refresh before saving again.")
     await release_unused(db, bid, body.property_id if body.status != "cancelled" else None, body.check_in, body.check_out)
+    if body.status == "cancelled":
+        await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
+    if previous["check_out"] != body.check_out:
+        from datetime import timezone as tz, timedelta as delta
+        until = datetime.combine(date.fromisoformat(body.check_out) + delta(days=90), datetime.min.time(), tz(delta(hours=5, minutes=30))).astimezone(tz.utc).isoformat()
+        await db.guest_ids.update_many({"booking_id": bid, "deleted": False, "retention_policy": "checkout-90-days"}, {"$set": {"delete_after": until}})
     if body.status == "confirmed":
         await ensure_cleaning(body.property_id, bid, body.check_out)
         prop = await db.properties.find_one({"_id": oid(body.property_id)})
@@ -866,6 +880,25 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     else:
         await db.cleaning.update_many({"booking_id": bid, "status": {"$ne": "completed"}}, {"$set": {"status": "cancelled", "review_notes": "Booking cancelled or blocked"}})
     return await get_booking(bid, _)
+
+
+class CancelBookingIn(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    revision: int = Field(ge=0)
+
+
+@api.post("/bookings/{bid}/cancel")
+async def cancel_booking(bid: str, body: CancelBookingIn, user=Depends(admin_user)):
+    previous = await db.bookings.find_one({"_id": oid(bid)})
+    if not previous:
+        raise HTTPException(404, "Booking not found")
+    if not body.reason.strip():
+        raise HTTPException(422, "Enter a cancellation reason")
+    if previous.get("status") == "cancelled":
+        return await get_booking(bid, user)
+    data = {**previous, "status": "cancelled", "revision": body.revision,
+            "cancellation_reason": body.reason.strip()}
+    return await update_booking(bid, BookingIn(**data), user)
 
 
 @api.delete("/bookings/{bid}")
@@ -950,6 +983,11 @@ async def sync_property(p: dict) -> list:
                         result = await create_booking(body, worker)
                         added += 1
                     await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
+                    if not existing or any(existing.get(k) != payload.get(k) for k in ("guest_name", "ota", "check_in", "check_out", "status")):
+                        try:
+                            await activity.record(f"ical:{result['id']}:{result.get('revision', 0)}", "Calendar booking updated" if existing else "Calendar booking imported", "/booking/" + result["id"])
+                        except Exception:
+                            logger.exception("Could not record calendar activity")
                 except Exception:
                     # Preserve existing work and expose a sync failure rather than silently overwrite conflicts.
                     conflicts += 1
@@ -1084,11 +1122,14 @@ async def validate_assignee(uid, pid):
 
 class ChecklistIn(BaseModel):
     checked: List[str]
+    expected_revision: Optional[int] = None
 
 
 @api.put("/cleaning/{cid}/rooms/{idx}/checklist")
 async def set_checklist(cid: str, idx: int, body: ChecklistIn, user=Depends(staff_user)):
     c = await checked_cleaning(cid, user, writable=True)
+    if body.expected_revision is not None and body.expected_revision != c.get("revision", 0):
+        raise HTTPException(409, "Checklist changed. Refresh before saving again.")
     if idx < 0 or idx >= len(c.get("rooms", [])) or not set(body.checked).issubset(CHECKLIST):
         raise HTTPException(422, "Invalid room or checklist item")
     result = await db.cleaning.update_one({"_id": c["_id"], "status": c["status"], "revision": c.get("revision")}, {"$set": {f"rooms.{idx}.checked": list(set(body.checked))}, "$inc": {"revision": 1}})
@@ -1098,6 +1139,7 @@ async def set_checklist(cid: str, idx: int, body: ChecklistIn, user=Depends(staf
 
 
 class ReviewIn(BaseModel):
+    expected_revision: Optional[int] = None
     approved: bool
     notes: str = Field(default="", max_length=2000)
 
@@ -1159,6 +1201,8 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
     if user["role"] not in ("admin", "supervisor"):
         raise HTTPException(403, "Supervisor review required")
     c = await checked_cleaning(cid, user)
+    if body.expected_revision is not None and body.expected_revision != c.get("revision", 0):
+        raise HTTPException(409, "Cleaning evidence changed. Refresh before reviewing again.")
     if c["status"] != "awaiting_review":
         raise HTTPException(409, "Session is not awaiting review")
     if not body.approved and not body.notes.strip():
@@ -1167,7 +1211,7 @@ async def review_cleaning(cid: str, body: ReviewIn, user=Depends(staff_user)):
                "reviewed_by": str(user["_id"]), "reviewed_at": now_iso()}
     if body.approved:
         changes["completed_at"] = now_iso()
-    result = await db.cleaning.update_one({"_id": c["_id"], "status": "awaiting_review"}, {"$set": changes})
+    result = await db.cleaning.update_one({"_id": c["_id"], "status": "awaiting_review", "revision": c.get("revision")}, {"$set": changes, "$inc": {"revision": 1}})
     if not result.matched_count:
         raise HTTPException(409, "Session changed; refresh and retry")
     return await get_cleaning(cid, user)
@@ -1459,6 +1503,9 @@ def shift_month(month: str, delta: int) -> str:
     return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
 
 
+from additional_revenue import period_revenue, revenue_totals, register_revenue
+
+
 async def compute_settlement(p: dict, month: str):
     start, end = month_range(month)
     bookings = await db.bookings.find({"property_id": str(p["_id"]), "status": "confirmed", "check_in": {"$gte": start, "$lt": end}}).sort("check_in", 1).to_list(1000)
@@ -1474,6 +1521,13 @@ async def compute_settlement(p: dict, month: str):
     pct = p.get("owner_share_percent", 70)
     owner_share = percent_amount(net, pct)
     bm_share = money(net - owner_share)
+    additional = await period_revenue(db, str(p['_id']), start, end)
+    extra = revenue_totals(additional)
+    rental_gross, rental_net = gross, net
+    gross = money(gross + extra['gross'])
+    net = money(net + extra['net'])
+    owner_share = money(owner_share + extra['owner'])
+    bm_share = money(bm_share + extra['britsmaid'])
     elec = sum(e["amount"] for e in exps if e["type"] == "electricity")
     other = money(sum(expense_shares(e, p)[0] for e in exps if e["type"] == "other"))
     bm_other = money(sum(expense_shares(e, p)[1] for e in exps if e["type"] == "other"))
@@ -1499,11 +1553,15 @@ async def compute_settlement(p: dict, month: str):
         o["deductions"] = money(o.get("deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
     for o in by_ota.values():
         o["net"] = money(o["gross"] - o["commission"] - o["deductions"])
+    if extra['gross']:
+        by_ota['Additional revenue'] = {'ota': 'Additional revenue', 'bookings': 0, 'nights': 0,
+            'gross': extra['gross'], 'commission': 0, 'deductions': extra['deductions'], 'net': extra['net']}
     y, m = map(int, month.split("-"))
     days_in_month = (date.fromisoformat(end) - date.fromisoformat(start)).days
     return {
         "property_id": str(p["_id"]), "property_name": p["name"], "owner_name": p.get("owner_name", ""), "month": month,
         "owner_share_percent": pct, "britsmaid_share_percent": 100 - pct, "electricity_mode": mode,
+        "additional_revenue": additional, "additional_totals": extra, "rental_gross": rental_gross, "rental_net": rental_net,
         "gross": gross, "ota_commission": commission, "net_revenue": net, "owner_share": owner_share, "britsmaid_share": bm_share,
         "electricity_total": elec, "owner_electricity": owner_elec, "britsmaid_electricity": bm_elec, "other_deductions": other,
         "pre_split_deductions": pre_split,
@@ -1521,7 +1579,7 @@ async def compute_settlement(p: dict, month: str):
         "by_ota": sorted(by_ota.values(), key=lambda x: -x["gross"]),
         "bookings": [{"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "check_in": b["check_in"], "check_out": b["check_out"],
                       "amount": t["gross"], "ota_commission": t["commission"], "financials": b.get("financials"),
-                      "net_revenue": t["net"]} for b, t in zip(bookings, totals)],
+                      "net_revenue": t["net"], "additional_revenue": b.get("additional_revenue", [])} for b, t in zip(bookings, totals)],
     }
 
 
@@ -1570,6 +1628,8 @@ async def create_payout(body: PayoutIn, user=Depends(admin_user)):
                 "calculated_payout": snap["owner_payout"], "gross": snap["gross"], "ota_commission": snap["ota_commission"], "owner_share": snap["owner_share"],
                 "owner_share_percent": snap["owner_share_percent"], "owner_electricity": snap["owner_electricity"], "other_deductions": snap["other_deductions"],
                 "pre_split_deductions": snap["pre_split_deductions"], "deduction_items": snap["deduction_items"],
+                "additional_revenue": snap.get("additional_revenue", []), "additional_totals": snap.get("additional_totals", {}),
+                "rental_gross": snap.get("rental_gross"), "rental_net": snap.get("rental_net"),
                 "owner_tds": snap["owner_tds"], "owner_before_tds": snap["owner_before_tds"],
                 "owner_tds_percent": snap["owner_tds_percent"],
                 "expense_before_total": snap["expense_before_total"], "expense_after_total": snap["expense_after_total"],
@@ -1615,6 +1675,17 @@ async def ota_report(month: str, property_id: Optional[str] = None, _=Depends(ad
         r["other_deductions"] = money(r.get("other_deductions", 0) + t["gst"] + t["platform_tax"] + t["misc"])
         pn = props.get(b["property_id"], "Unknown")
         r["properties"][pn] = r["properties"].get(pn, 0) + t["gross"]
+    extra_items = await period_revenue(db, property_id if property_id else {"$in": list(props)}, start, end)
+    for item in extra_items:
+        extra = revenue_totals([item])
+        if not extra['gross']:
+            continue
+        row = rows.setdefault('Additional revenue', {'ota': 'Additional revenue', 'bookings': 0, 'nights': 0,
+            'gross': 0, 'commission': 0, 'other_deductions': 0, 'properties': {}})
+        row['gross'] = money(row['gross'] + extra['gross'])
+        row['other_deductions'] = money(row['other_deductions'] + extra['deductions'])
+        name = props.get(item['property_id'], 'Property')
+        row['properties'][name] = money(row['properties'].get(name, 0) + extra['gross'])
     result = []
     for r in rows.values():
         r["net"] = money(r["gross"] - r["commission"] - r.get("other_deductions", 0))
@@ -1855,15 +1926,16 @@ async def dashboard(_=Depends(admin_user)):
     month_b = await db.bookings.find({"status": "confirmed", "check_in": {"$gte": start, "$lt": end}}).to_list(5000)
     arrivals = await db.bookings.find({"status": "confirmed", "check_in": today}).to_list(100)
     departures = await db.bookings.find({"status": "confirmed", "check_out": today}).to_list(100)
-    occupied = await db.bookings.count_documents({"status": {"$ne": "cancelled"}, "check_in": {"$lte": today}, "check_out": {"$gt": today}})
+    occupied = len({b["property_id"] for b in await db.bookings.find({"property_id": {"$in": list(pmap)}, "status": "confirmed", "check_in": {"$lte": today}, "check_out": {"$gt": today}}).to_list(None)})
     pending_clean = await db.cleaning.find({"status": {"$nin": ["completed", "cancelled"]}, "date": {"$lte": today}}).sort("date", 1).to_list(50)
+    additional = revenue_totals(await period_revenue(db, {"$in": list(pmap)}, start, end))
     unpaid = await db.invoices.find({"status": "unpaid"}).to_list(1000)
 
     def bk(b):
         return {"id": str(b["_id"]), "guest_name": b["guest_name"], "ota": b["ota"], "property_name": pmap.get(b["property_id"], "—"), "check_in": b["check_in"], "check_out": b["check_out"]}
     return {
         "month": month, "properties": len(props), "occupied_today": occupied,
-        "month_gross": money(sum(booking_totals(b)["gross"] for b in month_b)), "month_bookings": len(month_b),
+        "month_gross": money(sum(booking_totals(b)["gross"] for b in month_b) + additional["gross"]), "month_bookings": len(month_b),
         "arrivals": [bk(b) for b in arrivals], "departures": [bk(b) for b in departures],
         "pending_cleaning": [{"id": str(c["_id"]), "property_name": pmap.get(c["property_id"], "—"), "date": c["date"], "status": c["status"]} for c in pending_clean],
         "unpaid_invoices": len(unpaid), "unpaid_total": sum(i.get("total", 0) for i in unpaid),
@@ -1884,7 +1956,7 @@ async def owner_dashboard(user=Depends(finance_user)):
         upcoming = await db.bookings.count_documents({"property_id": pid, "status": "confirmed", "check_in": {"$gte": today}})
         last_clean = await db.cleaning.find_one({"property_id": pid, "status": "completed"}, sort=[("completed_at", -1)])
         o = {"id": pid, "name": p["name"], "location": p.get("location", ""), "cover_url": p.get("cover_url", ""), "cover_media_id": p.get("cover_media_id", ""),
-             "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
+             "property_type": p.get("property_type"), "owner_share_percent": p.get("owner_share_percent"), "electricity_mode": p.get("electricity_mode"),
              "month_payout": s["owner_payout"], "month_gross": s["gross"], "month_nights": s["nights"], "occupancy_percent": s["occupancy_percent"],
              "upcoming_bookings": upcoming, "last_cleaned": last_clean.get("completed_at") if last_clean else None,
              "reports": await db.owner_reports.count_documents({"property_id": pid}),
@@ -1934,7 +2006,14 @@ async def service_readiness(user=Depends(admin_user)):
 from admin_mfa import AdminMFA
 admin_mfa = AdminMFA(db, JWT_SECRET, verify_pw)
 admin_mfa.register(api, admin_user, issue_token)
+register_revenue(api, db, admin_user, oid, now_iso, get_booking)
+from insights import register_insights
+register_insights(api, db, finance_user, check_pid, owner_pids, oid)
+from activity import Activity, ActivityMiddleware
+activity = Activity(db)
+activity.register(api, admin_user)
 app.include_router(api)
+app.add_middleware(ActivityMiddleware, activity=activity)
 from media_reference_guard import MediaReferenceGuard
 app.add_middleware(MediaReferenceGuard, db=db, authenticate=current_user)
 app.add_middleware(BoundedGuestUploads)
@@ -2064,6 +2143,7 @@ async def startup():
     await db.payouts.create_index([("property_id", 1), ("month", 1)], unique=True)
     await db.calendar_exports.create_index("token", unique=True)
     await db.bookings.create_index([("property_id", 1), ("ical_uid", 1)], unique=True, partialFilterExpression={"ical_uid": {"$type": "string"}})
+    app.state.activity_task = asyncio.create_task(activity.loop())
     app.state.sync_task = asyncio.create_task(auto_sync_loop())
     app.state.retention_task = asyncio.create_task(guest_retention_loop())
     app.state.cleaning_retention_task = asyncio.create_task(cleaning_retention_loop())
@@ -2129,7 +2209,7 @@ async def seed_demo():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    tasks = [getattr(app.state, name, None) for name in ("sync_task", "retention_task", "cleaning_retention_task", "training_task", "backup_task", "media_migration_task")]
+    tasks = [getattr(app.state, name, None) for name in ("activity_task", "sync_task", "retention_task", "cleaning_retention_task", "training_task", "backup_task", "media_migration_task")]
     for task in tasks:
         if task:
             task.cancel()

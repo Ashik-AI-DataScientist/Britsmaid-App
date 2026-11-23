@@ -2,13 +2,15 @@ import React, { useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated, { FadeIn, LinearTransition } from "react-native-reanimated";
 import { Card, Icon, Row, Txt } from "@/src/ui";
-import { fmtShort, inr, monthLabel, monthShort, otaColor } from "@/src/format";
+import { fmtShort, inr, monthLabel, otaColor } from "@/src/format";
 import { fonts, radius, spacing, useTheme } from "@/src/theme";
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/src/auth';
 import { otaBreakdown, reportPresentation } from '@/src/expense-presentation';
 import { ExpenseDetails } from '@/src/components/ExpenseDetails';
 import { BookingAmounts } from '@/src/components/BookingAmounts';
+
+import { RevenueInsights } from "./RevenueInsights";
 
 export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m: string) => void }) {
   const { colors } = useTheme();
@@ -34,11 +36,11 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
     </>;
   };
   const [openOta, setOpenOta] = useState<string | null>(null);
-  const [trendSel, setTrendSel] = useState<string>(s.month);
+
 
   const segments = [
-    { key: "owner", label: "Owner allocated share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of revenue available to split. Owner expenses after split and TDS are deducted later in the payout calculation.` },
-    { key: "bm", label: "Britsmaid allocated share", value: s.britsmaid_share, color: colors.brandSecondary, note: `${s.britsmaid_share_percent}% of revenue available to split. Britsmaid expenses after split are deducted in the Britsmaid breakdown.` },
+    { key: "owner", label: "Owner allocated share", value: s.owner_share, color: colors.brandPrimary, note: `${s.owner_share_percent}% of rental revenue, plus separately allocated add-ons. Owner expenses after split and TDS are deducted later in the payout calculation.` },
+    { key: "bm", label: "Britsmaid allocated share", value: s.britsmaid_share, color: colors.brandSecondary, note: `${s.britsmaid_share_percent}% of rental revenue, plus separately allocated add-ons. Britsmaid expenses after split are deducted in the Britsmaid breakdown.` },
   ];
   const total = segments.reduce((a, b) => a + b.value, 0) || 1;
   const overview = [
@@ -47,9 +49,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
     { key: 'expenses', label: 'Expenses', value: presentation.totalExpenses, note: 'Full reported expense total for both parties, including before-split, after-split and any reference-only records. See the detailed expense breakdown for how each cost is treated.' },
   ];
   const canChartSplit = s.net_revenue > 0 && segments.every(g => g.value >= 0);
-  const trend: any[] = s.trend ?? [];
-  const maxT = Math.max(1, ...trend.map((t) => t.gross));
-  const selT = trend.find((t) => t.month === trendSel);
+
 
   return (
     <View style={{ gap: spacing.md }}>
@@ -97,36 +97,11 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         ) : null}
       </Card>
 
-      {trend.length ? (
-        <Card testID="trend-card">
-          <Txt v="subtitle">6-month trend</Txt>
-          <Txt v="caption">Tap a month to compare{onMonthPress ? ", tap again to open it" : ""}</Txt>
-          <View style={{ flexDirection: "row", alignItems: "flex-end", height: 130, gap: spacing.sm, marginTop: spacing.md }}>
-            {trend.map((t) => {
-              const on = t.month === trendSel;
-              return (
-                <Pressable key={t.month} testID={`trend-bar-${t.month}`} onPress={() => (on && onMonthPress && t.month !== s.month ? onMonthPress(t.month) : setTrendSel(t.month))} style={{ flex: 1, alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
-                  <Animated.View layout={LinearTransition} style={{ width: "100%", height: `${Math.max(4, (t.gross / maxT) * 100)}%`, borderRadius: radius.sm, backgroundColor: on ? colors.brandPrimary : colors.brandTertiary, justifyContent: "flex-end", overflow: "hidden" }}>
-                    <View style={{ height: `${t.gross ? Math.max(0, (t.owner_payout / t.gross) * 100) : 0}%`, backgroundColor: on ? colors.brandSecondary : colors.borderStrong }} />
-                  </Animated.View>
-                  <Txt v="caption" style={{ marginTop: 4, fontFamily: on ? fonts.textSemi : fonts.text, color: on ? colors.brandPrimary : colors.muted }}>{monthShort(t.month)}</Txt>
-                </Pressable>
-              );
-            })}
-          </View>
-          {selT ? (
-            <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: spacing.md }}>
-              <View><Txt v="caption">Gross</Txt><Txt v="mono">{inr(selT.gross)}</Txt></View>
-              <View><Txt v="caption">Owner payout</Txt><Txt v="mono">{inr(selT.owner_payout)}</Txt></View>
-              <View><Txt v="caption">Nights</Txt><Txt v="mono">{selT.nights}</Txt></View>
-            </View>
-          ) : null}
-        </Card>
-      ) : null}
+      {s.property_id ? <RevenueInsights key={s.property_id + s.month} propertyId={s.property_id} month={s.month} onMonthPress={onMonthPress} /> : null}
 
       <Card testID="breakdown-card">
         <Txt v="subtitle" style={{ marginBottom: spacing.xs }}>How the payout is calculated</Txt>
-        <Row label="Gross guest payments" value={inr(s.gross)} />
+        <Row label={s.additional_totals?.gross ? "Gross revenue (stay + add-ons)" : "Gross guest payments"} value={inr(s.gross)} />
         {presentation.bookingDeductions ? disclosure('booking-deductions', 'Booking deductions', `-${inr(presentation.bookingDeductions)}`, <>
           {s.ota_commission ? <Row label="OTA commissions" value={inr(s.ota_commission)} /> : null}
           {s.gst_total ? <Row label="Booking GST" value={inr(s.gst_total)} /> : null}
@@ -134,8 +109,9 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
           <Txt v="caption">Included once before the revenue split. Individual booking breakdowns are available below.</Txt>
         </>) : null}
         {presentation.groups.some(g => g.key === 'before_split') ? disclosure('before-summary', 'Expenses before revenue split', `-${inr(presentation.before)}`, expenseItems('before_split')) : null}
+        {s.additional_totals?.deductions ? <Row label="Additional revenue taxes / collection fees" value={`-${inr(s.additional_totals.deductions)}`} /> : null}
         <Row strong label="Revenue available to split" value={inr(s.net_revenue)} />
-        <Row label={`Owner allocated share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
+        <Row label={s.additional_totals?.gross ? `Owner allocation (rental ${s.owner_share_percent}%; add-ons individually)` : `Owner allocated share (${s.owner_share_percent}%)`} value={inr(s.owner_share)} />
         {presentation.ownerAfter > 0 ? disclosure('owner-after', 'Owner expenses after split', `-${inr(presentation.ownerAfter)}`, <>
           {expenseItems('after_split')}
           <Txt v="caption">Expense entries show the full costs. Only the owner contribution above is deducted from the owner share.</Txt>
@@ -161,7 +137,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
 
       <Card testID="statement-britsmaid-card">
         {disclosure('britsmaid-breakdown', 'Britsmaid breakdown', undefined, <>
-          <Row label={`Britsmaid allocated share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
+          <Row label={s.additional_totals?.gross ? `Britsmaid allocation (rental ${s.britsmaid_share_percent}%; add-ons individually)` : `Britsmaid allocated share (${s.britsmaid_share_percent}%)`} value={inr(s.britsmaid_share)} />
           {presentation.bmAfter > 0 ? disclosure('britsmaid-after', 'Britsmaid expenses after split', `-${inr(presentation.bmAfter)}`, expenseItems('after_split')) : null}
           <Row strong label="Britsmaid net earnings" value={inr(s.britsmaid_net)} />
         </>)}
@@ -185,7 +161,7 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
                 <View style={{ paddingLeft: spacing.lg, paddingBottom: spacing.sm }}>
                   <Row label="Bookings" value={String(o.bookings)} />
                   <Row label="Nights" value={String(o.nights)} />
-                  <Row label="Gross guest payments" value={inr(o.gross)} />
+                  <Row label={s.additional_totals?.gross ? "Gross revenue (stay + add-ons)" : "Gross guest payments"} value={inr(o.gross)} />
                   <Row label="Taxes & commission" value={`${breakdown.taxesAndCommission ? '-' : ''}${inr(breakdown.taxesAndCommission)}`} />
                   {breakdown.bookingExpenses > 0 ? <Row label="Other booking expenses" value={`-${inr(breakdown.bookingExpenses)}`} /> : null}
                   <Row strong label="Revenue available to split" value={inr(o.net)} />
@@ -197,6 +173,12 @@ export function SettlementView({ s, onMonthPress }: { s: any; onMonthPress?: (m:
         })}
       </Card>
 
+      {s.additional_revenue?.length ? <Card><Txt v="subtitle">Additional revenue</Txt>
+        {s.additional_revenue.map((item: any) => <View key={item.booking_id + item.id} style={{ paddingVertical: 10, gap: 4 }}>
+          <Row label={`${item.title} · ${item.status}`} value={inr(item.amount)} />
+          <Txt v="caption">{item.guest_name} · {item.service_date} · {item.notes}</Txt>
+          <Txt v="caption">{item.owner_amount != null ? `Owner allocation ${inr(item.owner_amount)}` : `Owner share ${item.owner_percent}%`} · Tax {inr(item.tax)} · Fee {inr(item.fee)}</Txt>
+        </View>)}</Card> : null}
       <Card testID="bookings-breakdown-card">
         <Txt v="subtitle" style={{ marginBottom: spacing.sm }}>Bookings ({s.bookings.length})</Txt>
         {s.bookings.map((b: any) => (

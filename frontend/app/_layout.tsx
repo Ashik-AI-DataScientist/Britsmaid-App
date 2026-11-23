@@ -22,7 +22,7 @@ function AuthGate() {
   const area = segments[0] as string;
   const page = (segments as string[])[1];
   const ownerBlocked = user?.role === "owner" && (
-    ["(admin)", "staff", "guests", "invoice", "issues", "settings", "training"].includes(area)
+    ["(admin)", "staff", "guests", "invoice", "issues", "notifications", "settings", "training"].includes(area)
     || (["booking", "report"].includes(area) && page === "new")
     || (area === "property" && page === "edit")
   );

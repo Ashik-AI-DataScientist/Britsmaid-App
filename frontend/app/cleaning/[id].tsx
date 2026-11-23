@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { Pressable, RefreshControl, ScrollView, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ export default function CleaningSession() {
   const staff = useQuery({ queryKey: ["cleaning-team"], queryFn: () => api.get<any[]>("/cleaning-team"), enabled: canReview });
   const [target, setTarget] = useState<{ idx: number; phase: "before" | "after" } | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
+  const checklistBusy = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const [adminOptions, setAdminOptions] = useState(false);
   const [adminAction, setAdminAction] = useState<"reopen" | "complete" | "reassign">("reopen");
@@ -47,9 +48,9 @@ export default function CleaningSession() {
   const addMedia = async (ids: string[], destination: CaptureTarget) => {
     if (destination.taskId !== id || destination.roomIndex === undefined || !destination.phase) throw new Error("Return to the original task to save this photo.");
     let data = c;
-    for (const mid of ids) data = await api.post(`/cleaning/${destination.taskId}/rooms/${destination.roomIndex}/media`, {
+    for (const mid of ids) { data = await api.post(`/cleaning/${destination.taskId}/rooms/${destination.roomIndex}/media`, {
       phase: destination.phase, media_id: mid, room_name: destination.roomName, expected_revision: destination.revision
-    });
+    }); destination.revision = data.revision ?? destination.revision; }
     // Advance only the revision after an acknowledged batch item; room/task/phase stay fixed.
     destination.revision = data.revision ?? destination.revision;
     refresh(data);
@@ -84,7 +85,7 @@ export default function CleaningSession() {
 
   const review = async (approved: boolean) => {
     setSubmitting(true);
-    try { refresh(await api.post(`/cleaning/${id}/review`, { approved, notes: notes ?? "" })); setNotes(null); }
+    try { refresh(await api.post(`/cleaning/${id}/review`, { approved, notes: notes ?? "", expected_revision: c.revision ?? 0 })); setNotes(null); }
     catch (e: any) { toast(e.message, "error"); }
     finally { setSubmitting(false); }
   };
@@ -98,9 +99,13 @@ export default function CleaningSession() {
     finally { setSubmitting(false); }
   };
   const toggleCheck = async (idx: number, room: any, item: string) => {
+    if (checklistBusy.current || submitting) return;
+    checklistBusy.current = true;
+    setSubmitting(true);
     const checked: string[] = room.checked ?? [];
-    try { refresh(await api.put(`/cleaning/${id}/rooms/${idx}/checklist`, { checked: checked.includes(item) ? checked.filter(x => x !== item) : [...checked, item] })); }
+    try { refresh(await api.put(`/cleaning/${id}/rooms/${idx}/checklist`, { expected_revision: c.revision ?? 0, checked: checked.includes(item) ? checked.filter(x => x !== item) : [...checked, item] })); }
     catch (e: any) { toast(e.message, "error"); }
+    finally { checklistBusy.current = false; setSubmitting(false); }
   };
 
   const phaseBox = (room: any, idx: number, phase: "before" | "after") => {
@@ -210,7 +215,7 @@ export default function CleaningSession() {
                 <Txt v="label">Room checklist</Txt>
                 {(c.checklist_items ?? []).map((item: string) => (
                   <Chip key={item} label={item} selected={(room.checked ?? []).includes(item)}
-                    onPress={() => { if (!done) toggleCheck(idx, room, item); }} />
+                    onPress={() => { if (!done && !submitting) toggleCheck(idx, room, item); }} />
                 ))}
               </Card>
             </Animated.View>

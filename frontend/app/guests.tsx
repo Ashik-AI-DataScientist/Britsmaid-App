@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Image, Linking, Modal, Platform, ScrollView, Share, Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { api, authenticatedBlob } from "@/src/api";
 import { Badge, Button, Card, ErrorState, Header, Input, Loading, Txt, useToast } from "@/src/ui";
@@ -8,8 +9,9 @@ import { spacing } from "@/src/theme";
 
 type Action = { action: string; title: string; document_id?: string };
 export default function Guests() {
+  const { booking_id } = useLocalSearchParams<{ booking_id?: string }>();
   const toast = useToast();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(booking_id || null);
   const [options, setOptions] = useState(false);
   const [history, setHistory] = useState(false);
   const [note, setNote] = useState("");
@@ -20,7 +22,7 @@ export default function Guests() {
   const [imageId, setImageId] = useState<string | null>(null);
   const [imageReady, setImageReady] = useState(false);
   const [busy, setBusy] = useState(false);
-  const bookings = useQuery({ queryKey: ["guest-bookings"], queryFn: () => api.get<any[]>("/guest-bookings"), refetchInterval: 15000 });
+  const bookings = useQuery({ queryKey: ["guest-bookings", booking_id], queryFn: () => api.get<any[]>(`/guest-bookings${booking_id ? `?booking_id=${booking_id}` : ""}`), refetchInterval: 15000 });
   const docs = useQuery({ queryKey: ["guest-ids", selected], queryFn: () => api.get<any[]>(`/guest-ids?booking_id=${selected}`), enabled: !!selected, refetchInterval: 15000 });
   const b = bookings.data?.find(item => item.id === selected);
   useEffect(() => () => { if (image && Platform.OS === "web") URL.revokeObjectURL(image); }, [image]);
@@ -72,6 +74,12 @@ export default function Guests() {
           <Txt v="subtitle">{d.guest_name} · Guest {d.guest_number}</Txt>
           <Badge label={d.status === "verified" ? "Approved" : d.status === "rejected" ? "Needs a new photo" : "Needs review"} tone={d.status === "verified" ? "success" : "warning"} />
           {d.review_reason ? <Txt>{d.review_reason}</Txt> : null}
+          {Platform.OS === "web" ? <Button title="Download ID" disabled={busy} variant="secondary" onPress={() => run(async () => {
+            const blob = await authenticatedBlob(`/guest-ids/${d.id}/image`);
+            const url = URL.createObjectURL(blob), link = document.createElement('a');
+            link.href = url; link.download = `guest-${d.guest_number}-id.jpg`; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+          })} /> : null}
           <Button title="View ID" disabled={busy} onPress={() => run(async () => {
             setImage(null); setImageReady(false); setImageId(d.id);
             const blob = await authenticatedBlob(`/guest-ids/${d.id}/image`);
@@ -83,7 +91,7 @@ export default function Guests() {
             <Txt>{d.document_type.replace(/_/g, " ")} · {d.expires_on === "9999-12-31" ? "No expiry declared" : `Expires ${d.expires_on}`}</Txt>
             <Button title="Close image" variant="ghost" onPress={() => setImage(null)} />
           </> : null}
-          {d.status === "pending" && !b.guest_checked_in_at ? <>
+          {d.status === "pending" ? <>
             <Button title="Approve ID" disabled={busy} onPress={() => imageId === d.id && image && imageReady ? run(async () => { await api.post(`/guest-ids/${d.id}/review`, { status: "verified" }); setImage(null); }) : chooseAction({ action: "approve_id", document_id: d.id, title: "Approve ID without opening it" })} />
             {imageId === d.id && image && imageReady ? <>
               <Input label="Reason to request a new photo" value={reasons[d.id] ?? ""} onChangeText={value => setReasons(previous => ({ ...previous, [d.id]: value }))} />

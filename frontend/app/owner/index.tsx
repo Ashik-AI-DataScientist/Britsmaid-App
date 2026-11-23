@@ -30,7 +30,7 @@ export default function OwnerHome() {
         </View>
         <IconButton testID="owner-logout-button" name="log-out-outline" onPress={logout} />
       </View>
-      {q.isLoading ? <Loading label="Loading your villas..." /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
+      {q.isLoading ? <Loading label="Loading your properties..." /> : q.isError ? <ErrorState message={(q.error as Error).message} onRetry={q.refetch} /> : (
         <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.lg, paddingBottom: insets.bottom + spacing.xl }} refreshControl={<RefreshControl refreshing={q.isRefetching} onRefresh={q.refetch} tintColor={colors.brandPrimary} />}>
           <Animated.View entering={FadeInDown} testID="owner-total-card" style={{ backgroundColor: colors.brandPrimary, borderRadius: radius.lg, padding: spacing.xl }}>
             <Txt v="label" color={colors.brandTertiary}>Expected earnings · {monthLabel(q.data.month)}</Txt>
@@ -39,7 +39,7 @@ export default function OwnerHome() {
           </Animated.View>
           <Txt v="caption">Last updated {new Date(q.dataUpdatedAt).toLocaleTimeString()}</Txt>
           <Button title="Refresh my properties" variant="secondary" loading={q.isRefetching} onPress={() => q.refetch()} />
-          {q.data.villas.length === 0 ? <Empty icon="business-outline" title="No villas assigned yet" subtitle="Contact Britsmaid to link your property." /> : null}
+          {q.data.villas.length === 0 ? <Empty icon="business-outline" title="No properties assigned yet" subtitle="Contact Britsmaid to link your property." /> : null}
           {q.data.villas.map((v: any, i: number) => (
             <Animated.View key={v.id} entering={FadeInDown.delay(80 + i * 60)}>
               <Card testID={`owner-villa-${v.id}`} onPress={() => router.push(`/owner/${v.id}`)} style={{ padding: 0, overflow: "hidden" }}>
@@ -51,7 +51,7 @@ export default function OwnerHome() {
                     <Txt v="caption" color={colors.onSurfaceInverse}>{v.location}</Txt>
                   </View>
                   <View style={{ position: "absolute", top: spacing.md, right: spacing.md, flexDirection: "row", gap: 6 }}>
-                    <Badge label={v.occupied ? "Guest staying" : "Vacant"} tone={v.occupied ? "info" : "neutral"} />
+                    <Badge label={v.occupied ? "Guest staying" : v.unavailable ? "Unavailable" : "Vacant"} tone={v.occupied ? "info" : "neutral"} />
                     <Badge label={v.needs_cleaning ? "Being cleaned" : "Guest-ready"} tone={v.needs_cleaning ? "warning" : "success"} />
                   </View>
                 </View>

@@ -20,6 +20,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard"), refetchInterval: 30000 });
   const d = q.data;
+  const activity = useQuery({ queryKey: ["admin-activity"], queryFn: () => api.get<any[]>("/notifications"), refetchInterval: 15000 });
   const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 
   const metric = (label: string, value: string, icon: IconName, testID: string, onPress?: () => void) => (
@@ -54,6 +55,7 @@ export default function Dashboard() {
         <View style={{ flexDirection: "row", gap: spacing.md, flexWrap: "wrap" }}>
           <IconButton testID="dashboard-guests-button" name="id-card-outline" label="Guest IDs" onPress={() => router.push("/guests")} />
           <IconButton testID="dashboard-staff-button" name="people-outline" label="Team" onPress={() => router.push("/staff")} />
+          <IconButton name="pulse-outline" label={`Activity${activity.data?.some((item: any) => item.unread) ? " !" : ""}`} onPress={() => router.push("/notifications")} />
           <IconButton name="notifications-outline" label={`Notices${notices.data?.some((issue: any) => issue.status === "open") ? " !" : ""}`} onPress={() => router.push("/issues")} />
           <IconButton testID="dashboard-logout-button" name="log-out-outline" label="Sign out" onPress={logout} />
         </View>
@@ -96,7 +98,7 @@ export default function Dashboard() {
           <Animated.View entering={FadeInDown.delay(200).duration(400)} style={{ gap: spacing.sm }}>
             <Txt v="label">Cleaning to verify</Txt>
             {d.pending_cleaning.length === 0 ? (
-              <Card><Txt v="body">All villas are guest-ready.</Txt></Card>
+              <Card><Txt v="body">All properties are guest-ready.</Txt></Card>
             ) : d.pending_cleaning.map((c: any) => (
               <Card key={c.id} testID={`pending-clean-${c.id}`} onPress={() => router.push(`/cleaning/${c.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
                 <Icon name="sparkles" size={20} color={colors.warning} />

@@ -11,11 +11,12 @@ const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;
 const amountRow = (label: string, value: any, deduction = false, strong = false) => `<tr${strong ? ' class="tot"' : ''}><td>${label}</td><td class="r">${value == null ? 'Not recorded' : `${deduction ? '-' : ''}${inr(value)}`}</td></tr>`;
 function calculationRows(s: any) {
   const p = reportPresentation(s);
-  return amountRow('Gross guest payments', s.gross)
+  return amountRow(s.additional_totals?.gross ? 'Gross revenue (stay + add-ons)' : 'Gross guest payments', s.gross)
     + (p.bookingDeductions ? amountRow('Booking deductions', p.bookingDeductions, true) : '')
     + (p.before > 0 ? amountRow('Expenses before revenue split', p.before, true) : '')
+    + (s.additional_totals?.deductions ? amountRow('Additional revenue taxes / collection fees', s.additional_totals.deductions, true) : '')
     + (s.net_revenue != null ? amountRow('Revenue available to split', s.net_revenue) : '')
-    + amountRow(`Owner allocated share (${esc(s.owner_share_percent)}%)`, s.owner_share)
+    + amountRow(s.additional_totals?.gross ? `Owner allocation (rental ${esc(s.owner_share_percent)}%; add-ons individually)` : `Owner allocated share (${esc(s.owner_share_percent)}%)`, s.owner_share)
     + (p.ownerAfter > 0 ? amountRow('Owner expenses after split', p.ownerAfter, true) : '')
     + (s.owner_before_tds != null ? amountRow('Owner balance before TDS', s.owner_before_tds) : '')
     + (s.owner_tds_percent || s.owner_tds ? amountRow(`Owner TDS (${esc(s.owner_tds_percent || 2)}%) · monthly total`, s.owner_tds, true) : '')
@@ -33,8 +34,9 @@ function supportingRows(s: any) {
       const treatment = g.key === 'before_split' ? 'Before revenue split · deducted once' : g.key === 'reference' ? 'Reference only · not deducted' : `After revenue split<br>${shares || 'Allocation detail was not included in this saved statement'}`;
       return `<tr><td>${esc(d.title || 'Other expense')}<br>${esc(d.notes || 'No additional note recorded')}<br><small>${(d.media_ids || []).length ? `${d.media_ids.length} attachment(s) · view in the app` : 'No attachment recorded'}</small></td><td>${treatment}</td><td class="r">${inr(d.amount)}</td></tr>`;
     }).join('')}</table>`).join('');
-  const bm = s.britsmaid_share == null ? '' : `<h3>Britsmaid breakdown</h3><table>${amountRow(`Britsmaid allocated share (${esc(s.britsmaid_share_percent)}%)`, s.britsmaid_share)}${p.bmAfter > 0 ? amountRow('Britsmaid expenses after split', p.bmAfter, true) : ''}${amountRow('Britsmaid net earnings', s.britsmaid_net, false, true)}</table>`;
-  return (taxes ? `<h3>Booking deductions · details</h3><table>${taxes}</table>` : '')
+  const revenue = s.additional_revenue?.length ? `<h3>Additional revenue</h3><table><tr><th>Service / guest / date</th><th>Status and notes</th><th>Allocation</th><th class="r">Gross</th><th class="r">Tax / fee</th></tr>${s.additional_revenue.map((item: any) => `<tr><td>${esc(item.title)}<br>${esc(item.guest_name)}<br>${esc(item.service_date)}</td><td>${esc(item.status)}<br>${esc(item.notes)}</td><td>Owner: ${item.owner_amount != null ? inr(item.owner_amount) : `${esc(item.owner_percent)}%`}<br>Britsmaid: remaining net</td><td class="r">${inr(item.amount)}</td><td class="r">${inr(money(item.tax + item.fee))}</td></tr>`).join('')}</table><p>Only received revenue is included. Each add-on uses its recorded allocation.</p>` : '';
+  const bm = s.britsmaid_share == null ? '' : `<h3>Britsmaid breakdown</h3><table>${amountRow(s.additional_totals?.gross ? `Britsmaid allocation (rental ${esc(s.britsmaid_share_percent)}%; add-ons individually)` : `Britsmaid allocated share (${esc(s.britsmaid_share_percent)}%)`, s.britsmaid_share)}${p.bmAfter > 0 ? amountRow('Britsmaid expenses after split', p.bmAfter, true) : ''}${amountRow('Britsmaid net earnings', s.britsmaid_net, false, true)}</table>`;
+  return revenue + (taxes ? `<h3>Booking deductions · details</h3><table>${taxes}</table>` : '')
     + (p.groups.length ? `<h3>Expenses</h3><p>Total reported expenses: ${inr(p.totalExpenses)}</p>${expenses}` : '') + bm;
 }
 
@@ -87,7 +89,7 @@ export function settlementHtml(s: any, extra?: { title?: string; notes?: string;
   const payment = payout ? `<h3>Payout status: PAID</h3><table>${amountRow('Amount paid', payout.amount, false, true)}<tr><td>Paid on</td><td class="r">${esc(fmtDate(payout.paid_on))}</td></tr><tr><td>Method</td><td class="r">${esc(payout.method)}</td></tr><tr><td>Reference / UTR</td><td class="r">${esc(payout.reference || 'Not recorded')}</td></tr><tr><td>Receipt number</td><td class="r">${esc(payout.receipt_number || 'Not recorded')}</td></tr></table>${payout.notes ? `<p>Payment note: ${esc(payout.notes)}</p>` : ''}${Number(payout.amount) !== Number(s.owner_payout) ? `<p>Recorded payment differs from the current calculated payout. Payment receipt figures are retained as recorded.</p>` : ''}` : '<p>Payout pending: no owner payment has been recorded for this month.</p>';
   const photos = (extra?.photos ?? []).map((u) => `<img src="${u}" style="width:31%;margin:1%;border-radius:6px;aspect-ratio:1;object-fit:cover"/>`).join("");
   return statementShell("Owner statement", `<div class="top"><div><h1>${esc(extra?.title || "Owner Statement")}</h1><div class="muted">${esc(s.property_name)} · ${esc(s.owner_name)} · ${monthLabel(s.month)}</div></div><img class="logo" src="${LOGO_URL}"/></div>
-<div class="box"><div class="muted">Owner final payout</div><div class="big">${inr(s.owner_payout)}</div><div class="muted">${s.nights} nights · ${s.occupancy_percent}% occupancy · Split ${s.owner_share_percent}% owner / ${s.britsmaid_share_percent}% Britsmaid</div></div>
+<div class="box"><div class="muted">Owner final payout</div><div class="big">${inr(s.owner_payout)}</div><div class="muted">${s.nights} nights · ${s.occupancy_percent}% occupancy · Rental split ${s.owner_share_percent}% owner / ${s.britsmaid_share_percent}% Britsmaid${s.additional_totals?.gross ? "; add-ons allocated individually" : ""}</div></div>
 <h3>How the payout is calculated</h3><table><tr><th>Calculation</th><th class="r">Amount</th></tr>${calculationRows(s)}</table>
 <div class="payment-section">${payment}</div>
 ${supportingRows(s)}

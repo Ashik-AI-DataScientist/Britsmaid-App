@@ -22,7 +22,7 @@ export default function Properties() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, paddingBottom: spacing.md, paddingHorizontal: spacing.lg, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.divider }}>
         <View style={{ flex: 1 }}>
-          <Txt v="title">Villas</Txt>
+          <Txt v="title">Properties</Txt>
           <Txt v="caption">{q.data?.length ?? 0} properties under management</Txt>
         </View>
         <Button testID="add-property-button" small icon="add" title="Add property" onPress={() => router.push("/property/edit")} />
@@ -45,13 +45,13 @@ export default function Properties() {
                     <Txt v="caption" color={colors.onSurfaceInverse}>{p.location}</Txt>
                   </View>
                   <View style={{ position: "absolute", top: spacing.md, right: spacing.md, flexDirection: "row", gap: 6 }}>
-                    <Badge label={p.occupied ? "Occupied" : "Vacant"} tone={p.occupied ? "info" : "neutral"} />
+                    <Badge label={p.occupied ? "Occupied" : p.unavailable ? "Unavailable" : "Vacant"} tone={p.occupied ? "info" : "neutral"} />
                     <Badge label={p.needs_cleaning ? "Needs cleaning" : "Guest-ready"} tone={p.needs_cleaning ? "warning" : "success"} />
                   </View>
                 </View>
                 <View style={{ flexDirection: "row", padding: spacing.lg, gap: spacing.lg }}>
                   <View style={{ flex: 1 }}>
-                    <Txt v="caption">Owner</Txt>
+                    <Txt v="caption">{p.property_type ? p.property_type[0].toUpperCase() + p.property_type.slice(1) : "Property"} · Owner</Txt>
                     <Txt v="subtitle" style={{ fontSize: 14 }} numberOfLines={1}>{p.owner_name || "—"}</Txt>
                   </View>
                   <View>

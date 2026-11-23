@@ -68,8 +68,8 @@ class Backups:
         now = datetime.now(timezone.utc)
         identity = now.strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(4)
         # One export per day; a second caller sees the current lease rather than duplicating work.
-        async with business_lease(self.db, seconds=300):
-            with tempfile.TemporaryFile() as plain, tempfile.TemporaryFile() as encrypted:
+        with tempfile.TemporaryFile() as plain, tempfile.TemporaryFile() as encrypted:
+            async with business_lease(self.db, seconds=300):
                 count = 0
                 with gzip.GzipFile(fileobj=plain, mode="wb") as zipped:
                     for name in sorted(await self.db.list_collection_names()):
@@ -80,26 +80,26 @@ class Backups:
                             count += 1
                             if plain.tell() > 64 * 1024**2:
                                 raise HTTPException(507, "Backup allowance reached; review storage before retrying")
-                plain.seek(0)
-                await run_in_threadpool(seal, plain, encrypted, os.environ["BACKUP_ENCRYPTION_KEY"])
-                encrypted.seek(0)
-                key = "database/" + identity + ".bmbak"
-                await run_in_threadpool(self.store.put, key, encrypted)
-                # Verify cloud download, authentication and exact plaintext digest.
-                encrypted.seek(0)
-                expected = hashlib.file_digest(encrypted, "sha256").hexdigest()
-                downloaded = await run_in_threadpool(self.store.read, key)
-                try:
-                    if hashlib.file_digest(downloaded, "sha256").hexdigest() != expected:
-                        raise RuntimeError("Backup checksum verification failed")
-                    downloaded.seek(0)
-                    with tempfile.TemporaryFile() as restored:
-                        await run_in_threadpool(unseal, downloaded, restored, os.environ["BACKUP_ENCRYPTION_KEY"])
-                finally:
-                    downloaded.close()
-                snapshot = {"_id": identity, "key": key, "created_at": now.isoformat(), "records": count,
-                    "database_verified": True, "media_verified": False}
-                await self.db.backup_runs.insert_one(snapshot)
+            plain.seek(0)
+            await run_in_threadpool(seal, plain, encrypted, os.environ["BACKUP_ENCRYPTION_KEY"])
+            encrypted.seek(0)
+            key = "database/" + identity + ".bmbak"
+            await run_in_threadpool(self.store.put, key, encrypted)
+            # Verify cloud download, authentication and exact plaintext digest.
+            encrypted.seek(0)
+            expected = hashlib.file_digest(encrypted, "sha256").hexdigest()
+            downloaded = await run_in_threadpool(self.store.read, key)
+            try:
+                if hashlib.file_digest(downloaded, "sha256").hexdigest() != expected:
+                    raise RuntimeError("Backup checksum verification failed")
+                downloaded.seek(0)
+                with tempfile.TemporaryFile() as restored:
+                    await run_in_threadpool(unseal, downloaded, restored, os.environ["BACKUP_ENCRYPTION_KEY"])
+            finally:
+                downloaded.close()
+            snapshot = {"_id": identity, "key": key, "created_at": now.isoformat(), "records": count,
+                "database_verified": True, "media_verified": False}
+            await self.db.backup_runs.insert_one(snapshot)
         # Each photo backup is encrypted and addressed by immutable media ID.
         async for media in self.db.media.find({"is_deleted": False}):
             mid = str(media["_id"])

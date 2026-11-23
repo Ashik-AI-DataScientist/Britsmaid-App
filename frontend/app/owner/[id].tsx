@@ -56,7 +56,7 @@ export default function OwnerVilla() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
-      <Header back title={prop.data?.name ?? "Villa"} subtitle={prop.data?.location} />
+      <Header back title={prop.data?.name ?? "Property"} subtitle={prop.data?.location} />
       <View style={{ padding: spacing.lg, paddingBottom: spacing.sm, backgroundColor: colors.surface, gap: spacing.sm }}>
         <Segmented testID="owner-villa-tabs" value={tab} onChange={setTab} options={[{ value: "earnings", label: "Earnings" }, { value: "payouts", label: "Payouts" }, { value: "calendar", label: "Calendar" }, { value: "stays", label: "Stays" }, { value: "updates", label: "Updates" }]} />
         {tab === "earnings" ? (

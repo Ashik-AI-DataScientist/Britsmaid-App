@@ -79,7 +79,7 @@ export default function PropertyDetail() {
             <Txt v="display" color={colors.onSurfaceInverse} testID="property-name">{v.name}</Txt>
             <Txt v="body" color={colors.onSurfaceInverse}>{v.location}</Txt>
             <View style={{ flexDirection: "row", gap: 6, marginTop: spacing.sm }}>
-              <Badge label={v.occupied ? `Occupied · ${v.current_guest}` : "Vacant"} tone={v.occupied ? "info" : "neutral"} />
+              <Badge label={v.occupied ? `Occupied · ${v.current_guest}` : v.unavailable ? "Unavailable" : "Vacant"} tone={v.occupied ? "info" : "neutral"} />
               <Badge label={v.needs_cleaning ? "Needs cleaning" : "Guest-ready"} tone={v.needs_cleaning ? "warning" : "success"} />
             </View>
           </View>

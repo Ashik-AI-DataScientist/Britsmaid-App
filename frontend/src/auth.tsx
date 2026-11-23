@@ -49,6 +49,9 @@ export function AuthProvider({ children }: React.PropsWithChildren) {
 
   const logout = useCallback(async () => {
     // Local sign-out always works offline; online sign-out also revokes server access.
+    if (Platform.OS === "web") {
+      try { const { disableAdminPush } = await import("./push"); await disableAdminPush(false); } catch { /* Device may be offline. */ }
+    }
     const revocation = revokeCurrentSession().catch(() => undefined);
     // Cancel in-flight reads before clearing so old responses cannot populate a new user's cache.
     setToken(null);

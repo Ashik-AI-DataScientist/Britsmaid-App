@@ -24,7 +24,7 @@ class BackupStore:
             raise HTTPException(507, "Backup request allowance reached")
 
     def put(self, key, stream):
-        if not key.startswith(("media/", "database/")) or not key.endswith(".bmbak"):
+        if not key.startswith(("media/", "database/", "guest-documents/")) or not key.endswith(".bmbak"):
             raise HTTPException(422, "Invalid backup name")
         stream.seek(0, 2)
         size = stream.tell()

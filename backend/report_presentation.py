@@ -87,13 +87,16 @@ def public_payout_sections(s, currency, token):
             return ''
         warning = '<p>Saved expense totals differ from the available details. Ask the admin to review this statement.</p>' if group['mismatch'] else ''
         return warning + ''.join(expense_html(item, currency, token) for item in group['items'])
-    calculation = row('Gross guest payments', s.get('gross', 0))
+    calculation = row('Gross revenue (stay + add-ons)' if (s.get('additional_totals') or {}).get('gross') else 'Gross guest payments', s.get('gross', 0))
     if p['bookingDeductions']:
         lines = ''.join(row(label, s.get(key, 0)) for key, label in [('ota_commission', 'OTA commissions'), ('gst_total', 'Booking GST'), ('platform_tax', 'Other tax deductions')] if s.get(key))
         calculation += disclosure('Booking deductions', p['bookingDeductions'], lines, True)
     if 'before_split' in group_map:
         calculation += disclosure('Expenses before revenue split', p['before'], records('before_split'), True)
-    calculation += row('Revenue available to split', s.get('net_revenue', 0)) + row(f'Owner allocated share ({s.get("owner_share_percent", 0):g}%)', s.get('owner_share', 0))
+    extra = s.get('additional_totals') or {}
+    if extra.get('deductions'):
+        calculation += row('Additional revenue taxes / collection fees', extra['deductions'], True)
+    calculation += row('Revenue available to split', s.get('net_revenue', 0)) + row('Owner allocated share (rental % + individual add-ons)' if extra.get("gross") else f'Owner allocated share ({s.get("owner_share_percent", 0):g}%)', s.get('owner_share', 0))
     if p['ownerAfter'] > 0:
         calculation += disclosure('Owner expenses after split', p['ownerAfter'], records('after_split') + '<small>Only the owner contribution above is deducted from the owner share.</small>', True)
     if s.get('owner_before_tds') is not None:
@@ -102,15 +105,21 @@ def public_payout_sections(s, currency, token):
         calculation += row(f'Owner TDS ({s.get("owner_tds_percent") or 2:g}%) · monthly total', s.get('owner_tds', 0), True)
     calculation += '<div class="row"><b>Owner final payout</b><b>' + currency(s.get('owner_payout', 0)) + '</b></div>'
     expenses = ''
+    if s.get('additional_revenue'):
+        expenses = '<div class="card"><h2>Additional revenue</h2>'
+        for item in s['additional_revenue']:
+            allocation = currency(item['owner_amount']) if item.get('owner_amount') is not None else str(item['owner_percent']) + '%'
+            expenses += '<details><summary>' + escape(item['title']) + ' · ' + currency(item['amount']) + '</summary><p>' + escape(item['service_date'] + ' · ' + item['status'] + ' · ' + item.get('notes', '')) + '</p><p>Owner allocation: ' + escape(allocation) + '</p></details>'
+        expenses += '</div>'
     if p['groups']:
-        expenses = '<div class="card"><h2>Expenses</h2>' + row('Total reported expenses', p['totalExpenses'])
+        expenses += '<div class="card"><h2>Expenses</h2>' + row('Total reported expenses', p['totalExpenses'])
         for group in p['groups']:
             shares = ''
             if group['key'] == 'after_split':
                 shares = ''.join(row(label, p[key]) for key, label in [('ownerAfter', 'Owner contribution'), ('bmAfter', 'Britsmaid contribution')] if p[key] > 0)
             expenses += disclosure(group['label'], group['total'], shares + records(group['key']))
         expenses += '</div>'
-    bm = row(f'Britsmaid allocated share ({s.get("britsmaid_share_percent", 0):g}%)', s.get('britsmaid_share', 0))
+    bm = row('Britsmaid allocated share (rental % + individual add-ons)' if extra.get("gross") else f'Britsmaid allocated share ({s.get("britsmaid_share_percent", 0):g}%)', s.get('britsmaid_share', 0))
     if p['bmAfter'] > 0:
         bm += disclosure('Britsmaid expenses after split', p['bmAfter'], records('after_split'), True)
     bm += row('Britsmaid net earnings', s.get('britsmaid_net', 0))

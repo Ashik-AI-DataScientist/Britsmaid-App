@@ -42,3 +42,17 @@ for (const misc of [0,.01,100]) {
 }
 assert.equal(helpers.otaBreakdown({ota:'Direct',gross:1000,net:900},[legacy]).taxesAndCommission,100);
 console.log('PASS OTA reconciliation for taxes, commission, zero/paise/positive booking expenses and older saved rows');
+
+// Independently allocated add-ons must stay visible and escaped in owner PDFs.
+for (const ownerAmount of [null, 235]) {
+ const extra={title:'Extra <guest>',guest_name:'Synthetic guest',service_date:'2026-11-23',status:'received',amount:1000,tax:50,fee:10,owner_percent:25,owner_amount:ownerAmount,notes:'Approved <note>'};
+ const s={month:'2026-11',nights:0,occupancy_percent:0,by_ota:[{ota:'Additional revenue',gross:1000,net:940,bookings:0,nights:0}],bookings:[],owner_share_percent:70,britsmaid_share_percent:30,gross:1000,net_revenue:940,owner_share:235,britsmaid_share:705,additional_revenue:[extra],additional_totals:{gross:1000,deductions:60}};
+ const before=JSON.stringify(s),html=scope.exports.settlementHtml(s);
+ assert(html.includes('Extra &lt;guest&gt;') && html.includes('Approved &lt;note&gt;'));
+ assert(html.includes('Additional revenue taxes / collection fees'));
+ assert(html.includes('Owner allocation (rental 70%; add-ons individually)'));
+ assert(html.includes('Britsmaid allocation (rental 30%; add-ons individually)'));
+ assert.equal(JSON.stringify(s),before);
+ assert(!html.includes('undefined'));
+}
+console.log('PASS additional-revenue PDF allocation, deductions, escaping and immutable records');

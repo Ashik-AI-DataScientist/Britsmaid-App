@@ -23,12 +23,15 @@ class MediaReferenceGuard:
         try:
             if self.authenticate:
                 await self.authenticate(Request(scope))
-            async with business_lease(self.db, seconds=180):
+            async with business_lease(self.db, seconds=180, wait_seconds=8):
                 await asyncio.wait_for(self.app(scope, receive, response_send), timeout=120)
         except HTTPException as exc:
             if started:
                 raise
-            await JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers={"Retry-After": "2"})(scope, receive, send)
+            body = {"detail": exc.detail}
+            if (exc.headers or {}).get("X-Britsmaid-Error") == "WRITE_BUSY":
+                body["code"] = "WRITE_BUSY"
+            await JSONResponse(body, status_code=exc.status_code, headers=exc.headers)(scope, receive, send)
         except asyncio.TimeoutError:
             if not started:
                 await JSONResponse({"detail": "Update timed out. Refresh to check whether it was saved."}, status_code=408)(scope, receive, send)

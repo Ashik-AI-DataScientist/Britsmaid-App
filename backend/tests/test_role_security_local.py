@@ -226,7 +226,7 @@ async def test_duplicate_slot_rejection_retry_limits_delete_and_expiry(ctx, monk
     deleted = []
     monkeypatch.setattr(guest_ids, "delete_image", lambda doc: deleted.append(doc["storage_key"]))
     assert (await upload_id(ctx, headers)).status_code == 409
-    assert len(deleted) == 1  # Duplicate upload is cleaned up from storage.
+    assert len(deleted) == 0  # Duplicate slot is rejected before cloud upload.
     url = f"/api/guest-ids/{did}/review"
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"status": "rejected"})).status_code == 422
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"status": "rejected", "reason": "Unreadable"})).status_code == 200

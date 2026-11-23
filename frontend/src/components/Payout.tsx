@@ -51,7 +51,7 @@ export function PayoutStatusCard({ s, canMark, onChange }: { s: any; canMark?: b
       ) : (
         <>
           <Txt v="caption">{monthLabel(s.month)} payout of {inr(s.owner_payout)} has not been marked as paid yet.</Txt>
-          {canMark ? <Button testID="payout-mark-paid-button" small icon="cash-outline" title="Mark as paid" onPress={() => setOpen(true)} /> : null}
+          {canMark ? <Button testID="payout-mark-paid-button" small icon="cash-outline" title="Mark as paid" onPress={() => { setF({ amount: String(Math.max(0, s.owner_payout)), paid_on: todayISO(), method: "Bank transfer", reference: "", notes: "" }); setOpen(true); }} /> : null}
         </>
       )}
       <Sheet visible={open} onClose={() => setOpen(false)} title={`Record payout · ${monthLabel(s.month)}`} testID="payout-sheet">
