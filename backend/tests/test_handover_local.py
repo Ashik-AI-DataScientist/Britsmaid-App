@@ -164,3 +164,52 @@ async def test_deductions_with_no_revenue_break_even_and_loss(ctx, gross, cost, 
     assert statement["owner_payout"] == owner
     assert statement["britsmaid_net"] == britsmaid
     assert round(owner + britsmaid, 2) == gross - cost
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('summary,local_ota', [('Reserved','Airbnb'), (' BOOKED','Airbnb'), ('OTA Guest','Airbnb'), ('Airbnb (Not available)','Direct')])
+async def test_availability_labels_do_not_raise_false_conflicts_or_change_finances(ctx, monkeypatch, summary, local_ota):
+    prop = await imported(ctx)
+    bid = ObjectId(ctx['bid'])
+    await ctx['db'].bookings.update_one({'_id': bid}, {'$set': {'ota': local_ota, 'calendar_review_required': True}})
+    before = await ctx['db'].bookings.find_one({'_id': bid})
+    monkeypatch.setattr(server, 'fetch_calendar', lambda _: 'synthetic')
+    monkeypatch.setattr(server, 'parse_ical', lambda _: [{'uid':'test-event','summary':summary,
+        'check_in':before['check_in'],'check_out':before['check_out'],'cancelled':False}])
+    for _ in range(2):
+        result = await server.sync_property(prop)
+        assert result[0]['ok'] and result[0]['conflicts'] == 0
+    after = await ctx['db'].bookings.find_one({'_id': bid})
+    assert not after['calendar_review_required']
+    for key in set(before) - {'calendar_review_required', 'calendar_observation', 'calendar_observed_at'}:
+        assert after[key] == before[key], key
+    assert after['calendar_observation']['guest_name'] == summary
+    assert not (await ctx['client'].get('/api/system/booking-integrity', headers=auth(ctx))).json()
+    statement = (await ctx['client'].get('/api/reports/settlement?property_id=' + ctx['p1'] + '&month=' + before['check_in'][:7], headers=auth(ctx,'owner'))).json()
+    assert statement['gross'] == 1000 and statement['ota_commission'] == 100
+
+
+@pytest.mark.parametrize('changed', [
+ {'check_in':'2026-11-02'}, {'check_out':'2026-11-04'}, {'status':'cancelled'},
+ {'status':'blocked'}, {'ota':'Booking.com'}, {'guest_name':'Different named guest'}])
+def test_real_calendar_differences_remain_reviewable(changed):
+    from calendar_reconciliation import review_differences
+    saved = dict(guest_name='Entered guest',check_in='2026-11-01',check_out='2026-11-03',status='confirmed',ota='Airbnb')
+    observed = {**saved,'guest_name':'Reserved',**changed}
+    assert set(changed).intersection(review_differences(saved, observed))
+
+
+@pytest.mark.parametrize('changed', [{'check_in':'2026-11-02'}, {'check_out':'2026-11-04'}, {'status':'cancelled'}, {'status':'confirmed'}])
+def test_direct_stay_exemption_never_hides_date_changes_or_reservations(changed):
+    from calendar_reconciliation import review_differences
+    saved = dict(guest_name='Direct guest',check_in='2026-11-01',check_out='2026-11-03',status='confirmed',ota='Direct')
+    observed = dict(guest_name='Airbnb (Not available)',check_in='2026-11-01',check_out='2026-11-03',status='blocked',ota='Airbnb')
+    assert not review_differences(saved,observed)
+    assert review_differences(saved,{**observed,**changed})
+
+
+@pytest.mark.parametrize('name', ['Reserved guest','Booked by another person','Different guest',''])
+def test_only_exact_generic_calendar_labels_are_ignored(name):
+    from calendar_reconciliation import review_differences
+    saved = dict(guest_name='Entered guest',check_in='2026-11-01',check_out='2026-11-03',status='confirmed',ota='Airbnb')
+    assert 'guest_name' in review_differences(saved,{**saved,'guest_name':name})

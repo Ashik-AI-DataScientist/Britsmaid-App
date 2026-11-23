@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, BeforeValidator, ConfigDict, EmailStr, fi
 from validation import valid_date, valid_month, month_bounds
 from reservations import claim_nights, release_unused
 from safe_calendar_fetch import fetch_calendar, CalendarFetchError, validate_url
+from calendar_reconciliation import review_differences
 from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -964,7 +965,7 @@ async def sync_property(p: dict) -> list:
                         or existing.get("amount", 0) or existing.get("ota_commission", 0)):
                     observation = {"guest_name": ev["summary"], "check_in": ev["check_in"],
                         "check_out": ev["check_out"], "status": desired_status, "ota": f["ota"]}
-                    differs = (any(existing.get(k) != v for k, v in observation.items())
+                    differs = (bool(review_differences(existing, observation))
                         and existing.get("calendar_reviewed_observation") != observation)
                     await db.bookings.update_one({"_id": existing["_id"]}, {"$set": {
                         "calendar_observation": observation, "calendar_observed_at": now_iso(),
