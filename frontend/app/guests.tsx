@@ -6,6 +6,7 @@ import { api, authenticatedBlob } from "@/src/api";
 import { Badge, Button, Card, ErrorState, Header, Input, Loading, Txt, useToast } from "@/src/ui";
 import { fmtDate } from "@/src/format";
 import { spacing } from "@/src/theme";
+import { guestUploadMessage } from "@/src/guest-invitation";
 
 type Action = { action: string; title: string; document_id?: string };
 export default function Guests() {
@@ -17,7 +18,7 @@ export default function Guests() {
   const [note, setNote] = useState("");
   const [action, setAction] = useState<Action | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
-  const [invitation, setInvitation] = useState<{ bookingId: string; url: string } | null>(null);
+  const [invitation, setInvitation] = useState<{ bookingId: string; url: string; message: string } | null>(null);
   const [image, setImage] = useState<string | null>(null);
   const [imageId, setImageId] = useState<string | null>(null);
   const [imageReady, setImageReady] = useState(false);
@@ -34,9 +35,11 @@ export default function Guests() {
   };
   const chooseAction = (next: Action) => { setAction(next); setNote(""); };
   const invite = async () => {
-    const link = await api.post(`/bookings/${selected}/guest-link`);
+    if (!b) return;
+    const stay = b;
+    const link = await api.post(`/bookings/${stay.id}/guest-link`);
     // The server provides the canonical public web URL on every platform.
-    setInvitation({ bookingId: selected!, url: link.url });
+    setInvitation({ bookingId: stay.id, url: link.url, message: guestUploadMessage(stay, link.url) });
   };
   return <View style={{ flex: 1 }}>
     <Header back title={b ? b.guest_name : "Guest check-in"} subtitle={b ? b.property_name : "Choose a stay to get started"} />
@@ -59,9 +62,9 @@ export default function Guests() {
           {b.guest_checked_in_at ? <Txt>{new Date(b.guest_checked_in_at).toLocaleString()}</Txt> : <>
             <Button title="Get guest upload link" disabled={busy} onPress={() => run(invite)} />
             {invitation && invitation.bookingId === b.id ? <>
-              <Text selectable style={{ overflowWrap: "anywhere" } as any}>{invitation.url}</Text>
+              <Text selectable style={{ overflowWrap: "anywhere" } as any}>{invitation.message}</Text>
               <Button title="Open upload form" onPress={() => Linking.openURL(invitation!.url)} />
-              <Button title="Share link" variant="secondary" onPress={() => run(async () => { await Share.share({ message: invitation!.url }); })} />
+              <Button title="Share message & link" variant="secondary" onPress={() => run(async () => { await Share.share({ message: invitation!.message }); })} />
             </> : <Txt>Guests use the link to send their ID photos.</Txt>}
             <Button title="Check in" disabled={busy} onPress={() => b.can_check_in ? run(async () => { await api.post(`/bookings/${b.id}/check-in`); setInvitation(null); toast("Checked in"); }) : chooseAction({ action: "check_in", title: "Check in with an exception" })} />
             {!b.can_check_in ? <Txt>{b.check_in_reason}. You can check in with an admin note.</Txt> : null}

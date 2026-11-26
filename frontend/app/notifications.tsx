@@ -1,10 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Platform, ScrollView, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/src/auth';
 import { api } from '@/src/api';
-import { enableAdminPush, disableAdminPush } from '@/src/push';
+import { enableAdminPush, disableAdminPush, refreshAdminPush } from '@/src/push';
 import { Button, Card, ErrorState, Header, Loading, Txt, useToast } from '@/src/ui';
 
 export default function Notifications() {
@@ -12,6 +12,7 @@ export default function Notifications() {
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  useEffect(() => { if (user?.role === 'admin' && Platform.OS === 'web') refreshAdminPush(); }, [user?.role]);
   const q = useQuery({ queryKey: ['admin-activity'], enabled: user?.role === 'admin', queryFn: () => api.get<any[]>('/notifications'), refetchInterval: 15000 });
   const action = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -31,6 +32,7 @@ export default function Notifications() {
       {q.isLoading ? <Loading /> : q.isError ? <ErrorState onRetry={q.refetch} /> : !q.data?.length ? <Txt>No activity yet.</Txt> : q.data.map(item =>
         <Card key={item.id} onPress={() => { if (item.url !== '/notifications') router.push(item.url); }}>
           <Txt v="subtitle">{item.unread ? '● ' : ''}{item.title}</Txt>
+          {item.body ? <Txt>{item.body}</Txt> : null}
           <Txt v="caption">{new Date(item.created_at).toLocaleString()}</Txt>
         </Card>)}
     </ScrollView>

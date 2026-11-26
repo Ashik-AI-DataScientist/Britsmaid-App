@@ -1002,7 +1002,10 @@ async def sync_property(p: dict) -> list:
                     await db.bookings.update_one({"_id": oid(result["id"])}, {"$set": {"source": "ical", "ical_uid": uid, "ical_feed_id": feed_id}})
                     if not existing or any(existing.get(k) != payload.get(k) for k in ("guest_name", "ota", "check_in", "check_out", "status")):
                         try:
-                            await activity.record(f"ical:{result['id']}:{result.get('revision', 0)}", "Calendar booking updated" if existing else "Calendar booking imported", "/booking/" + result["id"])
+                            from activity_details import describe
+                            details = await describe(db, "PUT" if existing else "POST", "/api/bookings/" + result["id"],
+                                action=("Calendar block updated" if existing else "Calendar block imported") if blocked else ("Calendar booking updated" if existing else "Calendar booking imported"))
+                            await activity.record(f"ical:{result['id']}:{result.get('revision', 0)}", **details)
                         except Exception:
                             logger.exception("Could not record calendar activity")
                 except Exception:

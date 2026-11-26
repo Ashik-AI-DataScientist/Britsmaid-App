@@ -370,7 +370,7 @@ async def test_large_success_response_still_records_activity_without_content(ctx
     await middleware({'type': 'http', 'method': 'PUT', 'path': '/api/cleaning/example'}, receive, send)
     row = await ctx['db'].activities.find_one({})
     assert row and set(row) == {'_id', 'title', 'url', 'created_at'}
-    assert row['title'] == 'Updated cleaning'
+    assert row['title'] == 'Cleaning updated'
 
 
 @pytest.mark.asyncio
