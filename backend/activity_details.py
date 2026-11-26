@@ -1,5 +1,6 @@
 """Small, allowlisted activity summaries; never retain request bodies or credentials."""
 from datetime import date, datetime, timedelta, timezone
+import json
 from bson import ObjectId
 
 FIELDS = {k: 1 for k in ('name', 'role', 'property_id', 'property_ids', 'booking_id',
@@ -14,6 +15,21 @@ COLLECTIONS = {'bookings': 'bookings', 'cleaning': 'cleaning', 'properties': 'pr
 
 def clean(value, limit=180):
     return ' '.join(str(value or '').split())[:limit]
+
+
+def push_text(value, byte_limit):
+    """Bound serialized UTF-8 bytes, including Unicode and JSON escaping."""
+    text = str(value or '')
+    if len(json.dumps(text, ensure_ascii=False).encode('utf-8')) <= byte_limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(json.dumps(text[:mid], ensure_ascii=False).encode('utf-8')) <= byte_limit:
+            low = mid
+        else:
+            high = mid - 1
+    return text[:low]
 
 
 def day(value):

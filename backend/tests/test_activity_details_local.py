@@ -83,19 +83,29 @@ async def test_guest_id_submission_notification_is_booking_bound_without_documen
 
 
 @pytest.mark.asyncio
-async def test_push_includes_context_activity_time_and_destination(ctx,monkeypatch):
-    db=ctx['db']; calls=[]
+@pytest.mark.parametrize('long_unicode',[False,True,'escaped'])
+async def test_push_includes_context_activity_time_and_destination(ctx,monkeypatch,long_unicode):
+    db=ctx['db']; calls=[]; raw=[]
     await db.settings.insert_one({'_id':'admin-web-push','private':'synthetic-key'})
     await db.push_subscriptions.insert_one({'_id':'device','user_id':str(ctx['users']['admin']['_id']),
         'created_at':'2000-01-01T00:00:00+00:00','subscription':{'endpoint':'synthetic'}})
     a=Activity(db)
-    await a.record('event','Cleaning completed · BM-001 Divya Villa','/cleaning/'+ctx['cid'],'Cleaning date: 26 Nov 2026')
-    monkeypatch.setattr('pywebpush.webpush',lambda **kwargs:calls.append(json.loads(kwargs['data'])))
+    heading='Cleaning completed · BM-001 Divya Villa'+(' 🏠 മലയാളം'*200 if long_unicode else '')
+    detail='Cleaning date: 26 Nov 2026'+(' 🏠 മലയാളം'*300 if long_unicode else '')
+    if long_unicode=='escaped':
+        heading+=' "\\\x00'*500
+        detail+=' "\\\x00'*500
+    await a.record('event',heading,'/cleaning/'+ctx['cid'],detail)
+    def capture(**kwargs):
+        raw.append(kwargs['data']);calls.append(json.loads(kwargs['data']))
+    monkeypatch.setattr('pywebpush.webpush',capture)
     await a.deliver(); await a.deliver()
     assert len(calls)==1
     payload=calls[0]
     assert 'BM-001 Divya Villa' in payload['title'] and 'Cleaning date:' in payload['details']
-    assert 'Activity:' in payload['details'] and 'IST' in payload['details'] and payload['url']=='/cleaning/'+ctx['cid']
+    assert payload['url']=='/cleaning/'+ctx['cid'] and len(raw[0].encode('utf-8'))<3500
+    assert 'Activity:' in payload['details'] and 'IST' in payload['details']
+    assert (await db.activities.find_one({'_id':'event'}))['body']==detail
     assert payload['title'] in payload['body'] # Backward-compatible installed workers.
 
 
