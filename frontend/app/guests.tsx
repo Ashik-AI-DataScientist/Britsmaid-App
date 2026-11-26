@@ -35,8 +35,8 @@ export default function Guests() {
   const chooseAction = (next: Action) => { setAction(next); setNote(""); };
   const invite = async () => {
     const link = await api.post(`/bookings/${selected}/guest-link`);
-    const origin = Platform.OS === "web" ? window.location.origin : process.env.EXPO_PUBLIC_GUEST_WEB_URL || "";
-    setInvitation({ bookingId: selected!, url: origin ? `${origin}/guest-check-in#invite=${link.token}` : link.token });
+    // The server provides the canonical public web URL on every platform.
+    setInvitation({ bookingId: selected!, url: link.url });
   };
   return <View style={{ flex: 1 }}>
     <Header back title={b ? b.guest_name : "Guest check-in"} subtitle={b ? b.property_name : "Choose a stay to get started"} />
