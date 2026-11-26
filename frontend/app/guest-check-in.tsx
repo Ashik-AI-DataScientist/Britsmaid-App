@@ -5,7 +5,8 @@ import { Button, Card, Chip, Header, Input, Txt, useToast } from "@/src/ui";
 import { spacing } from "@/src/theme";
 import { request } from "@/src/api";
 
-// Guest capability is kept in memory and sent only in the Authorization header.
+// Keep the invitation in the URL fragment so refreshing/forwarding retains it.
+// Fragments are not sent to the web server; API calls use the Authorization header.
 
 export default function GuestCheckIn() {
   const toast = useToast();
@@ -39,7 +40,6 @@ export default function GuestCheckIn() {
     if (Platform.OS !== "web") return;
     const invitationToken = new URLSearchParams(window.location.hash.slice(1)).get("invite") ?? "";
     if (!invitationToken) return;
-    window.history.replaceState(null, "", window.location.pathname);
     Promise.resolve().then(() => { setToken(invitationToken); return loadToken(invitationToken); });
   }, [loadToken]);
   const load = () => loadToken(token);
@@ -105,11 +105,11 @@ export default function GuestCheckIn() {
     <Header title="Guest check-in" subtitle="Private document submission" />
     <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
       <Card><Txt>Your ID is reviewed by a Britsmaid admin for this stay. Cleaners, supervisors and property owners cannot open these documents. Contact Britsmaid for document removal or retention details.</Txt></Card>
-      {!status ? <Input label="Invitation code" value={token} onChangeText={setToken} autoCapitalize="none" secureTextEntry /> : null}
-      <Button title={status ? "Refresh review status" : "Open invitation"} onPress={() => load()} disabled={busy || !token.trim()} />
+      {!status && !token ? <Card><Txt>This link is missing its booking invitation. Please ask Britsmaid to send the complete guest upload link. No app installation or account is required.</Txt></Card> : null}
+      {token ? <Button title={status ? "Refresh review status" : "Opening invitation"} onPress={() => load()} disabled={busy} /> : null}
       {error ? <Card><Txt>{error}</Txt><Button title="Try again" onPress={() => load()} disabled={busy} /></Card> : null}
       {status ? <>
-        <Txt>Stay: {status.check_in} to {status.check_out}. Submit one document per guest.</Txt>
+        <Txt>{status.property_name ? `${status.property_name} · ` : ""}Stay: {status.check_in} to {status.check_out}. Submit one document per guest.</Txt>
         <Txt>Document retention: {status.retention_days} days after checkout.</Txt>
         {status.documents.map((d: any, i: number) => <Card key={i}><Txt>Guest {d.guest_number} · {d.guest_name} · submitted</Txt></Card>)}
         {!guestNumber ? <Txt>All guest IDs are submitted. Contact Britsmaid if a replacement is needed.</Txt> : <>

@@ -81,7 +81,7 @@ async def test_new_assignment_removes_old_cleaner_access_immediately(ctx):
 @pytest.mark.asyncio
 async def test_password_reset_invalidates_old_login_token(ctx):
     old=auth(ctx,'cleaner')
-    r=await ctx['client'].post('/api/users/'+str(ctx['users']['cleaner']['_id'])+'/reset-password',headers=auth(ctx))
+    r=await ctx['client'].post('/api/users/'+str(ctx['users']['cleaner']['_id'])+'/reset-password',headers=auth(ctx),json={'password':'Explicit-test-password-123'})
     assert r.status_code == 200
     assert (await ctx['client'].get('/api/auth/me',headers=old)).status_code == 401, 'Old session remains usable after password reset'
 

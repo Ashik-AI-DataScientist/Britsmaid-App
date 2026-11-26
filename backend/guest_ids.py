@@ -229,7 +229,8 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         await db.guest_links.insert_one({"booking_id": bid, "token_hash": hashlib.sha256(token.encode()).hexdigest(),
                                         "expires_at": expiry, "revoked": False, "attempts": 0})
         await audit("invite", user["_id"], booking_id=bid)
-        return {"token": token, "expires_at": expiry}
+        origin = os.getenv("PUBLIC_APP_URL", "https://app.britsmaid.in").rstrip("/") or "https://app.britsmaid.in"
+        return {"token": token, "expires_at": expiry, "url": f"{origin}/guest-check-in#invite={token}"}
 
     @api.post("/bookings/{bid}/guest-admin-action")
     async def admin_action(bid: str, body: GuestAdminAction, user=Depends(admin_user)):
@@ -291,7 +292,8 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         b = await active_booking(link["booking_id"])
         documents = await db.guest_ids.find({"booking_id": link["booking_id"], "deleted": False, "delete_after": {"$gt": now_iso()}},
                                            {"guest_name": 1, "status": 1, "guest_number": 1, "review_reason": 1}).to_list(300)
-        return {"check_in": b["check_in"], "check_out": b["check_out"], "guests": b.get("guests", 1),
+        property_doc = await db.properties.find_one({"_id": oid(b["property_id"])})
+        return {"property_name": (property_doc or {}).get("name", ""), "check_in": b["check_in"], "check_out": b["check_out"], "guests": b.get("guests", 1),
                 "retention_days": 90, "retention_basis": "after checkout",
                 "documents": [{"guest_name": d["guest_name"], "guest_number": d.get("guest_number")} for d in documents if d["status"] != "rejected"]}
 

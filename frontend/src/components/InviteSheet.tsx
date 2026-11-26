@@ -6,7 +6,7 @@ import { radius, spacing, useTheme } from "@/src/theme";
 
 export type Invitee = { id: string; name: string; email?: string; username?: string; phone?: string; role: string; password?: string | null };
 
-const ROLE_LABEL: Record<string, string> = { owner: "villa owner", cleaner: "cleaning staff", supervisor: "cleaning supervisor", admin: "admin" };
+const ROLE_LABEL: Record<string, string> = { owner: "property owner", cleaner: "cleaning staff", supervisor: "cleaning supervisor", admin: "admin" };
 
 export function inviteMessage(u: Invitee, password: string) {
   return `Hi ${u.name.replace(/\s*\(Owner\)/, "")}, welcome to Britsmaid!\n\nYour ${ROLE_LABEL[u.role] ?? ""} login is ready:\nLogin: ${u.email || u.username || u.phone}\nPassword: ${password}\n\nOpen the Britsmaid app and sign in with these details${u.role === "owner" ? " to see your villa earnings, stays, payouts and reports" : ""}.\n\n— Team Britsmaid`;
@@ -15,20 +15,21 @@ export function inviteMessage(u: Invitee, password: string) {
 export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onClose: () => void }) {
   const toast = useToast();
   const { colors } = useTheme();
-  const [password, setPassword] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [verified, setVerified] = useState(false);
   const [phone, setPhone] = useState(invitee?.phone ?? "");
   const [busy, setBusy] = useState(false);
-  const pw = invitee?.password ?? password;
+  const pw = invitee?.password || (verified ? password : "");
 
   if (!invitee) return null;
   const msg = pw ? inviteMessage(invitee, pw) : "";
 
-  const reset = async () => {
+  const prepare = async () => {
+    if (busy) return;
     setBusy(true);
     try {
-      const r = await api.post(`/users/${invitee.id}/reset-password`);
-      setPassword(r.temp_password);
-      if (phone !== (invitee.phone ?? "")) await api.put(`/users/${invitee.id}`, { phone });
+      await api.post(`/users/${invitee.id}/verify-invite-password`, { password });
+      setVerified(true);
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
@@ -51,9 +52,10 @@ export function InviteSheet({ invitee, onClose }: { invitee: Invitee | null; onC
       <View style={{ gap: spacing.md }}>
         {!pw ? (
           <>
-            <Txt v="body">A new temporary password will be created for {invitee.email || invitee.username || invitee.phone}. Their old password will stop working.</Txt>
+            <Txt v="body">Enter the current password you set for this member to include it in the invitation. Sending an invitation does not change their password. If you do not know it, set a new password explicitly in Edit member.</Txt>
+            <Input testID="invite-password-input" label="Current member password" secureTextEntry autoCapitalize="none" value={password} onChangeText={setPassword} />
             <Input testID="invite-phone-input" label="WhatsApp number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} placeholder="+91 98xxxxxxxx" />
-            <Button testID="invite-generate-button" icon="key-outline" title="Create password & prepare invite" onPress={reset} loading={busy} />
+            <Button testID="invite-prepare-button" icon="paper-plane-outline" title="Verify password & prepare invite" onPress={prepare} loading={busy} disabled={busy || password.length < 12} />
           </>
         ) : (
           <>

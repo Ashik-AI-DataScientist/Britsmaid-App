@@ -14,7 +14,7 @@ from typing import Annotated, List, Optional, Literal, Any
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from bson import ObjectId
-import os, logging, uuid, secrets, html, json, asyncio, string, hashlib, re
+import os, logging, uuid, secrets, html, json, asyncio, hashlib, re
 from zoneinfo import ZoneInfo
 from pymongo.errors import DuplicateKeyError
 import bcrypt, jwt, requests
@@ -434,13 +434,26 @@ async def update_user(uid: str, body: UserUpdate, admin=Depends(admin_user)):
     return out(updated)
 
 
-@api.post("/users/{uid}/reset-password")
-async def reset_password(uid: str, _=Depends(admin_user)):
+class InvitePassword(BaseModel):
+    password: str = Field(min_length=12, max_length=72)
+
+
+@api.post("/users/{uid}/verify-invite-password")
+async def verify_invite_password(uid: str, body: InvitePassword, _=Depends(admin_user)):
     u = await db.users.find_one({"_id": oid(uid), "active": True})
     if not u:
         raise HTTPException(404, "User not found")
-    alphabet = string.ascii_letters + string.digits
-    temp = "BM-" + "".join(secrets.choice(alphabet) for _ in range(16))
+    if not await run_in_threadpool(verify_pw, body.password, u.get("password_hash", "")):
+        raise HTTPException(400, "That is not this member's current password. Enter the password you set, or change it explicitly in Edit member.")
+    return {"ok": True}
+
+
+@api.post("/users/{uid}/reset-password")
+async def reset_password(uid: str, body: InvitePassword, _=Depends(admin_user)):
+    u = await db.users.find_one({"_id": oid(uid), "active": True})
+    if not u:
+        raise HTTPException(404, "User not found")
+    temp = body.password
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"password_hash": hash_pw(temp)}, "$inc": {"session_version": 1}})
     await db.user_sessions.delete_many({"user_id": str(u["_id"])})
     return {"user": out(u), "temp_password": temp}
