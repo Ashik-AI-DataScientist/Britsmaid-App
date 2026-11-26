@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
+from activity_details import describe, snapshot, activity_time
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,10 @@ class Activity:
     def __init__(self, db):
         self.db = db
 
-    async def record(self, identity, title, url='/notifications'):
+    async def record(self, identity, title, url='/notifications', body=''):
         now = datetime.now(timezone.utc).isoformat()
         await self.db.activities.update_one({'_id': identity}, {'$setOnInsert': {
-            'title': title, 'url': url, 'created_at': now}}, upsert=True)
+            'title': title, 'url': url, 'created_at': now, **({'body': body} if body else {})}}, upsert=True)
 
     def register(self, api, admin_user):
         @api.get('/notifications')
@@ -103,7 +104,11 @@ class Activity:
                 if await self.db.push_deliveries.find_one({'_id': key}):
                     await self.db.push_subscriptions.update_one({'_id': subscription['_id']}, {'$set': {'last_event_at': event['created_at']}})
                     continue
-                payload = json.dumps({'title': 'Britsmaid activity', 'body': event['title'], 'url': '/notifications', 'tag': str(event['_id'])})
+                when = activity_time(event['created_at'])
+                body = ' · '.join(x for x in (event.get('body', ''), 'Activity: ' + when if when else '') if x)
+                # Repeat the contextual heading in body for older installed workers.
+                payload = json.dumps({'title': event['title'], 'details': body, 'body': event['title'] + ('\n' + body if body else ''),
+                    'url': event.get('url', '/notifications'), 'tag': str(event['_id'])})
                 try:
                     await run_in_threadpool(webpush, subscription_info=subscription['subscription'], data=payload,
                         vapid_private_key=settings['private'], vapid_claims={'sub': 'https://app.britsmaid.in'}, ttl=3600, timeout=10)
@@ -119,7 +124,8 @@ class Activity:
             try:
                 day = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
                 async for task in self.db.cleaning.find({'status': {'$nin': ['completed', 'cancelled']}, 'date': {'$lte': day}}):
-                    await self.record(f"cleaning-due:{task['_id']}:{day}", 'Cleaning pending', '/cleaning/' + str(task['_id']))
+                    details = await describe(self.db, 'PUT', '/api/cleaning/' + str(task['_id']), action='Cleaning pending')
+                    await self.record(f"cleaning-due:{task['_id']}:{day}", **details)
                 async for issue in self.db.system_issues.find({'status': 'open'}):
                     await self.record(f"issue:{issue['_id']}:{issue.get('first_seen', '')}", issue.get('title', 'System needs attention'), '/issues')
                 await self.deliver()
@@ -134,8 +140,15 @@ class ActivityMiddleware:
 
     async def __call__(self, scope, receive, send):
         path, method = scope.get('path', ''), scope.get('method', '')
-        if scope['type'] != 'http' or method not in ('POST', 'PUT', 'DELETE') or not path.startswith('/api/') or path.startswith(('/api/auth/', '/api/notifications', '/api/files/')):
+        if scope['type'] != 'http' or method not in ('POST', 'PUT', 'DELETE') or not path.startswith('/api/') or path.startswith(('/api/auth/', '/api/notifications', '/api/files/')) or path == '/api/upload' or path.endswith('/verify-invite-password'):
             return await self.app(scope, receive, send)
+        parts = path.strip('/').split('/')
+        before = {}
+        try:
+            if len(parts) > 2:
+                before = await snapshot(self.activity.db, parts[1], parts[2])
+        except Exception:
+            logger.exception('Could not read activity context')
         status, payload = 0, bytearray()
 
         async def observe(message):
@@ -165,14 +178,8 @@ class ActivityMiddleware:
                 if identifiable and previous and previous.get('signature') == signature:
                     return
                 identity = secrets.token_hex(16)
-                resource = path.split('/')[2]
-                verb = {'POST': 'Recorded', 'PUT': 'Updated', 'DELETE': 'Removed'}[method]
-                url = '/notifications'
-                if resource in ('bookings', 'cleaning', 'properties'):
-                    identifier = path.split('/')[3] if len(path.split('/')) > 3 else data.get('id', '')
-                    if ObjectId.is_valid(identifier):
-                        url = '/' + {'bookings': 'booking', 'properties': 'property', 'cleaning': 'cleaning'}[resource] + '/' + identifier
-                await self.activity.record(identity, f"{verb} {resource.replace('-', ' ')}", url)
+                details = await describe(self.activity.db, method, path, data, before)
+                await self.activity.record(identity, **details)
                 await self.activity.db.activity_state.update_one({'_id': state_id}, {'$set': {'signature': signature}}, upsert=True)
             except DuplicateKeyError:
                 pass
