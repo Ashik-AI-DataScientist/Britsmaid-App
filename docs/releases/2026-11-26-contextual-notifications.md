@@ -6,6 +6,8 @@ New activity uses an action/property heading and a separate detail line. Booking
 
 In-app cards display heading, details and occurrence time. Push payloads include the same context, occurrence time in IST and a safe internal destination. Updated workers open that record; older workers still receive contextual text in the compatible body. Existing workers can update when the admin visits Notifications without another permission prompt. No subscriptions are automatically enabled or disabled.
 
+Push headings/details are bounded by serialized UTF-8 size so long local-language names, emoji and escaped text cannot exceed provider payload limits. Activity time is placed before optional detail text; the complete inbox event remains unchanged.
+
 Summaries use allowlisted saved fields, not request bodies. Passwords, login tokens, invitation tokens, ID images, guest-ID names and private notes are excluded. Deleted records use a safe pre-delete snapshot. Response fields take precedence over a later concurrent edit. Failed writes produce no success event. Existing snapshot deduplication and per-admin read state remain. Password verification and unattached file uploads no longer generate misleading business-action events.
 
 Existing notification records remain unchanged because their original detail snapshots were not captured. The new format applies to new events; this release does not invent historical dates or replay old push notifications.

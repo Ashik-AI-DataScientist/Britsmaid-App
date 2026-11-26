@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
-from activity_details import describe, snapshot, activity_time
+from activity_details import describe, snapshot, activity_time, push_text
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +105,12 @@ class Activity:
                     await self.db.push_subscriptions.update_one({'_id': subscription['_id']}, {'$set': {'last_event_at': event['created_at']}})
                     continue
                 when = activity_time(event['created_at'])
-                body = ' · '.join(x for x in (event.get('body', ''), 'Activity: ' + when if when else '') if x)
+                body = ' · '.join(x for x in ('Activity: ' + when if when else '', event.get('body', '')) if x)
+                body = push_text(body, 900)
+                title = push_text(event['title'], 320)
                 # Repeat the contextual heading in body for older installed workers.
-                payload = json.dumps({'title': event['title'], 'details': body, 'body': event['title'] + ('\n' + body if body else ''),
-                    'url': event.get('url', '/notifications'), 'tag': str(event['_id'])})
+                payload = json.dumps({'title': title, 'details': body, 'body': title + ('\n' + body if body else ''),
+                    'url': push_text(event.get('url', '/notifications'), 200), 'tag': push_text(event['_id'], 100)}, ensure_ascii=False)
                 try:
                     await run_in_threadpool(webpush, subscription_info=subscription['subscription'], data=payload,
                         vapid_private_key=settings['private'], vapid_claims={'sub': 'https://app.britsmaid.in'}, ttl=3600, timeout=10)
