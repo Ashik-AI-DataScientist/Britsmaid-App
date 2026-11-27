@@ -226,6 +226,7 @@ def register_guest_routes(api, db, admin_user, oid, now_iso, invitation_secret):
             uploads_open = b.get("status") == "confirmed" and upload_cutoff(b["check_out"]) > now_iso()
             reason = ("Booking is not open for check-in" if not uploads_open else
                       "Guests already checked in" if b.get("guest_checked_in_at") else
+                      "Stay has ended" if b["check_out"] <= today else
                       "Check-in date has not arrived" if b["check_in"] > today else
                       "Every guest needs an approved, valid ID" if verified != required else "Ready for check-in")
             prop = await db.properties.find_one({"_id": oid(b["property_id"])})
@@ -446,6 +447,8 @@ def register_guest_routes(api, db, admin_user, oid, now_iso, invitation_secret):
         b = await active_booking(bid)
         if b.get("guest_checked_in_at"):
             raise HTTPException(409, "Guests are already checked in")
+        if b["check_out"] <= datetime.now(INDIA_TZ).date().isoformat():
+            raise HTTPException(409, "Stay has ended; only ID uploads remain open during the grace period")
         if b["check_in"] > datetime.now(INDIA_TZ).date().isoformat():
             raise HTTPException(409, "Check-in date has not arrived")
         documents = await db.guest_ids.find({"booking_id": bid, "status": "verified", "deleted": False,

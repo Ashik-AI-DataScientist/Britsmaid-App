@@ -172,6 +172,19 @@ def test_date_only_cutoff_month_year_leap_boundaries():
 
 
 @pytest.mark.asyncio
+async def test_grace_window_allows_uploads_without_reopening_checkin(ctx):
+    today = datetime.now(INDIA_TZ).date()
+    await ctx['db'].bookings.update_one({'_id': ObjectId(ctx['bid'])}, {'$set': {
+        'check_in': (today-timedelta(days=3)).isoformat(), 'check_out': (today-timedelta(days=1)).isoformat()}})
+    c, bid = ctx['client'], ctx['bid']
+    token = (await c.post(f'/api/bookings/{bid}/guest-link', headers=auth(ctx))).json()['token']
+    assert (await upload_id(ctx, {'Authorization':'Bearer '+token})).status_code == 200
+    queue = (await c.get('/api/guest-bookings', headers=auth(ctx))).json()[0]
+    assert queue['uploads_open'] and not queue['can_check_in'] and queue['check_in_reason'] == 'Stay has ended'
+    assert (await c.post(f'/api/bookings/{bid}/check-in', headers=auth(ctx))).status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_date_edits_cancel_and_checkin_preserve_link_and_ids(ctx):
     c, db, bid = ctx['client'], ctx['db'], ctx['bid']
     path = f'/api/bookings/{bid}/guest-link'
