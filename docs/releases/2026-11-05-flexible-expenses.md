@@ -1,0 +1,11 @@
+# Britsmaid flexible expenses and bidirectional booking amounts
+
+Expenses are entered once with a title, amount, month, notes and optional private attachments. The admin explicitly chooses before revenue split, or after split with owner/Britsmaid responsibility. Electricity is an ordinary expense title. Before-split expenses never receive a second allocation. Booking miscellaneous expenses appear as linked reference entries; edit their original booking rather than creating another expense.
+
+Existing expenses retain their historical treatment until an admin changes it. Expense edits require a reason and a matching revision. Atomic history retains the prior values and evidence. Current statements refresh; already issued report and receipt snapshots retain their saved amounts. Owners can inspect their property's expense history, but cannot edit it. Other owners and cleaning staff cannot read these financial records or attachments.
+
+Booking percentage and amount fields calculate in both directions. The last edited field controls the calculation. Amount entry remains fixed when the base changes; percentage entry recalculates the amount. GST-inclusive percentages use the taxable subtotal. Amount-derived rates display up to six decimals and money rounds half-up to two decimals, matching the backend. Undefined zero-base percentages display blank rather than infinity.
+
+Validation: 472 isolated backend tests; frontend typecheck, zero-warning lint and edge checks; web and Android exports; 9,077 retained and 12,000 additional deterministic cross-language finance comparisons (21,077 matches, zero differences). Browser checks used synthetic local records: validation errors, shared amount/percentage entry, edit from after split to before split, history, statement refresh and switching booking entry direction. CI additionally checks the Docker deployment with real disposable MongoDB. Physical phone checks remain a user acceptance step.
+
+No migration, cleanup, deletion of live records, paid plan change, guest-ID activation or Zoho change is part of this release. Older issued reports do not change automatically: generate a new report after correcting an expense. Existing unrelated findings in the separate owner transparency audit remain outside these two changes.

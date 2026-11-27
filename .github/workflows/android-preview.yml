@@ -22,6 +22,7 @@ jobs:
     env:
       EXPO_PUBLIC_BACKEND_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
       EXPO_PUBLIC_GUEST_WEB_URL: ${{ inputs.backend_url || 'http://192.168.1.11:8766' }}
+      EXPO_PUBLIC_GOOGLE_LOGIN_ENABLED: 'false'
       BRITSMAID_PREVIEW_LAN: '1'
       CI: '1'
     defaults:
@@ -45,7 +46,7 @@ jobs:
       - run: pnpm typecheck && pnpm lint:check && pnpm test:edges
       - name: Record exact source and preview endpoint
         run: |
-          node -e 'const fs=require("fs"); fs.writeFileSync("preview-source.json",JSON.stringify({commit:process.env.GITHUB_SHA,backend:process.env.EXPO_PUBLIC_BACKEND_URL,testOnly:true}));'
+          node -e 'const fs=require("fs"); fs.writeFileSync("preview-source.json",JSON.stringify({commit:process.env.GITHUB_SHA,backend:process.env.EXPO_PUBLIC_BACKEND_URL,testOnly:!process.env.EXPO_PUBLIC_BACKEND_URL.startsWith("https:")}));'
       - run: pnpm exec expo prebuild --platform android --no-install
       - name: Create ephemeral preview signing key (never uploaded)
         run: |

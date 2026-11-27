@@ -1,26 +1,29 @@
 import React, { useEffect, useState } from "react";
 import { Image, Linking, Modal, Platform, ScrollView, Share, Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { api, authenticatedBlob } from "@/src/api";
 import { Badge, Button, Card, ErrorState, Header, Input, Loading, Txt, useToast } from "@/src/ui";
 import { fmtDate } from "@/src/format";
 import { spacing } from "@/src/theme";
+import { guestUploadMessage } from "@/src/guest-invitation";
 
 type Action = { action: string; title: string; document_id?: string };
 export default function Guests() {
+  const { booking_id } = useLocalSearchParams<{ booking_id?: string }>();
   const toast = useToast();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(booking_id || null);
   const [options, setOptions] = useState(false);
   const [history, setHistory] = useState(false);
   const [note, setNote] = useState("");
   const [action, setAction] = useState<Action | null>(null);
   const [reasons, setReasons] = useState<Record<string, string>>({});
-  const [invitation, setInvitation] = useState<{ bookingId: string; url: string } | null>(null);
+  const [invitation, setInvitation] = useState<{ bookingId: string; url: string; message: string } | null>(null);
   const [image, setImage] = useState<string | null>(null);
   const [imageId, setImageId] = useState<string | null>(null);
   const [imageReady, setImageReady] = useState(false);
   const [busy, setBusy] = useState(false);
-  const bookings = useQuery({ queryKey: ["guest-bookings"], queryFn: () => api.get<any[]>("/guest-bookings"), refetchInterval: 15000 });
+  const bookings = useQuery({ queryKey: ["guest-bookings", booking_id], queryFn: () => api.get<any[]>(`/guest-bookings${booking_id ? `?booking_id=${booking_id}` : ""}`), refetchInterval: 15000 });
   const docs = useQuery({ queryKey: ["guest-ids", selected], queryFn: () => api.get<any[]>(`/guest-ids?booking_id=${selected}`), enabled: !!selected, refetchInterval: 15000 });
   const b = bookings.data?.find(item => item.id === selected);
   useEffect(() => () => { if (image && Platform.OS === "web") URL.revokeObjectURL(image); }, [image]);
@@ -32,9 +35,11 @@ export default function Guests() {
   };
   const chooseAction = (next: Action) => { setAction(next); setNote(""); };
   const invite = async () => {
-    const link = await api.post(`/bookings/${selected}/guest-link`);
-    const origin = Platform.OS === "web" ? window.location.origin : process.env.EXPO_PUBLIC_GUEST_WEB_URL || "";
-    setInvitation({ bookingId: selected!, url: origin ? `${origin}/guest-check-in#invite=${link.token}` : link.token });
+    if (!b) return;
+    const stay = b;
+    const link = await api.post(`/bookings/${stay.id}/guest-link`);
+    // The server provides the canonical public web URL on every platform.
+    setInvitation({ bookingId: stay.id, url: link.url, message: guestUploadMessage(stay, link.url) });
   };
   return <View style={{ flex: 1 }}>
     <Header back title={b ? b.guest_name : "Guest check-in"} subtitle={b ? b.property_name : "Choose a stay to get started"} />
@@ -54,16 +59,20 @@ export default function Guests() {
         <Card style={{ gap: spacing.sm }}>
           <Txt>{fmtDate(b.check_in)} – {fmtDate(b.check_out)} · {b.guests} guest{b.guests === 1 ? "" : "s"}</Txt>
           <Txt v="subtitle">{b.guest_checked_in_at ? "Checked in" : `${b.verified_guests} of ${b.guests} IDs approved`}</Txt>
-          {b.guest_checked_in_at ? <Txt>{new Date(b.guest_checked_in_at).toLocaleString()}</Txt> : <>
+          {b.guest_checked_in_at ? <Txt>{new Date(b.guest_checked_in_at).toLocaleString()}</Txt> : null}
+          {b.uploads_open !== false ? <>
             <Button title="Get guest upload link" disabled={busy} onPress={() => run(invite)} />
             {invitation && invitation.bookingId === b.id ? <>
-              <Text selectable style={{ overflowWrap: "anywhere" } as any}>{invitation.url}</Text>
+              <Text selectable style={{ overflowWrap: "anywhere" } as any}>{invitation.message}</Text>
               <Button title="Open upload form" onPress={() => Linking.openURL(invitation!.url)} />
-              <Button title="Share link" variant="secondary" onPress={() => run(async () => { await Share.share({ message: invitation!.url }); })} />
+              <Button title="Share message & link" variant="secondary" onPress={() => run(async () => { await Share.share({ message: invitation!.message }); })} />
             </> : <Txt>Guests use the link to send their ID photos.</Txt>}
+            {b.upload_expires_at ? <Txt v="caption">Upload link expires {new Date(b.upload_expires_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} (India time). Resending keeps the same link.</Txt> : null}
+          </> : <Txt>The upload period has ended.</Txt>}
+          {!b.guest_checked_in_at ? <>
             <Button title="Check in" disabled={busy} onPress={() => b.can_check_in ? run(async () => { await api.post(`/bookings/${b.id}/check-in`); setInvitation(null); toast("Checked in"); }) : chooseAction({ action: "check_in", title: "Check in with an exception" })} />
             {!b.can_check_in ? <Txt>{b.check_in_reason}. You can check in with an admin note.</Txt> : null}
-          </>}
+          </> : null}
         </Card>
         <Txt v="subtitle">Guest IDs</Txt>
         {docs.isLoading ? <Loading /> : docs.isError ? <ErrorState message="Could not load IDs" onRetry={docs.refetch} /> : null}
@@ -72,6 +81,12 @@ export default function Guests() {
           <Txt v="subtitle">{d.guest_name} · Guest {d.guest_number}</Txt>
           <Badge label={d.status === "verified" ? "Approved" : d.status === "rejected" ? "Needs a new photo" : "Needs review"} tone={d.status === "verified" ? "success" : "warning"} />
           {d.review_reason ? <Txt>{d.review_reason}</Txt> : null}
+          {Platform.OS === "web" ? <Button title="Download ID" disabled={busy} variant="secondary" onPress={() => run(async () => {
+            const blob = await authenticatedBlob(`/guest-ids/${d.id}/image`);
+            const url = URL.createObjectURL(blob), link = document.createElement('a');
+            link.href = url; link.download = `guest-${d.guest_number}-id.jpg`; link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+          })} /> : null}
           <Button title="View ID" disabled={busy} onPress={() => run(async () => {
             setImage(null); setImageReady(false); setImageId(d.id);
             const blob = await authenticatedBlob(`/guest-ids/${d.id}/image`);
@@ -83,7 +98,7 @@ export default function Guests() {
             <Txt>{d.document_type.replace(/_/g, " ")} · {d.expires_on === "9999-12-31" ? "No expiry declared" : `Expires ${d.expires_on}`}</Txt>
             <Button title="Close image" variant="ghost" onPress={() => setImage(null)} />
           </> : null}
-          {d.status === "pending" && !b.guest_checked_in_at ? <>
+          {d.status === "pending" ? <>
             <Button title="Approve ID" disabled={busy} onPress={() => imageId === d.id && image && imageReady ? run(async () => { await api.post(`/guest-ids/${d.id}/review`, { status: "verified" }); setImage(null); }) : chooseAction({ action: "approve_id", document_id: d.id, title: "Approve ID without opening it" })} />
             {imageId === d.id && image && imageReady ? <>
               <Input label="Reason to request a new photo" value={reasons[d.id] ?? ""} onChangeText={value => setReasons(previous => ({ ...previous, [d.id]: value }))} />
@@ -97,15 +112,27 @@ export default function Guests() {
         </Card>)}
         <Button title={options ? "Hide admin options" : "Admin options"} variant="ghost" onPress={() => setOptions(!options)} />
         {options ? <Card style={{ gap: spacing.sm }}>
-          {b.guest_checked_in_at ? <Button title="Undo check-in" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "undo_check_in", title: "Undo this check-in" })} /> : <Button title="Disable upload link" variant="secondary" disabled={busy} onPress={() => run(async () => { await api.del(`/bookings/${b.id}/guest-link`); setInvitation(null); toast("Link disabled"); })} />}
+          {b.guest_checked_in_at ? <Button title="Undo check-in" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "undo_check_in", title: "Undo this check-in" })} /> : null}
+          <Button title="Disable upload link" variant="secondary" disabled={busy} onPress={() => run(async () => { await api.del(`/bookings/${b.id}/guest-link`); setInvitation(null); toast("Link disabled"); })} />
+          {b.uploads_open !== false ? <Button title="Create replacement link" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "replace_link", title: "Replace link and disable previous links" })} /> : null}
           <Button title={history ? "Hide history" : "View admin history"} variant="ghost" onPress={() => setHistory(!history)} />
           {history ? b.admin_history?.length ? b.admin_history.slice().reverse().map((event: any, i: number) => <View key={i}><Txt>{event.action.replace(/_/g, " ")} · {event.actor_name ?? "Admin"}</Txt><Txt>{event.note}</Txt><Txt v="caption">{new Date(event.at).toLocaleString()}</Txt></View>) : <Txt>No admin exceptions recorded.</Txt> : null}
         </Card> : null}
         {action ? <Modal transparent visible onRequestClose={() => setAction(null)} animationType="fade"><View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: spacing.lg }}><ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}><Card testID="guest-admin-action" style={{ gap: spacing.sm }}>
           <Txt v="subtitle">{action.title}</Txt>
-          <Txt>{action.action === "check_in" ? "This skips missing ID approvals or the arrival date. It records an exception; it does not verify guest IDs." : "Your reason and the previous decision will be kept in history."}</Txt>
+          <Txt>{action.action === "replace_link" ? "This disables all previous upload links for this stay. Use it only to replace a disabled or compromised link. Ordinary sharing keeps the same link. Existing IDs are preserved." : action.action === "check_in" ? "This skips missing ID approvals or the arrival date. It records an exception; it does not verify guest IDs." : "Your reason and the previous decision will be kept in history."}</Txt>
           <Input testID="guest-admin-note" label="Reason (required)" value={note} onChangeText={setNote} multiline />
-          <Button testID="guest-admin-save" title="Save with note" disabled={busy || !note.trim()} onPress={() => run(async () => { await api.post(`/bookings/${b.id}/guest-admin-action`, { action: action.action, document_id: action.document_id, note }); setAction(null); setImage(null); setInvitation(null); toast("Admin action saved"); })} />
+          <Button testID="guest-admin-save" title="Save with note" disabled={busy || !note.trim()} onPress={() => run(async () => {
+            if (action.action === "replace_link") {
+              const stay = b;
+              const link = await api.post(`/bookings/${stay.id}/guest-link`, { replace: true, note });
+              setInvitation({ bookingId: stay.id, url: link.url, message: guestUploadMessage(stay, link.url) });
+            } else {
+              await api.post(`/bookings/${b.id}/guest-admin-action`, { action: action.action, document_id: action.document_id, note });
+              setInvitation(null);
+            }
+            setAction(null); setImage(null); toast("Admin action saved");
+          })} />
           <Button title="Cancel" variant="ghost" onPress={() => setAction(null)} />
         </Card></ScrollView></View></Modal> : null}
       </>}

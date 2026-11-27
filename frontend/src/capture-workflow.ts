@@ -1,6 +1,14 @@
 export type CaptureTarget = { key: string; label: string; taskId?: string; roomIndex?: number; roomName?: string; phase?: "before" | "after"; revision?: number };
 export type CaptureMedia = { id: string; kind: "image" | "video"; content_type: string };
-export type CaptureAsset = { uri: string; type?: string | null; mimeType?: string; fileName?: string | null; fileSize?: number; uploadKey?: string; width: number; height: number };
+export type CaptureAsset = { uri: string; file?: Blob; type?: string | null; mimeType?: string; fileName?: string | null; fileSize?: number; uploadKey?: string; width: number; height: number };
+export function webCaptureBlob(asset: CaptureAsset): Blob {
+  // Expo supplies the selected File directly. Fetching its blob: URL is blocked
+  // by the hosted connect-src policy and is unnecessary for a multipart upload.
+  if (typeof Blob !== "undefined" && asset.file instanceof Blob) return asset.file;
+  // A File cannot survive JSON storage or a page reload. Never fetch an expired
+  // object URL or substitute another file for the original capture target.
+  throw new Error("This photo is no longer available in this browser. Discard the unsaved photo, then choose it from your library again.");
+}
 export type CaptureDraft = { userId: string; target: CaptureTarget; assets: CaptureAsset[]; uploaded?: CaptureMedia; startedAt: string };
 export const DRAFT_KEY = "bm_capture_v1";
 // One lock across all sheets: React state updates alone cannot stop two rapid taps.

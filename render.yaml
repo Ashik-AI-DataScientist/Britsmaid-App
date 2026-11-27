@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: britsmaid-test
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: deploy/render-free
+    autoDeploy: false
+    healthCheckPath: /healthz
+    envVars:
+      - key: MONGO_URL
+        sync: false
+      - key: DB_NAME
+        value: britsmaid_test
+      - key: SEED_DEMO_DATA
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: OWNER_PASSWORD
+        generateValue: true
+      - key: CLEANER_PASSWORD
+        generateValue: true
+      - key: SUPERVISOR_PASSWORD
+        generateValue: true

@@ -164,7 +164,7 @@ async def test_ical_changed_cancelled_duplicate_and_timezones_mocked(ctx,monkeyp
         text=''
         def raise_for_status(self): pass
     feed=Feed()
-    monkeypatch.setattr(server.requests,'get',lambda *a,**kw:feed)
+    monkeypatch.setattr(server,'fetch_calendar',lambda *a,**kw:feed.text)
     def content(end='20261112',status='CONFIRMED'):
         return f'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:synthetic-event\r\nDTSTART;VALUE=DATE:20261110\r\nDTEND;VALUE=DATE:{end}\r\nSUMMARY:SAMPLE OTA\r\nSTATUS:{status}\r\nEND:VEVENT\r\nEND:VCALENDAR'
     feed.text=content()

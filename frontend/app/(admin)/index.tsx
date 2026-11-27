@@ -1,5 +1,5 @@
 import React from "react";
-import { RefreshControl, ScrollView, View, Pressable } from "react-native";
+import { RefreshControl, ScrollView, View, Pressable, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -14,20 +14,22 @@ import { fonts, radius, spacing, useTheme } from "@/src/theme";
 
 export default function Dashboard() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
   const bottomChrome = usesNativeTabs ? insets.bottom : 0;
   const router = useRouter();
   const { colors } = useTheme();
   const { user, logout } = useAuth();
-  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard") });
+  const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api.get("/dashboard"), refetchInterval: 30000 });
   const d = q.data;
+  const activity = useQuery({ queryKey: ["admin-activity"], queryFn: () => api.get<any[]>("/notifications"), refetchInterval: 15000 });
   const notices = useQuery({ queryKey: ["system-issues"], queryFn: () => api.get<any[]>("/system/issues"), refetchInterval: 30000 });
 
   const metric = (label: string, value: string, icon: IconName, testID: string, onPress?: () => void) => (
-    <Card testID={testID} onPress={onPress} style={{ flex: 1, padding: spacing.md, gap: spacing.sm }}>
+    <Card testID={testID} onPress={onPress} style={{ flex: 1, minWidth: 0, padding: spacing.md, gap: spacing.sm }}>
       <View style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" }}>
         <Icon name={icon} size={18} color={colors.brandPrimary} />
       </View>
-      <Txt v="mono" style={{ fontSize: 20, fontFamily: fonts.display }}>{value}</Txt>
+      <Txt v="mono" numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.65} style={{ fontSize: Math.min(20, Math.max(11, (width - 124) / (2 * Math.max(value.length, 1) * 0.62))), fontFamily: fonts.display }}>{value}</Txt>
       <Txt v="caption">{label}</Txt>
     </Card>
   );
@@ -45,7 +47,7 @@ export default function Dashboard() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
-        <Image source={require("../../assets/images/logo.jpg")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
+        <Image source={require("../../assets/images/logo-stacked-v2.png")} style={{ width: 44, height: 44, borderRadius: 10 }} contentFit="cover" />
         <View style={{ flex: 1 }}>
           <Txt v="caption">Hello, {user?.name?.split(" ")[0]}</Txt>
           <Txt v="title">Britsmaid</Txt>
@@ -54,6 +56,7 @@ export default function Dashboard() {
         <View style={{ flexDirection: "row", gap: spacing.md, flexWrap: "wrap" }}>
           <IconButton testID="dashboard-guests-button" name="id-card-outline" label="Guest IDs" onPress={() => router.push("/guests")} />
           <IconButton testID="dashboard-staff-button" name="people-outline" label="Team" onPress={() => router.push("/staff")} />
+          <IconButton name="pulse-outline" label={`Activity${activity.data?.some((item: any) => item.unread) ? " !" : ""}`} onPress={() => router.push("/notifications")} />
           <IconButton name="notifications-outline" label={`Notices${notices.data?.some((issue: any) => issue.status === "open") ? " !" : ""}`} onPress={() => router.push("/issues")} />
           <IconButton testID="dashboard-logout-button" name="log-out-outline" label="Sign out" onPress={logout} />
         </View>
@@ -69,6 +72,10 @@ export default function Dashboard() {
             <View style={{ flexDirection: "row", gap: spacing.md, marginTop: spacing.md }}>
               {metric("Occupied today", `${d.occupied_today}/${d.properties}`, "home-outline", "metric-occupied", () => router.push("/(admin)/properties"))}
               {metric(`Unpaid (${d.unpaid_invoices})`, inr(d.unpaid_total), "receipt-outline", "metric-unpaid", () => router.push("/(admin)/finance"))}
+            </View>
+            <View style={{ flexDirection: "row", gap: spacing.md, marginTop: spacing.md }}>
+              {metric("Total Owner Payout", inr(d.total_owner_payout), "wallet-outline", "metric-owner-payout", () => router.push("/(admin)/finance"))}
+              {metric("Total Britsmaid earnings", inr(d.total_britsmaid_earnings), "cash-outline", "metric-britsmaid-earnings", () => router.push("/(admin)/finance"))}
             </View>
           </Animated.View>
 
@@ -96,7 +103,7 @@ export default function Dashboard() {
           <Animated.View entering={FadeInDown.delay(200).duration(400)} style={{ gap: spacing.sm }}>
             <Txt v="label">Cleaning to verify</Txt>
             {d.pending_cleaning.length === 0 ? (
-              <Card><Txt v="body">All villas are guest-ready.</Txt></Card>
+              <Card><Txt v="body">All properties are guest-ready.</Txt></Card>
             ) : d.pending_cleaning.map((c: any) => (
               <Card key={c.id} testID={`pending-clean-${c.id}`} onPress={() => router.push(`/cleaning/${c.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
                 <Icon name="sparkles" size={20} color={colors.warning} />
@@ -113,7 +120,7 @@ export default function Dashboard() {
             <View key={key} style={{ gap: spacing.sm }}>
               <Txt v="label">{title}</Txt>
               {list.length === 0 ? <Card><Txt v="caption">None</Txt></Card> : list.map((b: any) => (
-                <Card key={b.id} testID={`${key}-${b.id}`} onPress={() => router.push(`/booking/new?id=${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
+                <Card key={b.id} testID={`${key}-${b.id}`} onPress={() => router.push(`/booking/${b.id}`)} style={{ flexDirection: "row", alignItems: "center", gap: spacing.md }}>
                   <View style={{ width: 4, alignSelf: "stretch", borderRadius: 2, backgroundColor: otaColor(b.ota) }} />
                   <View style={{ flex: 1 }}>
                     <Txt v="subtitle" style={{ fontSize: 15 }}>{b.guest_name}</Txt>

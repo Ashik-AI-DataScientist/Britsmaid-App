@@ -2,8 +2,9 @@
 import hashlib
 import io
 import os
-import secrets
 import uuid
+import threading
+import asyncio
 from datetime import date, datetime, timezone, timedelta
 from typing import Literal
 
@@ -12,12 +13,17 @@ from botocore.config import Config
 from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, JSONResponse
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
+register_heif_opener()
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
+from guest_links import StableGuestLinks, upload_cutoff
 
 MAX_BYTES = 8 * 1024 * 1024
 INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
+document_store = None
+pdf_lock = threading.Lock()
 
 
 class RequestTooLarge(HTTPException):
@@ -29,6 +35,7 @@ class BoundedGuestUploads:
     """Enforce the limit while receiving multipart data, including chunked requests."""
     def __init__(self, app):
         self.app = app
+        self.slots = asyncio.Semaphore(2)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope.get("path") != "/api/guest/documents":
@@ -44,12 +51,23 @@ class BoundedGuestUploads:
             return message
 
         try:
-            await self.app(scope, bounded_receive, send)
-        except RequestTooLarge:
-            await JSONResponse({"detail": "ID upload exceeds request size limit"}, status_code=413)(scope, receive, send)
+            await asyncio.wait_for(self.slots.acquire(), timeout=8)
+        except asyncio.TimeoutError:
+            return await JSONResponse({"detail": "Other guest IDs are uploading. Please retry shortly."}, status_code=429,
+                headers={"Retry-After": "2"})(scope, receive, send)
+        try:
+            try:
+                await self.app(scope, bounded_receive, send)
+            except RequestTooLarge:
+                await JSONResponse({"detail": "ID upload exceeds request size limit"}, status_code=413)(scope, receive, send)
+        finally:
+            self.slots.release()
 
 
 def private_store():
+    if document_store is not None and not os.getenv("GUEST_ID_BUCKET"):
+        document_store.encryption_key()
+        return document_store, document_store.bucket, "encrypted-r2-v1", 90
     bucket, kms = os.getenv("GUEST_ID_BUCKET"), os.getenv("GUEST_ID_KMS_KEY")
     retention = os.getenv("GUEST_ID_RETENTION_DAYS", "")
     if not bucket or not kms or not retention.isdigit() or not 1 <= int(retention) <= 365:
@@ -63,12 +81,18 @@ def private_store():
 
 def store_image(key, data):
     s3, bucket, kms, _ = private_store()
+    if kms == "encrypted-r2-v1":
+        return s3.put(key, data)
     result = s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType="image/jpeg",
                            ServerSideEncryption="aws:kms", SSEKMSKeyId=kms)
     return {"storage_key": key, "storage_bucket": bucket, "storage_version": result.get("VersionId")}
 
 
 def read_image(doc):
+    if doc.get("storage_provider") == "encrypted-r2-v1":
+        if document_store is None:
+            raise HTTPException(503, "Guest document storage unavailable")
+        return document_store.read(doc)
     s3, _, _, _ = private_store()
     args = {"Bucket": doc["storage_bucket"], "Key": doc["storage_key"]}
     if doc.get("storage_version"):
@@ -81,6 +105,10 @@ def read_image(doc):
 
 
 def delete_image(doc):
+    if doc.get("storage_provider") == "encrypted-r2-v1":
+        if document_store is None:
+            raise HTTPException(503, "Guest document storage unavailable")
+        return document_store.delete(doc)
     s3, _, _, _ = private_store()
     args = {"Bucket": doc["storage_bucket"], "Key": doc["storage_key"]}
     if doc.get("storage_version"):
@@ -91,14 +119,49 @@ def delete_image(doc):
 def sanitise_image(data):
     try:
         with Image.open(io.BytesIO(data)) as image:
-            if image.format not in ("JPEG", "PNG") or image.width * image.height > 20_000_000:
-                raise HTTPException(422, "Use a JPEG or PNG image up to 20 megapixels")
+            if image.format not in ("JPEG", "PNG", "WEBP", "HEIF", "HEIC") or image.width * image.height > 20_000_000:
+                raise HTTPException(422, "Use a clear image up to 20 megapixels")
             image.load()
             output = io.BytesIO()
-            image.convert("RGB").save(output, format="JPEG", quality=90)
+            ImageOps.exif_transpose(image).convert("RGB").save(output, format="JPEG", quality=90)
             return output.getvalue()
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise HTTPException(422, "Invalid ID image")
+
+
+def sanitise_document(data, content_type):
+    if content_type != 'application/pdf':
+        return sanitise_image(data)
+    import pypdfium2 as pdfium
+    try:
+        with pdf_lock, pdfium.PdfDocument(data) as pdf:
+            if not 1 <= len(pdf) <= 4:
+                raise HTTPException(422, 'Use an ID PDF with one to four pages')
+            images = []
+            for index in range(len(pdf)):
+                page = pdf[index]
+                width, height = page.get_size()
+                if width <= 0 or height <= 0 or width > 14400 or height > 14400:
+                    raise HTTPException(422, 'Unsupported PDF page size')
+                bitmap = page.render(scale=min(2, 1600 / max(width, height)))
+                image = bitmap.to_pil().convert('RGB').copy()
+                bitmap.close()
+                page.close()
+                images.append(image)
+            canvas = Image.new('RGB', (max(image.width for image in images), sum(image.height for image in images)), 'white')
+            offset = 0
+            for image in images:
+                canvas.paste(image, (0, offset))
+                offset += image.height
+                image.close()
+            output = io.BytesIO()
+            canvas.save(output, format='JPEG', quality=90)
+            canvas.close()
+            return output.getvalue()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(422, 'This PDF could not be opened. Use an unlocked PDF or clear photo.') from None
 
 
 class IDReview(BaseModel):
@@ -112,33 +175,47 @@ class GuestAdminAction(BaseModel):
     document_id: str | None = None
 
 
-def register_guest_routes(api, db, admin_user, oid, now_iso):
+class GuestLinkInput(BaseModel):
+    replace: bool = False
+    note: str = Field(default="", max_length=2000)
+
+
+def register_guest_routes(api, db, admin_user, oid, now_iso, invitation_secret):
+    stable_links = StableGuestLinks(db, invitation_secret)
     async def audit(action, actor, document_id=None, booking_id=None):
         await db.guest_id_audit.insert_one({"action": action, "actor_id": str(actor),
                                           "document_id": document_id, "booking_id": booking_id, "at": now_iso()})
 
     async def active_booking(bid):
         booking = await db.bookings.find_one({"_id": oid(bid), "status": "confirmed"})
-        if not booking or booking["check_out"] <= datetime.now(INDIA_TZ).date().isoformat():
+        if not booking or upload_cutoff(booking["check_out"]) <= now_iso():
             raise HTTPException(404, "Booking is not open for check-in")
-        if booking.get("guest_checked_in_at"):
-            raise HTTPException(409, "Guests are already checked in")
         return booking
 
     async def guest_link(request: Request):
         auth = request.headers.get("Authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else ""
         digest = hashlib.sha256(token.encode()).hexdigest()
-        link = await db.guest_links.find_one({"token_hash": digest, "revoked": False, "expires_at": {"$gt": now_iso()}})
+        link = await db.guest_links.find_one({"token_hash": digest, "revoked": False})
         if not token or not link:
             raise HTTPException(401, "Guest check-in link expired or revoked")
-        await active_booking(link["booking_id"])
+        try:
+            booking = await active_booking(link["booking_id"])
+        except HTTPException as exc:
+            raise HTTPException(401, "Guest check-in link expired or revoked") from exc
+        # Honour the booking's current checkout, including legacy links and date edits.
+        expiry = upload_cutoff(booking["check_out"])
+        if link.get("expires_at") != expiry:
+            await db.guest_links.update_one({"_id": link["_id"], "revoked": False},
+                                           {"$set": {"expires_at": expiry}})
         return link
 
     @api.get("/guest-bookings")
-    async def guest_bookings(user=Depends(admin_user)):
+    async def guest_bookings(booking_id: str | None = None, user=Depends(admin_user)):
         today = datetime.now(INDIA_TZ).date().isoformat()
-        bookings = await db.bookings.find({"status": "confirmed", "check_out": {"$gt": today}}).sort("check_in", 1).to_list(1000)
+        earliest = (datetime.now(INDIA_TZ).date() - timedelta(days=1)).isoformat()
+        query = {"_id": oid(booking_id)} if booking_id else {"status": "confirmed", "check_out": {"$gte": earliest}}
+        bookings = await db.bookings.find(query).sort("check_in", 1).to_list(1000)
         result = []
         for b in bookings:
             bid = str(b["_id"])
@@ -146,26 +223,34 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
                 "delete_after": {"$gt": now_iso()}, "expires_on": {"$gte": b["check_out"]}}).to_list(300)
             required = set(range(1, b.get("guests", 1) + 1))
             verified = required.intersection(d.get("guest_number") for d in documents)
-            reason = ("Guests already checked in" if b.get("guest_checked_in_at") else
+            uploads_open = b.get("status") == "confirmed" and upload_cutoff(b["check_out"]) > now_iso()
+            reason = ("Booking is not open for check-in" if not uploads_open else
+                      "Guests already checked in" if b.get("guest_checked_in_at") else
+                      "Stay has ended" if b["check_out"] <= today else
                       "Check-in date has not arrived" if b["check_in"] > today else
                       "Every guest needs an approved, valid ID" if verified != required else "Ready for check-in")
             prop = await db.properties.find_one({"_id": oid(b["property_id"])})
             result.append({"id": bid, "property_name": prop.get("name", "Property") if prop else "Property",
                 **{k: b.get(k) for k in ("guest_name", "check_in", "check_out", "guests", "guest_checked_in_at")},
                 "verified_guests": len(verified), "can_check_in": reason == "Ready for check-in", "check_in_reason": reason,
-                "admin_history": b.get("admin_history", [])})
+                "admin_history": b.get("admin_history", []), "uploads_open": uploads_open,
+                "upload_expires_at": upload_cutoff(b["check_out"])})
         return result
 
     @api.post("/bookings/{bid}/guest-link")
-    async def invite(bid: str, user=Depends(admin_user)):
-        await active_booking(bid)
-        token = secrets.token_urlsafe(32)
-        expiry = (datetime.now(timezone.utc) + timedelta(hours=48)).isoformat()
-        await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
-        await db.guest_links.insert_one({"booking_id": bid, "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-                                        "expires_at": expiry, "revoked": False, "attempts": 0})
-        await audit("invite", user["_id"], booking_id=bid)
-        return {"token": token, "expires_at": expiry}
+    async def invite(bid: str, body: GuestLinkInput | None = None, user=Depends(admin_user)):
+        booking = await active_booking(bid)
+        replace = bool(body and body.replace)
+        if replace and not body.note.strip():
+            raise HTTPException(422, "Add a reason for replacing the upload link")
+        expiry = upload_cutoff(booking["check_out"])
+        token = await stable_links.get(bid, expiry, replace)
+        await audit("replace_invite" if replace else "invite", user["_id"], booking_id=bid)
+        if replace:
+            await db.guest_id_audit.insert_one({"action": "replacement_reason", "booking_id": bid,
+                "actor_id": str(user["_id"]), "note": body.note.strip(), "at": now_iso()})
+        origin = os.getenv("PUBLIC_APP_URL", "https://app.britsmaid.in").rstrip("/") or "https://app.britsmaid.in"
+        return {"token": token, "expires_at": expiry, "url": f"{origin}/guest-check-in#invite={token}"}
 
     @api.post("/bookings/{bid}/guest-admin-action")
     async def admin_action(bid: str, body: GuestAdminAction, user=Depends(admin_user)):
@@ -193,7 +278,6 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
             result = await db.bookings.update_one({"_id": b["_id"], "status": b.get("status"), "guest_checked_in_at": b.get("guest_checked_in_at")}, update)
             if not result.matched_count:
                 raise HTTPException(409, "Booking changed; refresh and retry")
-            await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         else:
             if not body.document_id:
                 raise HTTPException(422, "Choose an ID")
@@ -218,6 +302,10 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
 
     @api.delete("/bookings/{bid}/guest-link")
     async def revoke(bid: str, user=Depends(admin_user)):
+        # Retain a disabled canonical marker even for old hash-only invitations.
+        await db.guest_links.update_one({"_id": "booking:" + bid}, {"$setOnInsert": {
+            "booking_id": bid, "token_hash": hashlib.sha256(uuid.uuid4().bytes).hexdigest()},
+            "$set": {"revoked": True}}, upsert=True)
         await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         await audit("revoke", user["_id"], booking_id=bid)
         return {"ok": True}
@@ -227,13 +315,14 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         b = await active_booking(link["booking_id"])
         documents = await db.guest_ids.find({"booking_id": link["booking_id"], "deleted": False, "delete_after": {"$gt": now_iso()}},
                                            {"guest_name": 1, "status": 1, "guest_number": 1, "review_reason": 1}).to_list(300)
-        return {"check_in": b["check_in"], "check_out": b["check_out"], "guests": b.get("guests", 1),
-                "retention_days": os.getenv("GUEST_ID_RETENTION_DAYS", "not configured"),
-                "documents": [{"guest_name": d["guest_name"], "status": d["status"], "guest_number": d.get("guest_number"), "review_reason": d.get("review_reason", "")} for d in documents]}
+        property_doc = await db.properties.find_one({"_id": oid(b["property_id"])})
+        return {"property_name": (property_doc or {}).get("name", ""), "check_in": b["check_in"], "check_out": b["check_out"], "guests": b.get("guests", 1),
+                "retention_days": 90, "retention_basis": "after checkout",
+                "documents": [{"guest_name": d["guest_name"], "guest_number": d.get("guest_number")} for d in documents if d["status"] != "rejected"]}
 
     @api.post("/guest/documents")
     async def submit(file: UploadFile = File(...), guest_name: str = Form(...),
-                     guest_number: int = Form(...),
+                     guest_number: int = Form(...), submission_key: str = Form("", max_length=100),
                      document_type: Literal["passport", "driving_licence", "national_id"] = Form(...),
                      expires_on: str = Form(""), consent: bool = Form(...), link=Depends(guest_link)):
         if not consent or not guest_name.strip() or len(guest_name) > 150:
@@ -254,19 +343,26 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         data = await file.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             raise HTTPException(413, "ID image exceeds 8MB")
-        if file.content_type not in ("image/jpeg", "image/png"):
-            raise HTTPException(422, "Only JPEG and PNG ID images are accepted")
-        data = await run_in_threadpool(sanitise_image, data)
+        if file.content_type not in ("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"):
+            raise HTTPException(422, "Use JPEG, PNG, WebP, HEIC or PDF")
+        data = await run_in_threadpool(sanitise_document, data, file.content_type)
         # A retained-but-expired record must not hold an invisible active slot.
         await db.guest_ids.update_many({"booking_id": link["booking_id"], "guest_number": guest_number,
             "active": True, "delete_after": {"$lte": now_iso()}}, {"$set": {"active": False}})
-        _, _, _, retention = await run_in_threadpool(private_store)
+        await run_in_threadpool(private_store)
+        digest = hashlib.sha256(data).hexdigest()
+        existing = await db.guest_ids.find_one({"booking_id": link["booking_id"], "guest_number": guest_number,
+            "active": True, "deleted": False, "delete_after": {"$gt": now_iso()}})
+        if existing:
+            if submission_key and existing.get("submission_key") == submission_key and existing.get("content_sha256") == digest and existing["guest_name"] == guest_name.strip():
+                return {"id": str(existing["_id"]), "status": existing["status"]}
+            raise HTTPException(409, "This guest already has an ID submitted. Refresh the guest list.")
         key = f"guest-ids/{uuid.uuid4()}.jpg"
         stored = await run_in_threadpool(store_image, key, data)
         doc = {**stored, "booking_id": link["booking_id"], "property_id": b["property_id"],
-               "guest_name": guest_name.strip(), "document_type": document_type, "expires_on": expiry.isoformat(),
+               "retention_policy": "checkout-90-days", "submission_key": submission_key, "content_sha256": digest, "guest_name": guest_name.strip(), "document_type": document_type, "expires_on": expiry.isoformat(),
                "status": "pending", "guest_number": guest_number, "active": True, "deleted": False, "consented_at": now_iso(), "created_at": now_iso(),
-               "delete_after": (datetime.now(timezone.utc) + timedelta(days=retention)).isoformat()}
+               "delete_after": (datetime.combine(date.fromisoformat(b["check_out"]) + timedelta(days=90), datetime.min.time(), INDIA_TZ).astimezone(timezone.utc)).isoformat()}
         try:
             inserted = await db.guest_ids.insert_one(doc)
         except DuplicateKeyError:
@@ -283,7 +379,7 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         q = {"deleted": False, "delete_after": {"$gt": now_iso()}}
         if booking_id:
             q["booking_id"] = booking_id
-        docs = await db.guest_ids.find(q, {"storage_key": 0, "storage_bucket": 0, "storage_version": 0}).sort("created_at", -1).to_list(500)
+        docs = await db.guest_ids.find(q, {"storage_key": 0, "storage_bucket": 0, "storage_version": 0, "storage_provider": 0}).sort("created_at", -1).to_list(500)
         result = []
         for d in docs:
             d["id"] = str(d.pop("_id"))
@@ -314,7 +410,8 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
     @api.post("/guest-ids/{did}/review")
     async def review(did: str, body: IDReview, user=Depends(admin_user)):
         d = await document(did)
-        await active_booking(d["booking_id"])
+        if not await db.bookings.find_one({"_id": oid(d["booking_id"])}):
+            raise HTTPException(404, "Booking not found")
         if body.status == "rejected" and not body.reason.strip():
             raise HTTPException(422, "Provide a rejection reason")
         if body.status == "verified" and not await db.guest_id_audit.find_one({"action": "view", "actor_id": str(user["_id"]), "document_id": did}):
@@ -334,7 +431,7 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
             raise HTTPException(404, "Document not found")
         await run_in_threadpool(delete_image, d)
         await db.guest_ids.update_one({"_id": d["_id"]}, {"$set": {"deleted": True, "active": False, "guest_name": "", "deleted_at": now_iso()},
-            "$unset": {"storage_key": "", "storage_bucket": "", "storage_version": "", "expires_on": "", "review_reason": ""}})
+            "$unset": {"storage_key": "", "storage_bucket": "", "storage_version": "", "expires_on": "", "review_reason": "", "content_sha256": "", "submission_key": "", "storage_provider": ""}})
         await audit("delete", user["_id"], did, d["booking_id"])
         return {"ok": True}
 
@@ -348,6 +445,10 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
     @api.post("/bookings/{bid}/check-in")
     async def check_in(bid: str, user=Depends(admin_user)):
         b = await active_booking(bid)
+        if b.get("guest_checked_in_at"):
+            raise HTTPException(409, "Guests are already checked in")
+        if b["check_out"] <= datetime.now(INDIA_TZ).date().isoformat():
+            raise HTTPException(409, "Stay has ended; only ID uploads remain open during the grace period")
         if b["check_in"] > datetime.now(INDIA_TZ).date().isoformat():
             raise HTTPException(409, "Check-in date has not arrived")
         documents = await db.guest_ids.find({"booking_id": bid, "status": "verified", "deleted": False,
@@ -361,7 +462,6 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         if not result.matched_count:
             raise HTTPException(409, "Booking changed; refresh before checking in")
         await audit("check_in", user["_id"], booking_id=bid)
-        await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         return {"ok": True}
 
     return purge

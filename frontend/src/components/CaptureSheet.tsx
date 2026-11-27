@@ -7,7 +7,7 @@ import { getAuthEpoch, request } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { storage } from "@/src/utils/storage";
 import { spacing } from "@/src/theme";
-import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker } from "@/src/capture-workflow";
+import { acquirePicker, captureMediaTypes, CaptureAsset, CaptureDraft, CaptureQueue, CaptureTarget, DRAFT_KEY, releasePicker, webCaptureBlob } from "@/src/capture-workflow";
 export type Media = { id: string; kind: "image" | "video"; content_type: string };
 async function uploadAsset(a: CaptureAsset): Promise<Media> {
   const expectedAuthEpoch = getAuthEpoch();
@@ -18,7 +18,7 @@ async function uploadAsset(a: CaptureAsset): Promise<Media> {
   const form = new FormData();
   if (a.uploadKey) form.append("request_key", a.uploadKey);
   if (Platform.OS === "web") {
-    const blob = await (await fetch(a.uri)).blob();
+    const blob = webCaptureBlob(a);
     form.append("file", blob, name);
   } else form.append("file", { uri: a.uri, name, type } as any);
   return request<Media>("/upload", { method: "POST", form, expectedAuthEpoch });
@@ -39,9 +39,9 @@ async function keepAsset(a: ImagePicker.ImagePickerAsset): Promise<CaptureAsset>
 async function cleanup(d: CaptureDraft) {
   if (Platform.OS !== "web") for (const a of d.assets) if (a.uri.startsWith(`${FileSystem.documentDirectory}capture-drafts/`)) await FileSystem.deleteAsync(a.uri, { idempotent: true }).catch(() => {});
 }
-export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose, successMessage, destination, onRestore, testID = "capture-sheet" }: {
+export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, singleSelection, purpose, successMessage, destination, onRestore, testID = "capture-sheet" }: {
   visible: boolean; onClose: () => void; onUploaded: (m: Media[], target: CaptureTarget) => Promise<void>;
-  allowVideo?: boolean; purpose: string; successMessage?: string; destination?: CaptureTarget; onRestore?: (target: CaptureTarget) => void; testID?: string;
+  allowVideo?: boolean; singleSelection?: boolean; purpose: string; successMessage?: string; destination?: CaptureTarget; onRestore?: (target: CaptureTarget) => void; testID?: string;
 }) {
   const toast = useToast();
   const { user } = useAuth();
@@ -108,7 +108,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
       const target = destination ?? { key: purpose, label: purpose };
       d = { userId: user.id, target: { ...target }, assets: [], startedAt: new Date().toISOString() };
       await persist(d);
-      const opts: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(mode, allowVideo), quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library", selectionLimit: 10 };
+      const opts: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(mode, allowVideo), quality: 0.6, videoMaxDuration: 60, allowsMultipleSelection: mode === "library" && !singleSelection, selectionLimit: singleSelection ? 1 : 10, cameraType: ImagePicker.CameraType.back };
       const result = camera ? await ImagePicker.launchCameraAsync(opts) : await ImagePicker.launchImageLibraryAsync(opts);
       if (result.canceled || !result.assets?.length) { await persist(null, user?.id); return; }
       d.assets = await Promise.all(result.assets.map(keepAsset));
@@ -122,7 +122,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
     setBusy(true); setFailure("");
     const d: CaptureDraft = { userId: user.id, target: { ...(destination ?? { key: purpose, label: purpose }) }, assets: [], startedAt: new Date().toISOString() };
     const epoch = getAuthEpoch();
-    const options: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(camera ? video ? "video" : "photo" : "library", allowVideo), allowsMultipleSelection: !camera, selectionLimit: 10, quality: 0.6, videoMaxDuration: 60, cameraType: ImagePicker.CameraType.back };
+    const options: ImagePicker.ImagePickerOptions = { mediaTypes: captureMediaTypes(camera ? video ? "video" : "photo" : "library", allowVideo), allowsMultipleSelection: !camera && !singleSelection, selectionLimit: singleSelection ? 1 : 10, quality: 0.6, videoMaxDuration: 60, cameraType: ImagePicker.CameraType.back };
     const result = camera ? ImagePicker.launchCameraAsync(options) : ImagePicker.launchImageLibraryAsync(options);
     // Browser cancellation is inconsistent: explicit reset releases a stuck picker without permitting late results.
     const owner = lock.current;
@@ -144,7 +144,7 @@ export function CaptureSheet({ visible, onClose, onUploaded, allowVideo, purpose
     {Platform.OS === "web" ? <Txt v="caption">Take photo requests your phone camera. Some browsers show a file chooser instead. You can take a photo in your camera app, then choose it from the library. Keep this page open until saved.</Txt> : null}
     {failure ? <View accessibilityRole="alert"><Txt color="#B45309">{failure}</Txt></View> : null}
     {perm !== "unknown" ? <View><Txt>{perm === "blocked" ? "Camera access is off. Enable it in your phone Settings, or choose an existing photo." : "Camera permission was declined. Try again or choose an existing photo."}</Txt>{perm === "blocked" ? <Button title="Open Settings" variant="secondary" onPress={() => Linking.openSettings()} /> : null}</View> : null}
-    {pending ? <><Button title={pending.uploaded ? "Retry saving to room" : "Retry upload and save"} loading={busy} onPress={async () => { if (!acquirePicker(lock.current)) return; setBusy(true); try { await save(pending, getAuthEpoch()); } catch(e:any) { setFailure(e.message); } finally { setBusy(false); releasePicker(lock.current); } }} />
+    {pending ? <><Button title={pending.uploaded ? "Retry saving photo" : "Retry upload and save"} loading={busy} onPress={async () => { if (!acquirePicker(lock.current)) return; setBusy(true); try { await save(pending, getAuthEpoch()); } catch(e:any) { setFailure(e.message); } finally { setBusy(false); releasePicker(lock.current); } }} />
       <Button title="Discard unsaved photo" variant="ghost" disabled={busy} onPress={() => setDiscard(true)} />
       {discard ? <><Txt>Discard this pending photo? It will not be attached. An already uploaded file may remain until storage cleanup.</Txt><Button title="Yes, discard photo" variant="danger" disabled={busy} onPress={async () => { try { await cleanup(pending); await persist(null, user?.id); setPending(null); setDiscard(false); setFailure(""); onClose(); } catch { setFailure("Could not discard the draft. Try again."); } }} /><Button title="Keep photo" variant="secondary" onPress={() => setDiscard(false)} /></> : null}</> : <>
       <Button title="Take photo" testID={`${testID}-take-photo`} icon="camera" loading={busy} onPress={() => Platform.OS === "web" ? runWeb(true) : run("photo")} />

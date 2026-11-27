@@ -43,7 +43,7 @@ export default function AdminTabs() {
     >
       {tab("index", "Home", "home-outline", "home")}
       {tab("calendar", "Calendar", "calendar-outline", "calendar")}
-      {tab("properties", "Villas", "business-outline", "business")}
+      {tab("properties", "Properties", "business-outline", "business")}
       {tab("finance", "Finance", "wallet-outline", "wallet")}
     </Tabs>
   );

@@ -100,3 +100,4 @@ frontend/preview-source.json
 frontend/android/
 frontend/ios/
 frontend/dist-android/
+.test-tmp/

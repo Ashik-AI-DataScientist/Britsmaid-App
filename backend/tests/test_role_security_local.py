@@ -183,11 +183,14 @@ async def test_guest_invites_expire_revoke_replace_and_hide_tokens(ctx):
     assert headers["Authorization"][7:] not in str(record)
     assert (await ctx["client"].get("/api/guest/check-in", headers=headers)).status_code == 200
     second = await invitation(ctx)
-    assert (await ctx["client"].get("/api/guest/check-in", headers=headers)).status_code == 401
+    assert second == headers
     await ctx["client"].delete(f'/api/bookings/{ctx["bid"]}/guest-link', headers=auth(ctx))
     assert (await ctx["client"].get("/api/guest/check-in", headers=second)).status_code == 401
-    third = await invitation(ctx)
-    await ctx["db"].guest_links.update_many({}, {"$set": {"expires_at": "2000-01-01"}})
+    path = f'/api/bookings/{ctx["bid"]}/guest-link'
+    assert (await ctx["client"].post(path, headers=auth(ctx))).status_code == 409
+    replacement = await ctx["client"].post(path, headers=auth(ctx), json={"replace": True, "note": "Disabled link replacement"})
+    third = {"Authorization": "Bearer " + replacement.json()["token"]}
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_out": "2000-01-01"}})
     assert (await ctx["client"].get("/api/guest/check-in", headers=third)).status_code == 401
 
 
@@ -214,7 +217,7 @@ async def test_guest_review_checkin_same_name_guests_and_document_privacy(ctx):
     r = await ctx["client"].get("/api/guest-ids", headers=auth(ctx))
     assert len(r.json()) == 2 and "storage_key" not in r.text
     assert (await ctx["client"].post(f'/api/bookings/{ctx["bid"]}/check-in', headers=auth(ctx))).status_code == 200
-    assert (await ctx["client"].get("/api/guest/check-in", headers=headers)).status_code == 401
+    assert (await ctx["client"].get("/api/guest/check-in", headers=headers)).status_code == 200
     assert await ctx["db"].guest_id_audit.count_documents({"action": "view"}) == 2
 
 
@@ -226,7 +229,7 @@ async def test_duplicate_slot_rejection_retry_limits_delete_and_expiry(ctx, monk
     deleted = []
     monkeypatch.setattr(guest_ids, "delete_image", lambda doc: deleted.append(doc["storage_key"]))
     assert (await upload_id(ctx, headers)).status_code == 409
-    assert len(deleted) == 1  # Duplicate upload is cleaned up from storage.
+    assert len(deleted) == 0  # Duplicate slot is rejected before cloud upload.
     url = f"/api/guest-ids/{did}/review"
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"status": "rejected"})).status_code == 422
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"status": "rejected", "reason": "Unreadable"})).status_code == 200
@@ -388,6 +391,8 @@ async def test_guest_booking_queue_dates_and_access(ctx):
     upcoming = (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()[0]
     assert not upcoming["can_check_in"] and upcoming["check_in_reason"] == "Check-in date has not arrived"
     await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_out": today.isoformat()}})
+    assert len((await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json()) == 1
+    await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_out": (today - timedelta(days=2)).isoformat()}})
     assert (await ctx["client"].get("/api/guest-bookings", headers=auth(ctx))).json() == []
 
 @pytest.mark.asyncio
@@ -428,14 +433,14 @@ async def test_guest_admin_override_undo_and_privacy(ctx):
     today = datetime.now(guest_ids.INDIA_TZ).date()
     await ctx["db"].bookings.update_one({"_id": ObjectId(ctx["bid"])}, {"$set": {"check_in": (today + timedelta(days=1)).isoformat()}})
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "check_in", "note": "Early arrival; IDs inspected in person"})).status_code == 200
-    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 401
+    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 200
     assert await ctx["db"].guest_ids.count_documents({"status": "verified"}) == 0
     for path in ("/api/bookings", f'/api/bookings/{ctx["bid"]}'):
         assert "admin_history" not in (await ctx["client"].get(path, headers=auth(ctx, "owner"))).text
     assert (await ctx["client"].post(url, headers=auth(ctx), json={"action": "undo_check_in", "note": "Wrong guest checked in"})).status_code == 200
     booking = await ctx["db"].bookings.find_one({"_id": ObjectId(ctx["bid"])})
     assert "guest_checked_in_at" not in booking and len(booking["admin_history"]) == 2
-    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 401
+    assert (await ctx["client"].get("/api/guest/check-in", headers=invite)).status_code == 200
 
 
 @pytest.mark.asyncio

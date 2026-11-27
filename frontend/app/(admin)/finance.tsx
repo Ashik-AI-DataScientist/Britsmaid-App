@@ -10,7 +10,9 @@ import { Badge, Card, Empty, ErrorState, Icon, IconButton, Loading, Segmented, T
 import { fmtDate, inr, monthLabel, otaColor, shiftMonth, thisMonth } from "@/src/format";
 import { radius, spacing, useTheme } from "@/src/theme";
 
-type Tab = "invoices" | "ota" | "owners";
+import { RevenueInsights } from "@/src/components/RevenueInsights";
+
+type Tab = "invoices" | "ota" | "owners" | "insights";
 
 function MonthStepper({ month, setMonth }: { month: string; setMonth: (m: string) => void }) {
   return (
@@ -75,7 +77,7 @@ function OtaReport({ bottom }: { bottom: number }) {
           </View>
           <Card testID="ota-report-card">
             <Txt v="subtitle">Revenue by OTA</Txt>
-            <Txt v="caption" style={{ marginBottom: spacing.sm }}>Tap an OTA for villa-wise breakdown</Txt>
+            <Txt v="caption" style={{ marginBottom: spacing.sm }}>Tap an OTA for property-wise breakdown</Txt>
             {q.data.rows.length === 0 ? <Empty icon="bar-chart-outline" title="No data available for this period" /> : null}
             {q.data.rows.map((r: any) => {
               const on = open === r.ota;
@@ -101,7 +103,7 @@ function OtaReport({ bottom }: { bottom: number }) {
                         </View>
                       ))}
                       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Txt v="body">Net after commission</Txt>
+                        <Txt v="body">Net after booking deductions</Txt>
                         <Txt v="mono" style={{ fontSize: 14 }}>{inr(r.net)}</Txt>
                       </View>
                     </Animated.View>
@@ -159,10 +161,10 @@ export default function Finance() {
     <View style={{ flex: 1, backgroundColor: colors.surfaceSecondary }}>
       <View style={{ paddingTop: insets.top + spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.md, backgroundColor: colors.surface, gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider }}>
         <Txt v="title">Finance & Reports</Txt>
-        <Segmented testID="finance-tabs" value={tab} onChange={setTab} options={[{ value: "invoices", label: "Invoices" }, { value: "ota", label: "OTA reports" }, { value: "owners", label: "Owners" }]} />
+        <Segmented testID="finance-tabs" value={tab} onChange={setTab} options={[{ value: "invoices", label: "Invoices" }, { value: "ota", label: "OTA reports" }, { value: "owners", label: "Owners" }, { value: "insights", label: "Insights" }]} />
       </View>
-      {tab === "invoices" ? <Invoices bottom={bottomChrome} /> : tab === "ota" ? <OtaReport bottom={bottomChrome} /> : <Owners bottom={bottomChrome} />}
-      {tab !== "ota" ? (
+      {tab === "invoices" ? <Invoices bottom={bottomChrome} /> : tab === "ota" ? <OtaReport bottom={bottomChrome} />  : tab === "insights" ? <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: bottomChrome + 32 }}><RevenueInsights month={thisMonth()} /></ScrollView> : <Owners bottom={bottomChrome} />}
+      {tab === "invoices" || tab === "owners" ? (
         <Pressable testID={tab === "invoices" ? "fab-new-invoice" : "fab-new-owner-report"} onPress={() => router.push(tab === "invoices" ? "/invoice/new" : "/report/new")} style={({ pressed }) => ({ position: "absolute", right: spacing.lg, bottom: bottomChrome + 16, height: 56, paddingHorizontal: spacing.xl, borderRadius: radius.pill, backgroundColor: colors.brandPrimary, flexDirection: "row", alignItems: "center", gap: spacing.sm, transform: [{ scale: pressed ? 0.96 : 1 }], shadowColor: "#000", shadowOpacity: 0.2, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 })}>
           <Icon name="add" size={22} color={colors.onBrandPrimary} />
           <Txt v="subtitle" color={colors.onBrandPrimary} style={{ fontSize: 15 }}>{tab === "invoices" ? "New invoice" : "Owner report"}</Txt>
