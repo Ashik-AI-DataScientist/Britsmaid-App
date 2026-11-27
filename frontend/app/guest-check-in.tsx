@@ -23,24 +23,40 @@ export default function GuestCheckIn() {
   const picking = useRef(false);
   const submissionKey = useRef("");
   const attempt = useRef(0);
+  const activeToken = useRef("");
+  const statusRequest = useRef(0);
   const [waitingForPicker, setWaitingForPicker] = useState(false);
-  useEffect(() => () => { attempt.current++; }, []);
+  useEffect(() => () => { attempt.current++; statusRequest.current++; activeToken.current = ""; }, []);
   const loadToken = useCallback(async (invitationToken: string) => {
+    const sequence = ++statusRequest.current;
     setBusy(true);
     try {
       const next = await request<any>("/guest/check-in", { authorization: invitationToken.trim() });
+      if (sequence !== statusRequest.current || invitationToken !== activeToken.current) return;
       setStatus(next); setError("");
       const available = Array.from({ length: next.guests }, (_, i) => i + 1).find(number =>
         !next.documents.some((d: any) => d.guest_number === number));
       setGuestNumber(previous => previous && !next.documents.some((d: any) => String(d.guest_number) === previous) ? previous : available ? String(available) : "");
-    } catch (e: any) { setError(e.message); }
-    finally { setBusy(false); }
+    } catch (e: any) { if (sequence === statusRequest.current && invitationToken === activeToken.current) { setStatus(null); setError(e.message); } }
+    finally { if (sequence === statusRequest.current && invitationToken === activeToken.current) setBusy(false); }
   }, []);
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    const invitationToken = new URLSearchParams(window.location.hash.slice(1)).get("invite") ?? "";
-    if (!invitationToken) return;
-    Promise.resolve().then(() => { setToken(invitationToken); return loadToken(invitationToken); });
+    const syncInvitation = () => {
+      const invitationToken = new URLSearchParams(window.location.hash.slice(1)).get("invite") ?? "";
+      if (invitationToken === activeToken.current) return;
+      activeToken.current = invitationToken;
+      attempt.current++; statusRequest.current++;
+      picking.current = false; submissionKey.current = "";
+      setToken(invitationToken); setStatus(null); setError(""); setUploadError("");
+      setName(""); setGuestNumber("1"); setConsent(false); setExpiry(""); setKind("national_id");
+      setWaitingForPicker(false); setBusy(false);
+      if (invitationToken) void loadToken(invitationToken);
+    };
+    syncInvitation();
+    const events = ["hashchange", "popstate", "pageshow", "focus"];
+    events.forEach(event => window.addEventListener(event, syncInvitation));
+    return () => events.forEach(event => window.removeEventListener(event, syncInvitation));
   }, [loadToken]);
   const load = () => loadToken(token);
   useEffect(() => {
@@ -51,6 +67,7 @@ export default function GuestCheckIn() {
   const uploadFile = async (file: File) => {
     if (picking.current || !consent || !name.trim() || !guestNumber) return;
     picking.current = true; setBusy(true); setUploadError("");
+    const currentAttempt = ++attempt.current;
     try {
       if (file.size > 8 * 1024 * 1024) throw new Error("Choose an ID file smaller than 8 MB.");
       if (!submissionKey.current) submissionKey.current = `guest-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -60,9 +77,11 @@ export default function GuestCheckIn() {
       form.append("guest_name", name.trim()); form.append("guest_number", guestNumber);
       form.append("document_type", kind); form.append("expires_on", expiry); form.append("consent", "true");
       await request("/guest/documents", { method: "POST", form, authorization: token.trim() });
-      submissionKey.current = ""; setName(""); setConsent(false); await loadToken(token); toast("ID submitted. You can add the next guest.");
-    } catch (error: any) { setUploadError(error.message); }
-    finally { picking.current = false; setBusy(false); }
+      if (currentAttempt !== attempt.current) return;
+      submissionKey.current = ""; setName(""); setConsent(false); await loadToken(token);
+      if (currentAttempt === attempt.current) toast("ID submitted. You can add the next guest.");
+    } catch (error: any) { if (currentAttempt === attempt.current) setUploadError(error.message); }
+    finally { if (currentAttempt === attempt.current) { picking.current = false; setBusy(false); } }
   };
   const upload = async (camera: boolean) => {
     if (picking.current) return;
@@ -74,6 +93,7 @@ export default function GuestCheckIn() {
     setBusy(true); setUploadError("");
     try {
       if (Platform.OS !== "web" && camera && !(await ImagePicker.requestCameraPermissionsAsync()).granted) throw new Error("Camera access was declined. Enable it in phone settings, or choose a photo from your gallery.");
+      if (currentAttempt !== attempt.current) return;
       // On web this call must run in the tap gesture, before any asynchronous work.
       const options: ImagePicker.ImagePickerOptions = { mediaTypes: ["images"], quality: 1, allowsMultipleSelection: false, cameraType: ImagePicker.CameraType.back };
       setWaitingForPicker(true);
@@ -97,7 +117,9 @@ export default function GuestCheckIn() {
       form.append("expires_on", expiry); form.append("consent", "true");
       if (currentAttempt !== attempt.current) return;
       await request("/guest/documents", { method: "POST", form, authorization: token.trim() });
-      submissionKey.current = ""; setName(""); setConsent(false); await load(); toast("ID submitted for admin review");
+      if (currentAttempt !== attempt.current) return;
+      submissionKey.current = ""; setName(""); setConsent(false); await load();
+      if (currentAttempt === attempt.current) toast("ID submitted for admin review");
     } catch (e: any) { if (currentAttempt === attempt.current) { setUploadError(e.message || "The ID photo could not be submitted. Please try again."); toast(e.message, "error"); } }
     finally { if (currentAttempt === attempt.current) { picking.current = false; setWaitingForPicker(false); setBusy(false); } }
   };
