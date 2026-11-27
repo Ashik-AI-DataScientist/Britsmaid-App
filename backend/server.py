@@ -879,6 +879,8 @@ async def update_booking(bid: str, body: BookingIn, _=Depends(admin_user)):
     if body.status == "cancelled":
         await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
     if previous["check_out"] != body.check_out:
+        from guest_links import upload_cutoff
+        await db.guest_links.update_many({"booking_id": bid, "revoked": False}, {"$set": {"expires_at": upload_cutoff(body.check_out)}})
         from datetime import timezone as tz, timedelta as delta
         until = datetime.combine(date.fromisoformat(body.check_out) + delta(days=90), datetime.min.time(), tz(delta(hours=5, minutes=30))).astimezone(tz.utc).isoformat()
         await db.guest_ids.update_many({"booking_id": bid, "deleted": False, "retention_policy": "checkout-90-days"}, {"$set": {"delete_after": until}})
@@ -2018,7 +2020,7 @@ async def meta():
 
 # ---------------------------------------------------------------- Startup
 from guest_ids import register_guest_routes, BoundedGuestUploads
-purge_guest_ids = register_guest_routes(api, db, admin_user, oid, now_iso)
+purge_guest_ids = register_guest_routes(api, db, admin_user, oid, now_iso, JWT_SECRET)
 from operations import IssueTracker
 issue_tracker = IssueTracker(db)
 issue_tracker.register(api, admin_user)

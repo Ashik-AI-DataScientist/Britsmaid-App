@@ -315,6 +315,8 @@ async def test_create_booking_and_changed_checkout_retention(ctx):
     document = await db.guest_ids.find_one({'_id': did})
     expected = datetime.combine(today + timedelta(days=103), datetime.min.time(), guest_ids.INDIA_TZ).astimezone(timezone.utc).isoformat()
     assert document['delete_after'] == expected
+    from guest_links import upload_cutoff
+    assert (await db.guest_links.find_one({'booking_id': bid}))['expires_at'] == upload_cutoff(body['check_out'])
     cancelled = await c.post('/api/bookings/' + bid + '/cancel', headers=auth(ctx), json={'reason': 'Guest request', 'revision': updated.json()['revision']})
     assert cancelled.status_code == 200, cancelled.text
     assert (await db.guest_links.find_one({'booking_id': bid}))['revoked']

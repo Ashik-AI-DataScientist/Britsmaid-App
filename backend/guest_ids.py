@@ -2,7 +2,6 @@
 import hashlib
 import io
 import os
-import secrets
 import uuid
 import threading
 import asyncio
@@ -19,6 +18,7 @@ from pillow_heif import register_heif_opener
 register_heif_opener()
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
+from guest_links import StableGuestLinks, upload_cutoff
 
 MAX_BYTES = 8 * 1024 * 1024
 INDIA_TZ = timezone(timedelta(hours=5, minutes=30))
@@ -175,33 +175,46 @@ class GuestAdminAction(BaseModel):
     document_id: str | None = None
 
 
-def register_guest_routes(api, db, admin_user, oid, now_iso):
+class GuestLinkInput(BaseModel):
+    replace: bool = False
+    note: str = Field(default="", max_length=2000)
+
+
+def register_guest_routes(api, db, admin_user, oid, now_iso, invitation_secret):
+    stable_links = StableGuestLinks(db, invitation_secret)
     async def audit(action, actor, document_id=None, booking_id=None):
         await db.guest_id_audit.insert_one({"action": action, "actor_id": str(actor),
                                           "document_id": document_id, "booking_id": booking_id, "at": now_iso()})
 
     async def active_booking(bid):
         booking = await db.bookings.find_one({"_id": oid(bid), "status": "confirmed"})
-        if not booking or booking["check_out"] <= datetime.now(INDIA_TZ).date().isoformat():
+        if not booking or upload_cutoff(booking["check_out"]) <= now_iso():
             raise HTTPException(404, "Booking is not open for check-in")
-        if booking.get("guest_checked_in_at"):
-            raise HTTPException(409, "Guests are already checked in")
         return booking
 
     async def guest_link(request: Request):
         auth = request.headers.get("Authorization", "")
         token = auth[7:] if auth.startswith("Bearer ") else ""
         digest = hashlib.sha256(token.encode()).hexdigest()
-        link = await db.guest_links.find_one({"token_hash": digest, "revoked": False, "expires_at": {"$gt": now_iso()}})
+        link = await db.guest_links.find_one({"token_hash": digest, "revoked": False})
         if not token or not link:
             raise HTTPException(401, "Guest check-in link expired or revoked")
-        await active_booking(link["booking_id"])
+        try:
+            booking = await active_booking(link["booking_id"])
+        except HTTPException as exc:
+            raise HTTPException(401, "Guest check-in link expired or revoked") from exc
+        # Honour the booking's current checkout, including legacy links and date edits.
+        expiry = upload_cutoff(booking["check_out"])
+        if link.get("expires_at") != expiry:
+            await db.guest_links.update_one({"_id": link["_id"], "revoked": False},
+                                           {"$set": {"expires_at": expiry}})
         return link
 
     @api.get("/guest-bookings")
     async def guest_bookings(booking_id: str | None = None, user=Depends(admin_user)):
         today = datetime.now(INDIA_TZ).date().isoformat()
-        query = {"_id": oid(booking_id)} if booking_id else {"status": "confirmed", "check_out": {"$gt": today}}
+        earliest = (datetime.now(INDIA_TZ).date() - timedelta(days=1)).isoformat()
+        query = {"_id": oid(booking_id)} if booking_id else {"status": "confirmed", "check_out": {"$gte": earliest}}
         bookings = await db.bookings.find(query).sort("check_in", 1).to_list(1000)
         result = []
         for b in bookings:
@@ -210,25 +223,32 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
                 "delete_after": {"$gt": now_iso()}, "expires_on": {"$gte": b["check_out"]}}).to_list(300)
             required = set(range(1, b.get("guests", 1) + 1))
             verified = required.intersection(d.get("guest_number") for d in documents)
-            reason = ("Guests already checked in" if b.get("guest_checked_in_at") else
+            uploads_open = b.get("status") == "confirmed" and upload_cutoff(b["check_out"]) > now_iso()
+            reason = ("Booking is not open for check-in" if not uploads_open else
+                      "Guests already checked in" if b.get("guest_checked_in_at") else
+                      "Stay has ended" if b["check_out"] <= today else
                       "Check-in date has not arrived" if b["check_in"] > today else
                       "Every guest needs an approved, valid ID" if verified != required else "Ready for check-in")
             prop = await db.properties.find_one({"_id": oid(b["property_id"])})
             result.append({"id": bid, "property_name": prop.get("name", "Property") if prop else "Property",
                 **{k: b.get(k) for k in ("guest_name", "check_in", "check_out", "guests", "guest_checked_in_at")},
                 "verified_guests": len(verified), "can_check_in": reason == "Ready for check-in", "check_in_reason": reason,
-                "admin_history": b.get("admin_history", [])})
+                "admin_history": b.get("admin_history", []), "uploads_open": uploads_open,
+                "upload_expires_at": upload_cutoff(b["check_out"])})
         return result
 
     @api.post("/bookings/{bid}/guest-link")
-    async def invite(bid: str, user=Depends(admin_user)):
+    async def invite(bid: str, body: GuestLinkInput | None = None, user=Depends(admin_user)):
         booking = await active_booking(bid)
-        token = secrets.token_urlsafe(32)
-        expiry = datetime.combine(date.fromisoformat(booking["check_out"]), datetime.min.time(), INDIA_TZ).astimezone(timezone.utc).isoformat()
-        await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
-        await db.guest_links.insert_one({"booking_id": bid, "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-                                        "expires_at": expiry, "revoked": False, "attempts": 0})
-        await audit("invite", user["_id"], booking_id=bid)
+        replace = bool(body and body.replace)
+        if replace and not body.note.strip():
+            raise HTTPException(422, "Add a reason for replacing the upload link")
+        expiry = upload_cutoff(booking["check_out"])
+        token = await stable_links.get(bid, expiry, replace)
+        await audit("replace_invite" if replace else "invite", user["_id"], booking_id=bid)
+        if replace:
+            await db.guest_id_audit.insert_one({"action": "replacement_reason", "booking_id": bid,
+                "actor_id": str(user["_id"]), "note": body.note.strip(), "at": now_iso()})
         origin = os.getenv("PUBLIC_APP_URL", "https://app.britsmaid.in").rstrip("/") or "https://app.britsmaid.in"
         return {"token": token, "expires_at": expiry, "url": f"{origin}/guest-check-in#invite={token}"}
 
@@ -258,7 +278,6 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
             result = await db.bookings.update_one({"_id": b["_id"], "status": b.get("status"), "guest_checked_in_at": b.get("guest_checked_in_at")}, update)
             if not result.matched_count:
                 raise HTTPException(409, "Booking changed; refresh and retry")
-            await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         else:
             if not body.document_id:
                 raise HTTPException(422, "Choose an ID")
@@ -283,6 +302,10 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
 
     @api.delete("/bookings/{bid}/guest-link")
     async def revoke(bid: str, user=Depends(admin_user)):
+        # Retain a disabled canonical marker even for old hash-only invitations.
+        await db.guest_links.update_one({"_id": "booking:" + bid}, {"$setOnInsert": {
+            "booking_id": bid, "token_hash": hashlib.sha256(uuid.uuid4().bytes).hexdigest()},
+            "$set": {"revoked": True}}, upsert=True)
         await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         await audit("revoke", user["_id"], booking_id=bid)
         return {"ok": True}
@@ -422,6 +445,10 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
     @api.post("/bookings/{bid}/check-in")
     async def check_in(bid: str, user=Depends(admin_user)):
         b = await active_booking(bid)
+        if b.get("guest_checked_in_at"):
+            raise HTTPException(409, "Guests are already checked in")
+        if b["check_out"] <= datetime.now(INDIA_TZ).date().isoformat():
+            raise HTTPException(409, "Stay has ended; only ID uploads remain open during the grace period")
         if b["check_in"] > datetime.now(INDIA_TZ).date().isoformat():
             raise HTTPException(409, "Check-in date has not arrived")
         documents = await db.guest_ids.find({"booking_id": bid, "status": "verified", "deleted": False,
@@ -435,7 +462,6 @@ def register_guest_routes(api, db, admin_user, oid, now_iso):
         if not result.matched_count:
             raise HTTPException(409, "Booking changed; refresh before checking in")
         await audit("check_in", user["_id"], booking_id=bid)
-        await db.guest_links.update_many({"booking_id": bid}, {"$set": {"revoked": True}})
         return {"ok": True}
 
     return purge

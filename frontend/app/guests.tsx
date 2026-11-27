@@ -59,16 +59,20 @@ export default function Guests() {
         <Card style={{ gap: spacing.sm }}>
           <Txt>{fmtDate(b.check_in)} – {fmtDate(b.check_out)} · {b.guests} guest{b.guests === 1 ? "" : "s"}</Txt>
           <Txt v="subtitle">{b.guest_checked_in_at ? "Checked in" : `${b.verified_guests} of ${b.guests} IDs approved`}</Txt>
-          {b.guest_checked_in_at ? <Txt>{new Date(b.guest_checked_in_at).toLocaleString()}</Txt> : <>
+          {b.guest_checked_in_at ? <Txt>{new Date(b.guest_checked_in_at).toLocaleString()}</Txt> : null}
+          {b.uploads_open !== false ? <>
             <Button title="Get guest upload link" disabled={busy} onPress={() => run(invite)} />
             {invitation && invitation.bookingId === b.id ? <>
               <Text selectable style={{ overflowWrap: "anywhere" } as any}>{invitation.message}</Text>
               <Button title="Open upload form" onPress={() => Linking.openURL(invitation!.url)} />
               <Button title="Share message & link" variant="secondary" onPress={() => run(async () => { await Share.share({ message: invitation!.message }); })} />
             </> : <Txt>Guests use the link to send their ID photos.</Txt>}
+            {b.upload_expires_at ? <Txt v="caption">Upload link expires {new Date(b.upload_expires_at).toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })} (India time). Resending keeps the same link.</Txt> : null}
+          </> : <Txt>The upload period has ended.</Txt>}
+          {!b.guest_checked_in_at ? <>
             <Button title="Check in" disabled={busy} onPress={() => b.can_check_in ? run(async () => { await api.post(`/bookings/${b.id}/check-in`); setInvitation(null); toast("Checked in"); }) : chooseAction({ action: "check_in", title: "Check in with an exception" })} />
             {!b.can_check_in ? <Txt>{b.check_in_reason}. You can check in with an admin note.</Txt> : null}
-          </>}
+          </> : null}
         </Card>
         <Txt v="subtitle">Guest IDs</Txt>
         {docs.isLoading ? <Loading /> : docs.isError ? <ErrorState message="Could not load IDs" onRetry={docs.refetch} /> : null}
@@ -108,15 +112,27 @@ export default function Guests() {
         </Card>)}
         <Button title={options ? "Hide admin options" : "Admin options"} variant="ghost" onPress={() => setOptions(!options)} />
         {options ? <Card style={{ gap: spacing.sm }}>
-          {b.guest_checked_in_at ? <Button title="Undo check-in" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "undo_check_in", title: "Undo this check-in" })} /> : <Button title="Disable upload link" variant="secondary" disabled={busy} onPress={() => run(async () => { await api.del(`/bookings/${b.id}/guest-link`); setInvitation(null); toast("Link disabled"); })} />}
+          {b.guest_checked_in_at ? <Button title="Undo check-in" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "undo_check_in", title: "Undo this check-in" })} /> : null}
+          <Button title="Disable upload link" variant="secondary" disabled={busy} onPress={() => run(async () => { await api.del(`/bookings/${b.id}/guest-link`); setInvitation(null); toast("Link disabled"); })} />
+          {b.uploads_open !== false ? <Button title="Create replacement link" variant="secondary" disabled={busy} onPress={() => chooseAction({ action: "replace_link", title: "Replace link and disable previous links" })} /> : null}
           <Button title={history ? "Hide history" : "View admin history"} variant="ghost" onPress={() => setHistory(!history)} />
           {history ? b.admin_history?.length ? b.admin_history.slice().reverse().map((event: any, i: number) => <View key={i}><Txt>{event.action.replace(/_/g, " ")} · {event.actor_name ?? "Admin"}</Txt><Txt>{event.note}</Txt><Txt v="caption">{new Date(event.at).toLocaleString()}</Txt></View>) : <Txt>No admin exceptions recorded.</Txt> : null}
         </Card> : null}
         {action ? <Modal transparent visible onRequestClose={() => setAction(null)} animationType="fade"><View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: spacing.lg }}><ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: "center" }}><Card testID="guest-admin-action" style={{ gap: spacing.sm }}>
           <Txt v="subtitle">{action.title}</Txt>
-          <Txt>{action.action === "check_in" ? "This skips missing ID approvals or the arrival date. It records an exception; it does not verify guest IDs." : "Your reason and the previous decision will be kept in history."}</Txt>
+          <Txt>{action.action === "replace_link" ? "This disables all previous upload links for this stay. Use it only to replace a disabled or compromised link. Ordinary sharing keeps the same link. Existing IDs are preserved." : action.action === "check_in" ? "This skips missing ID approvals or the arrival date. It records an exception; it does not verify guest IDs." : "Your reason and the previous decision will be kept in history."}</Txt>
           <Input testID="guest-admin-note" label="Reason (required)" value={note} onChangeText={setNote} multiline />
-          <Button testID="guest-admin-save" title="Save with note" disabled={busy || !note.trim()} onPress={() => run(async () => { await api.post(`/bookings/${b.id}/guest-admin-action`, { action: action.action, document_id: action.document_id, note }); setAction(null); setImage(null); setInvitation(null); toast("Admin action saved"); })} />
+          <Button testID="guest-admin-save" title="Save with note" disabled={busy || !note.trim()} onPress={() => run(async () => {
+            if (action.action === "replace_link") {
+              const stay = b;
+              const link = await api.post(`/bookings/${stay.id}/guest-link`, { replace: true, note });
+              setInvitation({ bookingId: stay.id, url: link.url, message: guestUploadMessage(stay, link.url) });
+            } else {
+              await api.post(`/bookings/${b.id}/guest-admin-action`, { action: action.action, document_id: action.document_id, note });
+              setInvitation(null);
+            }
+            setAction(null); setImage(null); toast("Admin action saved");
+          })} />
           <Button title="Cancel" variant="ghost" onPress={() => setAction(null)} />
         </Card></ScrollView></View></Modal> : null}
       </>}
